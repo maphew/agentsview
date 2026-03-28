@@ -263,6 +263,9 @@ func TestSnapInterval(t *testing.T) {
 		{"16h session", 57600, 1800},
 		{"24h session", 86400, 3600},
 		{"48h session", 172800, 7200},
+		// Extreme: 30 days. 7200s would give 360 buckets,
+		// so interval scales up to keep count <= 50.
+		{"30d session", 2592000, 51840},
 		{"0s session", 0, 60},
 	}
 	for _, tt := range tests {

@@ -141,6 +141,10 @@
     void sessionActivity.reload(sessionId);
   }
 
+  const activeIndex = $derived(
+    sessionActivity.activeBucketIndex,
+  );
+
   const startTime = $derived(
     sessionActivity.buckets.length > 0
       ? formatTime(sessionActivity.buckets[0]!.start_time)
@@ -210,7 +214,7 @@
               class="bar-empty"
             />
           {/if}
-          {#if sessionActivity.activeBucketIndex === bar.index}
+          {#if activeIndex === bar.index}
             <rect
               x={bar.x - 1}
               y={bar.populated

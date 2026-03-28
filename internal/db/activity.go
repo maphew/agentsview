@@ -23,15 +23,18 @@ type SessionActivityResponse struct {
 	TotalMessages   int                     `json:"total_messages"`
 }
 
-// intervalSteps are the allowed bucket widths in seconds.
-// [1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h]
+// intervalSteps are preferred bucket widths in seconds.
+// For sessions longer than the last step * maxBuckets, the
+// interval scales beyond this list to keep bucket count bounded.
 var intervalSteps = []int64{
 	60, 120, 300, 600, 900, 1800, 3600, 7200,
 }
 
-// SnapInterval picks the interval step closest to durationSec/30,
-// targeting ~30 buckets per session. When two steps are equidistant,
-// the larger step is preferred.
+const maxBuckets = 50
+
+// SnapInterval picks a bucket interval targeting ~30 buckets.
+// For very long sessions the interval scales beyond the fixed
+// step list so the total bucket count never exceeds maxBuckets.
 func SnapInterval(durationSec int64) int64 {
 	if durationSec <= 0 {
 		return intervalSteps[0]
@@ -40,9 +43,8 @@ func SnapInterval(durationSec int64) int64 {
 	if target <= intervalSteps[0] {
 		return intervalSteps[0]
 	}
-	if target >= intervalSteps[len(intervalSteps)-1] {
-		return intervalSteps[len(intervalSteps)-1]
-	}
+
+	// Try the fixed step list first.
 	best := intervalSteps[0]
 	bestDist := abs64(intervalSteps[0] - target)
 	for _, step := range intervalSteps {
@@ -51,6 +53,12 @@ func SnapInterval(durationSec int64) int64 {
 			bestDist = d
 			best = step
 		}
+	}
+
+	// If the best fixed step would produce too many buckets,
+	// scale up to keep the count bounded.
+	if durationSec/best > maxBuckets {
+		best = (durationSec + maxBuckets - 1) / maxBuckets
 	}
 	return best
 }
@@ -114,9 +122,11 @@ func getSessionActivitySQLite(
 		}, nil
 	}
 
-	// Truncate anchor to whole seconds for clean bucket boundaries.
+	// Use floor of min epoch as anchor so bucket boundaries
+	// align to whole seconds. Compute duration from the exact
+	// float values to preserve sub-second precision.
 	epochMin := int64(minEpoch.Float64)
-	durationSec := int64(maxEpoch.Float64) - epochMin
+	durationSec := int64(maxEpoch.Float64 - minEpoch.Float64)
 	interval := SnapInterval(durationSec)
 
 	// Query: group visible messages into buckets using float epoch

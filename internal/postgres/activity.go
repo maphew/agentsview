@@ -49,12 +49,11 @@ func (s *Store) GetSessionActivity(
 		}, nil
 	}
 
-	// Truncate anchor to whole seconds for clean bucket boundaries.
-	// Use full precision for duration to avoid off-by-one at edges.
+	// Use floor of min timestamp as anchor so bucket boundaries
+	// align to whole seconds. Compute duration from exact values
+	// to preserve sub-second precision.
 	epochMin := minTS.Unix()
-	durationSec := int64(maxTS.Sub(
-		time.Unix(epochMin, 0),
-	).Seconds())
+	durationSec := int64(maxTS.Sub(*minTS).Seconds())
 	interval := db.SnapInterval(durationSec)
 
 	// 4. Bucket query with PG-specific EXTRACT(EPOCH FROM ...).

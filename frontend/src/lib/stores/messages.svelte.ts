@@ -19,16 +19,14 @@ class MessagesStore {
   messageCount: number = $state(0);
   hasOlder: boolean = $state(false);
   loadingOlder: boolean = $state(false);
-  private _stableMainModel: string = "";
-  mainModel: string = $derived.by(() => {
-    if (this.loading) return this._stableMainModel;
-    const model =
-      this.messages.length > 0
+  private _stableMainModel: string = $state("");
+  mainModel: string = $derived(
+    this.loading
+      ? this._stableMainModel
+      : this.messages.length > 0
         ? computeMainModel(this.messages)
-        : "";
-    this._stableMainModel = model;
-    return model;
-  });
+        : "",
+  );
   private abortController: AbortController | null = null;
   private reloadPromise: Promise<void> | null = null;
   private reloadSessionId: string | null = null;
@@ -82,6 +80,10 @@ class MessagesStore {
     } finally {
       if (this.sessionId === id) {
         this.loading = false;
+        this._stableMainModel =
+          this.messages.length > 0
+            ? computeMainModel(this.messages)
+            : "";
       }
     }
   }
@@ -451,6 +453,10 @@ class MessagesStore {
     } finally {
       if (this.sessionId === id) {
         this.loading = false;
+        this._stableMainModel =
+          this.messages.length > 0
+            ? computeMainModel(this.messages)
+            : "";
       }
     }
   }
