@@ -138,6 +138,22 @@ describe("SessionActivityStore", () => {
     expect(sessionActivity.error).toBe("network error");
   });
 
+  it("clears active indicator when timestamp set to null", async () => {
+    vi.mocked(api.getSessionActivity).mockResolvedValueOnce(
+      makeResponse(2),
+    );
+    await sessionActivity.load("s1");
+
+    // Set a visible timestamp — indicator should be active.
+    sessionActivity.firstVisibleTimestamp =
+      "2026-03-26T10:05:00Z";
+    expect(sessionActivity.activeBucketIndex).toBe(0);
+
+    // Clear it (simulates no visible timestamped items).
+    sessionActivity.firstVisibleTimestamp = null;
+    expect(sessionActivity.activeBucketIndex).toBeNull();
+  });
+
   it("clears firstVisibleTimestamp on new load", async () => {
     vi.mocked(api.getSessionActivity).mockResolvedValue(
       makeResponse(2),

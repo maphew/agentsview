@@ -148,6 +148,46 @@ func TestGetSessionActivity_SingleMessage(t *testing.T) {
 	}
 }
 
+func TestGetSessionActivity_MalformedTimestamps(t *testing.T) {
+	d := testDB(t)
+	sid := "test-malformed-ts"
+
+	err := d.UpsertSession(Session{ID: sid, Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []Message{
+		{SessionID: sid, Ordinal: 0, Role: "user", Content: "hi", Timestamp: "2026-03-26T10:00:00Z", ContentLength: 2},
+		{SessionID: sid, Ordinal: 1, Role: "assistant", Content: "hello", Timestamp: "not-a-timestamp", ContentLength: 5},
+		{SessionID: sid, Ordinal: 2, Role: "user", Content: "bye", Timestamp: "2026-03-26T10:00:30Z", ContentLength: 3},
+	}
+	if err := d.InsertMessages(msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := d.GetSessionActivity(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Malformed timestamp excluded from buckets; valid ones bucketed.
+	if len(resp.Buckets) < 1 {
+		t.Fatal("expected at least 1 bucket")
+	}
+	// Both valid user messages (ord 0 and 2) are within 30s,
+	// so they land in the same bucket.
+	if resp.Buckets[0].UserCount != 2 || resp.Buckets[0].AssistantCount != 0 {
+		t.Errorf(
+			"first bucket: user=%d asst=%d, want 2,0",
+			resp.Buckets[0].UserCount, resp.Buckets[0].AssistantCount,
+		)
+	}
+	if resp.TotalMessages != 3 {
+		t.Errorf("total = %d, want 3", resp.TotalMessages)
+	}
+}
+
 func TestGetSessionActivity_FractionalTimestamps(t *testing.T) {
 	d := testDB(t)
 	sid := "test-frac-ts"

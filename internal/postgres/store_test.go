@@ -515,6 +515,57 @@ func TestStoreGetSessionActivity_SingleMessage(
 	}
 }
 
+func TestStoreGetSessionActivity_PrefixInjectedExcluded(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	ensureStoreSchema(t, pgURL)
+
+	store, err := NewStore(pgURL, testSchema, true)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sid := "store-test-activity-prefix"
+	seedActivitySession(t, store, sid, []struct {
+		ordinal int
+		role    string
+		content string
+		ts      string
+		system  bool
+	}{
+		{0, "user", "hello", "2026-03-26T10:00:00Z", false},
+		{1, "assistant", "hi", "2026-03-26T10:00:30Z", false},
+		// Prefix-detected injected message: is_system=false but
+		// content starts with a system prefix.
+		{2, "user", "This session is being continued from a previous conversation.", "2026-03-26T10:01:00Z", false},
+	})
+
+	ctx := context.Background()
+	resp, err := store.GetSessionActivity(ctx, sid)
+	if err != nil {
+		t.Fatalf("GetSessionActivity: %v", err)
+	}
+
+	// The prefix-detected message should be excluded from
+	// buckets but still count toward TotalMessages.
+	if resp.TotalMessages != 3 {
+		t.Errorf("total = %d, want 3",
+			resp.TotalMessages)
+	}
+
+	// Only ordinals 0 and 1 should appear in buckets.
+	totalBucketed := 0
+	for _, b := range resp.Buckets {
+		totalBucketed += b.UserCount + b.AssistantCount
+	}
+	if totalBucketed != 2 {
+		t.Errorf("bucketed messages = %d, want 2",
+			totalBucketed)
+	}
+}
+
 func TestStoreGetSessionActivity_FractionalTimestamps(
 	t *testing.T,
 ) {
