@@ -128,9 +128,13 @@
   }
 
   function publishVisibleTimestamp() {
-    const items =
-      virtualizer.instance?.getVirtualItems() ?? [];
+    const v = virtualizer.instance;
+    if (!v) return;
+    const items = v.getVirtualItems();
+    // Skip overscanned items above the viewport.
+    const scrollTop = v.scrollOffset ?? 0;
     for (const vi of items) {
+      if (vi.start < scrollTop) continue;
       const item =
         displayItemsAsc[
           ui.sortNewestFirst
