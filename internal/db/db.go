@@ -385,7 +385,7 @@ func (db *DB) migrateColumns() error {
 // Guarded by a stats marker so it only runs once per pattern
 // version.
 func (db *DB) backfillIsAutomatedLocked(w *sql.DB) error {
-	const marker = "is_automated_backfill_v3"
+	const marker = "is_automated_backfill_v1"
 	var done int
 	if err := w.QueryRow(
 		`SELECT count(*) FROM stats
