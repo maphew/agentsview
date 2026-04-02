@@ -21,30 +21,47 @@ type ImportStats struct {
 }
 
 // ftsSuspender is optionally implemented by stores that
-// support dropping and rebuilding FTS indexes. Suspending
-// FTS during bulk imports avoids per-row trigger overhead.
+// support dropping and rebuilding FTS indexes.
 type ftsSuspender interface {
 	DropFTS() error
 	RebuildFTS() error
 }
 
-// suspendFTS drops FTS triggers before a bulk import and
-// returns a function that rebuilds the index. If the store
-// does not support FTS or FTS is unavailable, the returned
-// function is a no-op.
-func suspendFTS(store db.Store) func() {
+// lazyFTS suspends FTS triggers on first call to suspend()
+// and rebuilds on restore(). If suspend() is never called
+// (no message work happened), restore() is a no-op. This
+// avoids the expensive FTS rebuild when re-importing an
+// unchanged archive.
+type lazyFTS struct {
+	sus     ftsSuspender
+	dropped bool
+}
+
+func newLazyFTS(store db.Store) *lazyFTS {
 	s, ok := store.(ftsSuspender)
 	if !ok || !store.HasFTS() {
-		return func() {}
+		return nil
 	}
-	if err := s.DropFTS(); err != nil {
+	return &lazyFTS{sus: s}
+}
+
+func (f *lazyFTS) suspend() {
+	if f == nil || f.dropped {
+		return
+	}
+	if err := f.sus.DropFTS(); err != nil {
 		log.Printf("import: drop FTS: %v", err)
-		return func() {}
+		return
 	}
-	return func() {
-		if err := s.RebuildFTS(); err != nil {
-			log.Printf("import: rebuild FTS: %v", err)
-		}
+	f.dropped = true
+}
+
+func (f *lazyFTS) restore() {
+	if f == nil || !f.dropped {
+		return
+	}
+	if err := f.sus.RebuildFTS(); err != nil {
+		log.Printf("import: rebuild FTS: %v", err)
 	}
 }
 
@@ -59,8 +76,8 @@ func ImportClaudeAI(
 	r io.Reader,
 	onProgress func(imported int),
 ) (ImportStats, error) {
-	restoreFTS := suspendFTS(store)
-	defer restoreFTS()
+	fts := newLazyFTS(store)
+	defer fts.restore()
 
 	var stats ImportStats
 
@@ -71,7 +88,9 @@ func ImportClaudeAI(
 			return ctx.Err()
 		}
 
-		status, err := upsertConversation(ctx, store, result)
+		status, err := upsertConversation(
+			ctx, store, result, fts,
+		)
 		if err != nil {
 			stats.Errors++
 			log.Printf(
@@ -113,6 +132,7 @@ func upsertConversation(
 	ctx context.Context,
 	store db.Store,
 	result parser.ParseResult,
+	fts *lazyFTS,
 ) (importStatus, error) {
 	s := result.Session
 
@@ -152,6 +172,16 @@ func upsertConversation(
 		}
 		return importNew, fmt.Errorf("upserting session: %w", err)
 	}
+
+	// Skip expensive message replacement when the conversation
+	// has not changed since the last import.
+	if !isNew && existing.MessageCount == s.MessageCount {
+		return importSkipped, nil
+	}
+
+	// Suspend FTS before first message-changing operation to
+	// avoid per-row trigger overhead during bulk work.
+	fts.suspend()
 
 	msgs := make([]db.Message, len(result.Messages))
 	for i, m := range result.Messages {
@@ -205,8 +235,8 @@ func ImportChatGPT(
 	assetsDir string,
 	onProgress func(processed int),
 ) (ImportStats, error) {
-	restoreFTS := suspendFTS(store)
-	defer restoreFTS()
+	fts := newLazyFTS(store)
+	defer fts.restore()
 
 	var stats ImportStats
 
@@ -239,6 +269,8 @@ func ImportChatGPT(
 				}
 				return nil
 			}
+
+			fts.suspend()
 
 			sess := db.Session{
 				ID:               s.ID,

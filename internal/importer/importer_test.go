@@ -78,7 +78,7 @@ func TestImportClaudeAI(t *testing.T) {
 	assert.Len(t, msgs, 2)
 }
 
-func TestImportClaudeAI_ReimportUpdatesMessages(t *testing.T) {
+func TestImportClaudeAI_ReimportSkipsUnchanged(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
 
@@ -87,13 +87,17 @@ func TestImportClaudeAI_ReimportUpdatesMessages(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	// Re-importing the same file skips conversations whose
+	// message count has not changed.
 	stats, err := ImportClaudeAI(
 		ctx, d, strings.NewReader(testConversationsJSON), nil,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stats.Imported)
-	assert.Equal(t, 1, stats.Updated)
+	assert.Equal(t, 0, stats.Updated)
+	assert.Equal(t, 1, stats.Skipped)
 
+	// Messages are still intact.
 	msgs, err := d.GetAllMessages(
 		ctx, "claude-ai:import-test-001",
 	)
