@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import {
     importClaudeAI,
     importChatGPT,
@@ -53,14 +54,19 @@
       : 0,
   );
 
-  // Reset file when provider changes.
+  // Reset file when provider changes. The fileInput access
+  // must be untracked: when the result view replaces the
+  // upload view, bind:this sets fileInput to undefined,
+  // which would re-trigger this effect and wipe the results.
   $effect(() => {
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     provider;
     selectedFile = null;
     result = null;
     error = null;
-    if (fileInput) fileInput.value = "";
+    untrack(() => {
+      if (fileInput) fileInput.value = "";
+    });
   });
 
   function selectProvider(p: typeof provider) {
