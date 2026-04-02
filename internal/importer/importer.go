@@ -20,6 +20,34 @@ type ImportStats struct {
 	Errors   int `json:"errors"`
 }
 
+// ftsSuspender is optionally implemented by stores that
+// support dropping and rebuilding FTS indexes. Suspending
+// FTS during bulk imports avoids per-row trigger overhead.
+type ftsSuspender interface {
+	DropFTS() error
+	RebuildFTS() error
+}
+
+// suspendFTS drops FTS triggers before a bulk import and
+// returns a function that rebuilds the index. If the store
+// does not support FTS or FTS is unavailable, the returned
+// function is a no-op.
+func suspendFTS(store db.Store) func() {
+	s, ok := store.(ftsSuspender)
+	if !ok || !store.HasFTS() {
+		return func() {}
+	}
+	if err := s.DropFTS(); err != nil {
+		log.Printf("import: drop FTS: %v", err)
+		return func() {}
+	}
+	return func() {
+		if err := s.RebuildFTS(); err != nil {
+			log.Printf("import: rebuild FTS: %v", err)
+		}
+	}
+}
+
 // ImportClaudeAI reads a Claude.ai conversations.json export
 // and upserts each conversation into the store. Existing
 // sessions are updated (messages replaced); user-renamed
@@ -31,6 +59,9 @@ func ImportClaudeAI(
 	r io.Reader,
 	onProgress func(imported int),
 ) (ImportStats, error) {
+	restoreFTS := suspendFTS(store)
+	defer restoreFTS()
+
 	var stats ImportStats
 
 	err := parser.ParseClaudeAIExport(r, func(
@@ -174,6 +205,9 @@ func ImportChatGPT(
 	assetsDir string,
 	onProgress func(processed int),
 ) (ImportStats, error) {
+	restoreFTS := suspendFTS(store)
+	defer restoreFTS()
+
 	var stats ImportStats
 
 	index := BuildAssetIndex(dir)
