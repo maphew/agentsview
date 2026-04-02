@@ -106,8 +106,8 @@ func ImportClaudeAI(
 ) (stats ImportStats, retErr error) {
 	fts := newLazyFTS(store, cb.indexing)
 	defer func() {
-		if err := fts.restore(); err != nil && retErr == nil {
-			retErr = err
+		if err := fts.restore(); err != nil {
+			retErr = errors.Join(retErr, err)
 		}
 	}()
 
@@ -269,8 +269,8 @@ func ImportChatGPT(
 ) (stats ImportStats, retErr error) {
 	fts := newLazyFTS(store, cb.indexing)
 	defer func() {
-		if err := fts.restore(); err != nil && retErr == nil {
-			retErr = err
+		if err := fts.restore(); err != nil {
+			retErr = errors.Join(retErr, err)
 		}
 	}()
 
