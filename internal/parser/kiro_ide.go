@@ -604,12 +604,14 @@ func kiroIDEBuildExecIndex(dir string) map[string]string {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		// Read just enough to extract executionId.
+		// Read enough to find executionId near the top of
+		// the JSON object. 1 KiB covers typical metadata
+		// fields that may precede it.
 		f, err := os.Open(path)
 		if err != nil {
 			continue
 		}
-		buf := make([]byte, 256)
+		buf := make([]byte, 1024)
 		n, _ := f.Read(buf)
 		f.Close()
 		if n == 0 {
