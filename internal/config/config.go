@@ -337,9 +337,7 @@ func (c *Config) loadFile() error {
 		c.AuthToken = file.AuthToken
 	}
 	c.RemoteAccess = file.RemoteAccess
-	if file.DisableUpdateCheck {
-		c.DisableUpdateCheck = true
-	}
+	c.DisableUpdateCheck = file.DisableUpdateCheck
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
 	if file.PG.URL != "" && c.PG.URL == "" {
@@ -474,8 +472,8 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_PG_MACHINE"); v != "" {
 		c.PG.MachineName = v
 	}
-	if v := os.Getenv("AGENTSVIEW_DISABLE_UPDATE_CHECK"); v == "1" || v == "true" {
-		c.DisableUpdateCheck = true
+	if v := os.Getenv("AGENTSVIEW_DISABLE_UPDATE_CHECK"); v != "" {
+		c.DisableUpdateCheck = v == "1" || v == "true"
 	}
 }
 
