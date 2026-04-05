@@ -117,6 +117,7 @@ PG push flags:
   -full              Bypass per-message skip heuristic
   -projects string   Comma-separated projects to push (inclusive)
   -exclude-projects string  Comma-separated projects to exclude from push
+  -all-projects      Ignore configured project filters for this run
 
 PG serve flags:
   -host string       Host to bind to (default "127.0.0.1")

@@ -47,12 +47,20 @@ func runPGPush(args []string) {
 		"Comma-separated list of projects to push (inclusive)")
 	excludeProjectsFlag := fs.String("exclude-projects", "",
 		"Comma-separated list of projects to exclude from push")
+	allProjects := fs.Bool("all-projects", false,
+		"Ignore configured project filters for this run")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	if *projectsFlag != "" && *excludeProjectsFlag != "" {
-		fatal("pg push: --projects and --exclude-projects are mutually exclusive")
+		fatal("pg push: --projects and --exclude-projects " +
+			"are mutually exclusive")
+	}
+	if *allProjects &&
+		(*projectsFlag != "" || *excludeProjectsFlag != "") {
+		fatal("pg push: --all-projects cannot be combined " +
+			"with --projects or --exclude-projects")
 	}
 
 	appCfg, err := config.LoadMinimal()
@@ -75,8 +83,13 @@ func runPGPush(args []string) {
 	// CLI flags override config values entirely. When either
 	// flag is set, clear both config-derived lists so a CLI
 	// include can override a config exclude (and vice versa).
+	// --all-projects clears both lists for an unfiltered push.
 	projects := pgCfg.Projects
 	excludeProjects := pgCfg.ExcludeProjects
+	if *allProjects {
+		projects = nil
+		excludeProjects = nil
+	}
 	if *projectsFlag != "" {
 		projects = splitProjectList(*projectsFlag)
 		excludeProjects = nil
