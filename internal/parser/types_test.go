@@ -375,6 +375,20 @@ func TestInferRelationshipTypes(t *testing.T) {
 	}
 }
 
+func TestFileBasedAgentsHaveConfigKey(t *testing.T) {
+	for _, def := range Registry {
+		if !def.FileBased {
+			continue
+		}
+		if def.ConfigKey == "" {
+			t.Errorf(
+				"file-based agent %q (%s) has empty ConfigKey",
+				def.DisplayName, def.Type,
+			)
+		}
+	}
+}
+
 func TestVSCodeCopilotDefaultDirs(t *testing.T) {
 	def, ok := AgentByType(AgentVSCodeCopilot)
 	if !ok {
