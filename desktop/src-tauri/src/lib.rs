@@ -563,14 +563,20 @@ fn recover_webview(window: &WebviewWindow, port: u16) {
     // Only reload on network failure, timeout, or 5xx. A 401/403
     // means the backend is alive — auth recovery is handled by the
     // frontend, not by reloading.
-    let health_js = "(function(){\
+    // On failure, navigate to the absolute backend URL (not
+    // location.reload) so recovery works even if the sidecar
+    // restarted on a different port.
+    let target = desktop_redirect_url(port);
+    let health_js = format!(
+        "(function(){{\
         var t=localStorage.getItem('agentsview-auth-token')||'';\
-        var h={signal:AbortSignal.timeout(3000)};\
-        if(t)h.headers={'Authorization':'Bearer '+t};\
+        var h={{signal:AbortSignal.timeout(3000)}};\
+        if(t)h.headers={{'Authorization':'Bearer '+t}};\
         fetch('/api/v1/version',h)\
-        .then(function(r){if(r.status>=500)throw r})\
-        .catch(function(){location.reload()})\
-        })()";
+        .then(function(r){{if(r.status>=500)throw r}})\
+        .catch(function(){{location.href='{target}'}})\
+        }})()"
+    );
     match window.eval(health_js) {
         Ok(()) => {}
         Err(err) => {
