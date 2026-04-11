@@ -60,6 +60,9 @@ func main() {
 		case "projects":
 			runProjects(os.Args[2:])
 			return
+		case "usage":
+			runUsage(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Printf("agentsview %s (commit %s, built %s)\n",
 				version, commit, buildDate)
@@ -92,6 +95,8 @@ Usage:
   agentsview import --type <type> <path>
                           Import conversations (claude-ai, chatgpt)
   agentsview projects [flags] List projects with session counts
+  agentsview usage <daily|statusline> [flags]
+                        Token cost tracking and reporting
   agentsview update [flags]   Check for and install updates
   agentsview version          Show version information
   agentsview help             Show this help
