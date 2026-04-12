@@ -2599,6 +2599,8 @@ func toDBMessages(pw pendingWrite, blocked map[string]bool) []db.Message {
 			OutputTokens:     m.OutputTokens,
 			HasContextTokens: hasCtx,
 			HasOutputTokens:  hasOut,
+			ClaudeMessageID:  m.ClaudeMessageID,
+			ClaudeRequestID:  m.ClaudeRequestID,
 			ToolCalls: convertToolCalls(
 				pw.sess.ID, m.ToolCalls,
 			),
