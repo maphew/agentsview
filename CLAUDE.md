@@ -2,17 +2,17 @@
 
 ## Project Overview
 
-agentsview is a local web viewer for AI agent sessions (Claude Code, Codex,
-Copilot CLI, Gemini CLI, OpenCode, Amp). It syncs session data from disk into
-SQLite (with FTS5 full-text search), serves a Svelte 5 SPA via an embedded Go
-HTTP server, and provides real-time updates via SSE.
+agentsview is a local web viewer for AI agent sessions. It syncs session data
+from disk into SQLite (with FTS5 full-text search), serves a Svelte 5 SPA via an
+embedded Go HTTP server, and provides real-time updates via SSE. See
+`internal/parser/types.go` for the full list of supported agents.
 
 ## Architecture
 
 ```
 CLI (agentsview) → Config → DB (SQLite/FTS5)
                   ↓              ↓
-              File Watcher → Sync Engine → Parser (Claude, Codex, Copilot, Gemini, OpenCode, Amp)
+              File Watcher → Sync Engine → Parsers (per agent)
                   ↓              ↓
               HTTP Server → REST API + SSE + Embedded SPA
                                  ↓
@@ -27,9 +27,8 @@ CLI (agentsview) → Config → DB (SQLite/FTS5)
 - **Sync**: File watcher + periodic sync (15min) for session directories
 - **PG Sync**: On-demand push sync from SQLite to PostgreSQL via `pg push`
 - **Frontend**: Svelte 5 SPA embedded in the Go binary at build time
-- **Config**: Env vars (`AGENT_VIEWER_DATA_DIR`, `CLAUDE_PROJECTS_DIR`,
-  `CODEX_SESSIONS_DIR`, `COPILOT_DIR`, `GEMINI_DIR`, `OPENCODE_DIR`, `AMP_DIR`)
-  and CLI flags
+- **Config**: `AGENT_VIEWER_DATA_DIR` plus per-agent directory overrides (see
+  `EnvVar` on each entry in `internal/parser/types.go`) and CLI flags
 
 ## Project Structure
 
@@ -39,8 +38,7 @@ CLI (agentsview) → Config → DB (SQLite/FTS5)
 - `internal/db/` - SQLite operations (sessions, messages, search, analytics)
 - `internal/postgres/` - PostgreSQL support: push sync, read-only store, schema,
   connection helpers
-- `internal/parser/` - Session file parsers (Claude, Codex, Copilot, Gemini,
-  OpenCode, Amp, content extraction)
+- `internal/parser/` - Per-agent session file parsers and content extraction
 - `internal/server/` - HTTP handlers, SSE, middleware, search, export
 - `internal/sync/` - Sync engine, file watcher, discovery, hashing
 - `internal/timeutil/` - Time parsing utilities
@@ -62,10 +60,8 @@ CLI (agentsview) → Config → DB (SQLite/FTS5)
 | `internal/db/sessions.go`        | Session CRUD queries                          |
 | `internal/db/search.go`          | FTS5 search queries                           |
 | `internal/sync/engine.go`        | Sync orchestration                            |
-| `internal/parser/claude.go`      | Claude Code session parser                    |
-| `internal/parser/codex.go`       | Codex session parser                          |
-| `internal/parser/copilot.go`     | Copilot CLI session parser                    |
-| `internal/parser/amp.go`         | Amp session parser                            |
+| `internal/parser/types.go`       | Agent registry (one `AgentDef` per agent)     |
+| `internal/parser/*.go`           | Per-agent session parsers                     |
 | `internal/postgres/connect.go`   | Connection setup, SSL checks, DSN helpers     |
 | `internal/postgres/schema.go`    | PG DDL, schema management                     |
 | `internal/postgres/push.go`      | Push logic, fingerprinting                    |

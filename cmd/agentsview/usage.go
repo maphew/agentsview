@@ -83,7 +83,7 @@ func runUsageDaily(args []string) {
 	all := fs.Bool("all", false,
 		"Include all history (overrides default 30-day window)")
 	agent := fs.String("agent", "",
-		"Filter by agent (claude, codex)")
+		"Filter by agent name")
 	breakdown := fs.Bool("breakdown", false,
 		"Show per-model breakdown rows")
 	offline := fs.Bool("offline", false,
@@ -143,7 +143,7 @@ func runUsageDaily(args []string) {
 func runUsageStatusline(args []string) {
 	fs := flag.NewFlagSet("usage statusline", flag.ExitOnError)
 	agent := fs.String("agent", "",
-		"Filter by agent (claude, codex)")
+		"Filter by agent name")
 	offline := fs.Bool("offline", false,
 		"Use fallback pricing only")
 	noSync := fs.Bool("no-sync", false,
@@ -375,14 +375,14 @@ Daily flags:
   --since YYYY-MM-DD  Start date (default: 30 days ago)
   --until YYYY-MM-DD  End date
   --all               Include all history (overrides default window)
-  --agent string      Filter by agent (claude, codex)
+  --agent string      Filter by agent name
   --breakdown         Show per-model breakdown rows
   --offline           Use fallback pricing only
   --no-sync           Skip on-demand sync before querying
   --timezone string   IANA timezone for date bucketing
 
 Statusline flags:
-  --agent string      Filter by agent (claude, codex)
+  --agent string      Filter by agent name
   --offline           Use fallback pricing only
   --no-sync           Skip on-demand sync before querying
 `)

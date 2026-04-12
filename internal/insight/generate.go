@@ -28,14 +28,24 @@ type Result struct {
 	Model   string
 }
 
-// ValidAgents lists the supported agent names.
-var ValidAgents = map[string]bool{
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
-	"gemini":  true,
-	"kiro":    true,
+// ValidAgentNames lists the supported insight agent names in display
+// order. ValidAgents is a lookup set derived from it.
+var ValidAgentNames = []string{
+	"claude",
+	"codex",
+	"copilot",
+	"gemini",
+	"kiro",
 }
+
+// ValidAgents is the set of supported insight agent names.
+var ValidAgents = func() map[string]bool {
+	m := make(map[string]bool, len(ValidAgentNames))
+	for _, name := range ValidAgentNames {
+		m[name] = true
+	}
+	return m
+}()
 
 // GenerateFunc is the signature for insight generation,
 // allowing tests to substitute a stub.
