@@ -25,7 +25,7 @@ import (
 // formatting changes). Old databases with a lower user_version
 // trigger a non-destructive re-sync (mtime reset + skip cache
 // clear) so existing session data is preserved.
-const dataVersion = 7
+const dataVersion = 8
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 
