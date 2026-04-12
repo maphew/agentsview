@@ -46,6 +46,12 @@ func runUsage(args []string) {
 	}
 }
 
+// defaultUsageDays is the default lookback window for
+// `agentsview usage daily` when neither --since nor --all is
+// given. Matches ccusage's default and avoids scanning the
+// full history when users usually want recent spend.
+const defaultUsageDays = 30
+
 func runUsageDaily(args []string) {
 	fs := flag.NewFlagSet("usage daily", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false,
@@ -54,6 +60,8 @@ func runUsageDaily(args []string) {
 		"Start date (YYYY-MM-DD)")
 	until := fs.String("until", "",
 		"End date (YYYY-MM-DD)")
+	all := fs.Bool("all", false,
+		"Include all history (overrides default 30-day window)")
 	agent := fs.String("agent", "",
 		"Filter by agent (claude, codex)")
 	breakdown := fs.Bool("breakdown", false,
@@ -80,8 +88,21 @@ func runUsageDaily(args []string) {
 		tz = localTimezone()
 	}
 
+	// Apply default 30-day window if no explicit range and
+	// --all was not requested.
+	effectiveSince := *since
+	if effectiveSince == "" && !*all {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			loc = time.Local
+		}
+		effectiveSince = time.Now().In(loc).
+			AddDate(0, 0, -(defaultUsageDays - 1)).
+			Format("2006-01-02")
+	}
+
 	filter := db.UsageFilter{
-		From:     *since,
+		From:     effectiveSince,
 		To:       *until,
 		Agent:    *agent,
 		Timezone: tz,
@@ -340,8 +361,9 @@ Commands:
 
 Daily flags:
   --json              Output as JSON
-  --since YYYY-MM-DD  Start date
+  --since YYYY-MM-DD  Start date (default: 30 days ago)
   --until YYYY-MM-DD  End date
+  --all               Include all history (overrides default window)
   --agent string      Filter by agent (claude, codex)
   --breakdown         Show per-model breakdown rows
   --offline           Use fallback pricing only
