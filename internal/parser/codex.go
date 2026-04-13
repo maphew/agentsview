@@ -1161,6 +1161,9 @@ func readCodexModelAtOffset(
 		if !ok {
 			break
 		}
+		if !gjson.Valid(line) {
+			continue
+		}
 		if gjson.Get(line, "type").Str != codexTypeTurnContext {
 			continue
 		}

@@ -1436,6 +1436,35 @@ func TestParseCodexSessionFrom_EmptyModelReset(
 		"empty-model turn_context should reset model")
 }
 
+func TestReadCodexModelAtOffset_SkipsInvalidJSON(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	// Truncated turn_context between a valid one and the
+	// offset — must not override the valid model.
+	validTC := testjsonl.CodexTurnContextJSON(
+		"gpt-5.4", tsEarlyS1,
+	)
+	truncated := `{"type":"turn_context","payload":{"model":"wrong`
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"invalid-json", "/tmp",
+			"codex_cli_rs", tsEarly,
+		),
+	) + validTC + "\n" + truncated + "\n"
+
+	path := createTestFile(
+		t, "invalid-tc.jsonl", content,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	got := readCodexModelAtOffset(path, info.Size())
+	assert.Equal(t, "gpt-5.4", got,
+		"truncated turn_context should be skipped")
+}
+
 func TestReadCodexModelAtOffset(t *testing.T) {
 	t.Parallel()
 
