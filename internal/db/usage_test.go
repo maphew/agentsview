@@ -126,6 +126,96 @@ func TestGetDailyUsageWithData(t *testing.T) {
 	}
 }
 
+// TestGetDailyUsage_CacheSavingsUsesPerModelRates pins down
+// that totals.CacheSavings is computed from each row's actual
+// per-model pricing, not a hard-coded proxy. A hard-coded
+// Sonnet rate would misreport an Opus-heavy workload because
+// Opus rates are roughly 5x Sonnet on both sides.
+func TestGetDailyUsage_CacheSavingsUsesPerModelRates(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	requireNoError(t, d.UpsertModelPricing([]ModelPricing{
+		{
+			ModelPattern:         "claude-opus-4-6",
+			InputPerMTok:         15.0,
+			OutputPerMTok:        75.0,
+			CacheCreationPerMTok: 18.75,
+			CacheReadPerMTok:     1.50,
+		},
+		{
+			ModelPattern:         "claude-sonnet-4-20250514",
+			InputPerMTok:         3.0,
+			OutputPerMTok:        15.0,
+			CacheCreationPerMTok: 3.75,
+			CacheReadPerMTok:     0.30,
+		},
+	}), "UpsertModelPricing")
+
+	// Same 1M/1M mix of cache read + cache creation tokens
+	// on both models so the per-model rate difference is the
+	// only thing that can move the result.
+	tokens := json.RawMessage(
+		`{"input_tokens":0,"output_tokens":0,` +
+			`"cache_creation_input_tokens":1000000,` +
+			`"cache_read_input_tokens":1000000}`)
+
+	insertSession(t, d, "s-opus", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-15T10:00:00Z")
+	})
+	insertMessages(t, d, Message{
+		SessionID: "s-opus", Ordinal: 0,
+		Role: "assistant", Timestamp: "2024-06-15T10:30:00Z",
+		Model: "claude-opus-4-6", TokenUsage: tokens,
+	})
+
+	insertSession(t, d, "s-sonnet", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-15T10:05:00Z")
+	})
+	insertMessages(t, d, Message{
+		SessionID: "s-sonnet", Ordinal: 0,
+		Role: "assistant", Timestamp: "2024-06-15T10:35:00Z",
+		Model: "claude-sonnet-4-20250514", TokenUsage: tokens,
+	})
+
+	result, err := d.GetDailyUsage(ctx, UsageFilter{
+		From: "2024-06-01", To: "2024-06-30",
+	})
+	requireNoError(t, err, "GetDailyUsage")
+
+	// Opus per-token delta: read earns (15 - 1.50) = 13.50,
+	// creation earns (15 - 18.75) = -3.75.
+	// Opus savings on 1M + 1M = 13.50 + (-3.75) = 9.75.
+	// Sonnet per-token delta: read earns (3 - 0.30) = 2.70,
+	// creation earns (3 - 3.75) = -0.75.
+	// Sonnet savings on 1M + 1M = 2.70 + (-0.75) = 1.95.
+	// Net total savings = 9.75 + 1.95 = 11.70.
+	wantSavings := 11.70
+	if math.Abs(
+		result.Totals.CacheSavings-wantSavings,
+	) > 1e-9 {
+		t.Errorf(
+			"Totals.CacheSavings = %v, want %v",
+			result.Totals.CacheSavings, wantSavings,
+		)
+	}
+
+	// Falsification: if the code had used Sonnet rates for
+	// both rows the total would be 2 * 1.95 = 3.90, which
+	// differs from wantSavings by >$7. Assert we're nowhere
+	// near that value so a regression to a single-rate path
+	// trips the test.
+	if math.Abs(result.Totals.CacheSavings-3.90) < 0.1 {
+		t.Errorf(
+			"CacheSavings = %v looks like single-rate path; "+
+				"expected per-model math",
+			result.Totals.CacheSavings,
+		)
+	}
+}
+
 func TestGetDailyUsageAgentFilter(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
@@ -1277,6 +1367,78 @@ func TestGetUsageSessionCounts(t *testing.T) {
 	if counts.ByAgent["codex"] != 1 {
 		t.Errorf("ByAgent[codex] = %d, want 1",
 			counts.ByAgent["codex"])
+	}
+}
+
+// TestGetUsageSessionCounts_DedupesByClaudeMessageAndRequestID
+// mirrors the dedup regression coverage on the other two usage
+// queries. A fork session whose only qualifying messages are
+// replays of its parent's (same claude_message_id +
+// claude_request_id) contributes zero cost after dedup in
+// GetDailyUsage, so it must also NOT be counted in
+// GetUsageSessionCounts — otherwise the summary cards disagree
+// with the charts.
+func TestGetUsageSessionCounts_DedupesByClaudeMessageAndRequestID(
+	t *testing.T,
+) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// Parent starts first.
+	insertSession(t, d, "s-parent", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-15T10:00:00Z")
+	})
+	// Fork starts a minute later.
+	insertSession(t, d, "s-fork", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-15T10:01:00Z")
+		s.ParentSessionID = Ptr("s-parent")
+		s.RelationshipType = "fork"
+	})
+
+	shared := json.RawMessage(
+		`{"input_tokens":100,"output_tokens":50}`)
+
+	// Parent has one unique message.
+	insertMessages(t, d, Message{
+		SessionID: "s-parent", Ordinal: 0,
+		Role: "assistant", Timestamp: "2024-06-15T10:02:00Z",
+		Model: "claude-sonnet", TokenUsage: shared,
+		ClaudeMessageID: "msg_dup", ClaudeRequestID: "req_dup",
+	})
+	// Fork's ONLY qualifying message is a replay of the parent
+	// row — same claude IDs. After dedup the fork contributes
+	// nothing and must not be counted.
+	insertMessages(t, d, Message{
+		SessionID: "s-fork", Ordinal: 0,
+		Role: "assistant", Timestamp: "2024-06-15T10:03:00Z",
+		Model: "claude-sonnet", TokenUsage: shared,
+		ClaudeMessageID: "msg_dup", ClaudeRequestID: "req_dup",
+	})
+
+	counts, err := d.GetUsageSessionCounts(ctx, UsageFilter{
+		From: "2024-06-15", To: "2024-06-15", Timezone: "UTC",
+	})
+	requireNoError(t, err, "GetUsageSessionCounts")
+
+	if counts.Total != 1 {
+		t.Errorf(
+			"Total = %d, want 1 (fork should dedup out)",
+			counts.Total,
+		)
+	}
+	if counts.ByProject["proj"] != 1 {
+		t.Errorf(
+			"ByProject[proj] = %d, want 1",
+			counts.ByProject["proj"],
+		)
+	}
+	if counts.ByAgent["claude"] != 1 {
+		t.Errorf(
+			"ByAgent[claude] = %d, want 1",
+			counts.ByAgent["claude"],
+		)
 	}
 }
 

@@ -164,6 +164,14 @@ type UsageTotals struct {
 	CacheCreationTokens int     `json:"cacheCreationTokens"`
 	CacheReadTokens     int     `json:"cacheReadTokens"`
 	TotalCost           float64 `json:"totalCost"`
+	// CacheSavings is the net dollar delta vs an uncached run:
+	// cache reads save (input_rate - cache_read_rate) per token,
+	// cache creations cost (input_rate - cache_creation_rate)
+	// per token (usually negative because creation is billed
+	// above the input rate). Computed from per-model rates so
+	// mixed-model workloads get the right number, not a fixed
+	// Sonnet proxy.
+	CacheSavings float64 `json:"cacheSavings"`
 }
 
 // DailyUsageResult wraps the daily entries and totals.
@@ -317,6 +325,13 @@ WHERE ` + usageMessageEligibility
 	}
 	seen := make(map[dedupKey]struct{})
 
+	// totalSavings is the running sum of per-message cache
+	// savings using each row's actual per-model rates. We sum
+	// at the message level instead of deriving from totals
+	// later because the rate mix varies per workload and a
+	// single fallback rate would misreport mixed-model periods.
+	var totalSavings float64
+
 	var (
 		ts        string
 		model     string
@@ -385,6 +400,16 @@ WHERE ` + usageMessageEligibility
 			float64(outputTok)*rates.output +
 			float64(cacheCrTok)*rates.cacheCreation +
 			float64(cacheRdTok)*rates.cacheRead) / 1_000_000
+
+		// Per-message cache delta: reads earn (input - cacheRead)
+		// per token, creations earn (input - cacheCreate) per
+		// token (usually negative). Zero-rate fallbacks fold
+		// through cleanly.
+		readDelta := float64(cacheRdTok) *
+			(rates.input - rates.cacheRead) / 1_000_000
+		crDelta := float64(cacheCrTok) *
+			(rates.input - rates.cacheCreation) / 1_000_000
+		totalSavings += readDelta + crDelta
 
 		key := accumKey{
 			date: date, project: project,
@@ -513,6 +538,7 @@ WHERE ` + usageMessageEligibility
 		if daily == nil {
 			daily = []DailyUsageEntry{}
 		}
+		totals.CacheSavings = totalSavings
 		return DailyUsageResult{
 			Daily:  daily,
 			Totals: totals,
@@ -664,6 +690,7 @@ WHERE ` + usageMessageEligibility
 		daily = []DailyUsageEntry{}
 	}
 
+	totals.CacheSavings = totalSavings
 	return DailyUsageResult{
 		Daily:  daily,
 		Totals: totals,
@@ -893,6 +920,8 @@ SELECT
 	s.id,
 	s.project,
 	s.agent,
+	m.claude_message_id,
+	m.claude_request_id,
 	COALESCE(m.timestamp, s.started_at) as ts
 FROM messages m
 JOIN sessions s ON m.session_id = s.id
@@ -911,6 +940,12 @@ WHERE ` + usageMessageEligibility
 		args = append(args, padded)
 	}
 	query, args = f.appendFilterClauses(query, args)
+	// Deterministic ordering so the Claude dedup winner — the
+	// session that "owns" a shared message — is stable across
+	// runs. Matches GetDailyUsage / GetTopSessionsByCost so all
+	// three queries agree on which session gets credit.
+	query += ` ORDER BY COALESCE(m.timestamp, s.started_at) ASC,
+		m.session_id ASC, m.ordinal ASC`
 
 	rows, err := db.getReader().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -930,15 +965,30 @@ WHERE ` + usageMessageEligibility
 	}
 	seen := make(map[string]sessInfo)
 
+	// Claude message dedup mirrors GetDailyUsage: if a session
+	// only qualifies because of messages that are duplicates of
+	// an earlier session's rows (fork/subagent replays), that
+	// session should NOT be counted. Otherwise sessionCounts
+	// would disagree with the deduped token totals — a fork
+	// with zero unique messages would inflate the count even
+	// though it contributes zero cost.
+	type dedupKey struct {
+		msgID, reqID string
+	}
+	dedup := make(map[dedupKey]struct{})
+
 	var (
 		sid     string
 		project string
 		agent   string
+		msgID   string
+		reqID   string
 		ts      string
 	)
 	for rows.Next() {
 		if err := rows.Scan(
-			&sid, &project, &agent, &ts,
+			&sid, &project, &agent,
+			&msgID, &reqID, &ts,
 		); err != nil {
 			return UsageSessionCounts{},
 				fmt.Errorf("scanning session counts: %w", err)
@@ -951,6 +1001,16 @@ WHERE ` + usageMessageEligibility
 		}
 		if f.To != "" && date > f.To {
 			continue
+		}
+
+		// Dedup AFTER the date filter, matching the other two
+		// queries so ±14h padding rows don't claim keys.
+		if msgID != "" && reqID != "" {
+			key := dedupKey{msgID: msgID, reqID: reqID}
+			if _, dup := dedup[key]; dup {
+				continue
+			}
+			dedup[key] = struct{}{}
 		}
 
 		if _, ok := seen[sid]; !ok {

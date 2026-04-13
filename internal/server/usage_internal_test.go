@@ -13,49 +13,32 @@ func approxEqual(a, b, eps float64) bool {
 	return math.Abs(a-b) <= eps
 }
 
-func TestComputeCacheStats_ReadOnlySavings(t *testing.T) {
-	// 1M cache-read tokens, no creations. Discount per token
-	// is (3.00 - 0.30) / 1M = $2.70 total.
-	cs := computeCacheStats(db.UsageTotals{
-		InputTokens:     1_000_000,
-		CacheReadTokens: 1_000_000,
-	})
-	if !approxEqual(cs.SavingsVsUncached, 2.70, 1e-9) {
-		t.Errorf("SavingsVsUncached = %v, want ~2.70",
-			cs.SavingsVsUncached)
+func TestComputeCacheStats_SavingsPassThrough(t *testing.T) {
+	// SavingsVsUncached is now computed per-model in the DB
+	// layer; computeCacheStats just forwards totals.CacheSavings.
+	// Verify the pass-through at the positive, negative, and
+	// zero boundaries so a future refactor that drops the field
+	// trips a test.
+	cases := []struct {
+		name string
+		in   float64
+	}{
+		{"positive", 4.65},
+		{"negative", -0.75},
+		{"zero", 0},
 	}
-}
-
-func TestComputeCacheStats_CreationOnlyIsNegative(t *testing.T) {
-	// 1M cache-creation tokens, no reads. Premium is
-	// (3.00 - 3.75) / 1M = -$0.75. The cache costs more than
-	// an uncached run; savings must be negative.
-	cs := computeCacheStats(db.UsageTotals{
-		InputTokens:         1_000_000,
-		CacheCreationTokens: 1_000_000,
-	})
-	if cs.SavingsVsUncached >= 0 {
-		t.Errorf("SavingsVsUncached = %v, want < 0",
-			cs.SavingsVsUncached)
-	}
-	if !approxEqual(cs.SavingsVsUncached, -0.75, 1e-9) {
-		t.Errorf("SavingsVsUncached = %v, want ~-0.75",
-			cs.SavingsVsUncached)
-	}
-}
-
-func TestComputeCacheStats_MixedReadsAndCreations(t *testing.T) {
-	// 2M reads save 2 * 2.70 = $5.40.
-	// 1M creations cost 1 * 0.75 = -$0.75.
-	// Net = $4.65.
-	cs := computeCacheStats(db.UsageTotals{
-		InputTokens:         3_000_000,
-		CacheReadTokens:     2_000_000,
-		CacheCreationTokens: 1_000_000,
-	})
-	if !approxEqual(cs.SavingsVsUncached, 4.65, 1e-9) {
-		t.Errorf("SavingsVsUncached = %v, want ~4.65",
-			cs.SavingsVsUncached)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := computeCacheStats(db.UsageTotals{
+				CacheSavings: tc.in,
+			})
+			if !approxEqual(cs.SavingsVsUncached, tc.in, 1e-9) {
+				t.Errorf(
+					"SavingsVsUncached = %v, want %v",
+					cs.SavingsVsUncached, tc.in,
+				)
+			}
+		})
 	}
 }
 
@@ -73,7 +56,8 @@ func TestComputeCacheStats_ZeroTotalsIsZero(t *testing.T) {
 func TestComputeCacheStats_HitRate(t *testing.T) {
 	// 800 cache reads, 200 uncached inputs -> 0.80 hit rate.
 	// (The HitRate denominator in this code is
-	// cacheRead + input where input already includes reads.)
+	// cacheRead + input where input is already the uncached
+	// portion — see the pass-through test below.)
 	cs := computeCacheStats(db.UsageTotals{
 		InputTokens:     200,
 		CacheReadTokens: 800,

@@ -217,11 +217,11 @@ func foldAgentTotals(
 }
 
 // computeCacheStats derives cache hit/miss metrics from totals.
-// SavingsVsUncached is approximate: it uses Anthropic Sonnet
-// rates as a proxy because the handler doesn't have per-model
-// breakdowns of cache-read/creation tokens. Good enough for a
-// v1 ballpark; a future iteration can compute weighted rates
-// from per-model breakdowns.
+// SavingsVsUncached passes through totals.CacheSavings, which
+// the DB layer computes per-message using each row's actual
+// per-model rates — so mixed-model periods (e.g. Opus + Sonnet)
+// report the right net delta instead of a single hard-coded
+// proxy rate.
 func computeCacheStats(t db.UsageTotals) CacheStats {
 	// Anthropic reports input_tokens as the NON-cached portion
 	// of the input (cache_read and cache_creation are separate
@@ -232,31 +232,13 @@ func computeCacheStats(t db.UsageTotals) CacheStats {
 		CacheCreationTokens: t.CacheCreationTokens,
 		UncachedInputTokens: t.InputTokens,
 		OutputTokens:        t.OutputTokens,
+		SavingsVsUncached:   t.CacheSavings,
 	}
 	denominator := t.CacheReadTokens + t.InputTokens
 	if denominator > 0 {
 		cs.HitRate = float64(t.CacheReadTokens) /
 			float64(denominator)
 	}
-	// SavingsVsUncached is the net dollar delta vs a world
-	// without the cache: cache reads save (input - cacheRead)
-	// per token, but cache creations cost extra because
-	// creation is billed above the input rate. On Sonnet:
-	// $3.00/MTok input, $0.30/MTok cache-read, $3.75/MTok
-	// cache-create — so a creation token is actually -$0.75
-	// "savings". Write-heavy workloads with no reads end up
-	// with a negative value, which is correct: the cache
-	// made them more expensive.
-	const (
-		inputRatePerMTok         = 3.0
-		cacheReadRatePerMTok     = 0.30
-		cacheCreationRatePerMTok = 3.75
-	)
-	readDelta := float64(t.CacheReadTokens) *
-		(inputRatePerMTok - cacheReadRatePerMTok) / 1_000_000
-	creationDelta := float64(t.CacheCreationTokens) *
-		(inputRatePerMTok - cacheCreationRatePerMTok) / 1_000_000
-	cs.SavingsVsUncached = readDelta + creationDelta
 	return cs
 }
 
