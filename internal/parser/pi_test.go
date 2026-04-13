@@ -607,6 +607,39 @@ func TestParsePiSession_ModelFromModelChange(t *testing.T) {
 		"token usage extracted from message.usage")
 }
 
+// TestParsePiSession_UnknownUsageShape verifies that a present
+// but unrecognized usage object (empty {} or a foreign schema
+// with none of the keys we know about) leaves TokenUsage empty
+// so the usage query filter skips the row, rather than
+// fabricating a zero-valued record.
+func TestParsePiSession_UnknownUsageShape(t *testing.T) {
+	header := `{"type":"session","id":"uu-sess","timestamp":"2025-01-01T10:00:00Z","cwd":"/tmp"}` + "\n"
+
+	cases := []struct {
+		name     string
+		usageRaw string
+	}{
+		{"empty object", `{}`},
+		{"foreign keys only", `{"totalTokens":42,"promptCount":3}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			asst := `{"type":"message","id":"a1","timestamp":"2025-01-01T10:00:01Z","message":{"role":"assistant","content":"hi","model":"gpt-5.4","usage":` + tc.usageRaw + `}}`
+			_, msgs := runPiParserTest(t, header+asst)
+			require.Len(t, msgs, 1)
+			m := msgs[0]
+
+			assert.Equal(t, "gpt-5.4", m.Model,
+				"model still populated from message.model")
+			assert.Empty(t, m.TokenUsage,
+				"unrecognized usage shape must leave TokenUsage empty")
+			assert.False(t, m.HasOutputTokens)
+			assert.False(t, m.HasContextTokens)
+		})
+	}
+}
+
 // TestParsePiSession_ZeroUsage verifies that an explicit usage
 // block with every counter at zero is preserved as "known
 // zero" rather than collapsed to "unknown". The normalized

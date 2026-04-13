@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // OpenCodeSession bundles a parsed session with its messages.
@@ -270,30 +272,13 @@ type openCodeMessageRow struct {
 	timeCreated int64
 }
 
-// openCodeMessageData holds the fields we extract from the
-// message data JSON blob. Assistant rows additionally carry the
-// model id and per-message token counts that drive cost
-// calculation in the usage dashboard.
+// openCodeMessageData holds the scalar fields we extract from
+// the message data JSON blob. Token usage lives under `tokens`
+// and is read separately via gjson so the parser can
+// distinguish explicit zero fields from absent ones.
 type openCodeMessageData struct {
-	Role    string                 `json:"role"`
-	ModelID string                 `json:"modelID"`
-	Tokens  *openCodeMessageTokens `json:"tokens,omitempty"`
-}
-
-// openCodeMessageTokens mirrors the OpenCode `tokens` object.
-// Reasoning tokens are recorded by OpenCode but are already
-// counted inside `output` for billing purposes, so they are
-// kept only as metadata and not added to output_tokens.
-type openCodeMessageTokens struct {
-	Input     int                  `json:"input"`
-	Output    int                  `json:"output"`
-	Reasoning int                  `json:"reasoning"`
-	Cache     openCodeMessageCache `json:"cache"`
-}
-
-type openCodeMessageCache struct {
-	Read  int `json:"read"`
-	Write int `json:"write"`
+	Role    string `json:"role"`
+	ModelID string `json:"modelID"`
 }
 
 // openCodePartRow is a row from the opencode part table.
@@ -418,7 +403,7 @@ func buildOpenCodeSession(
 		pm := buildOpenCodeMessage(
 			ordinal, role, m.timeCreated, msgParts,
 		)
-		applyOpenCodeTokenUsage(&pm, md)
+		applyOpenCodeTokenUsage(&pm, md, m.data)
 		if strings.TrimSpace(pm.Content) == "" &&
 			!pm.HasToolUse {
 			continue
@@ -482,42 +467,59 @@ func buildOpenCodeSession(
 }
 
 // applyOpenCodeTokenUsage copies the assistant message's model
-// id and per-message token counts into pm so the usage dashboard
-// can attribute cost. OpenCode's token field names use a nested
-// `cache.{read,write}` shape; this maps them onto the
-// agentsview-native `cache_{read,creation}_input_tokens` keys
-// that internal/db/usage.go expects.
+// id and per-message token counts into pm so the usage
+// dashboard can attribute cost. OpenCode's token field names
+// use a nested `cache.{read,write}` shape; this maps them onto
+// the agentsview-native `cache_{read,creation}_input_tokens`
+// keys that internal/db/usage.go expects.
 //
-// A present `tokens` object is treated as authoritative: even
-// when every counter is zero (e.g. an errored request) the
-// normalized usage is written and coverage flags are set, so
-// downstream rollups distinguish "known zero" from "unknown".
+// Coverage semantics match the claude parser contract: a field
+// that is present at zero is preserved as "known zero" and
+// sets its coverage flag, while a tokens object with no
+// recognized fields (empty `{}` or a foreign schema) leaves
+// TokenUsage empty so the usage query filter skips the row.
 func applyOpenCodeTokenUsage(
-	pm *ParsedMessage, md openCodeMessageData,
+	pm *ParsedMessage, md openCodeMessageData, dataRaw string,
 ) {
 	if md.ModelID != "" {
 		pm.Model = md.ModelID
 	}
-	if md.Tokens == nil {
+	tokens := gjson.Get(dataRaw, "tokens")
+	if !tokens.Exists() {
 		return
 	}
-	t := md.Tokens
+
+	inputField := tokens.Get("input")
+	outputField := tokens.Get("output")
+	cacheReadField := tokens.Get("cache.read")
+	cacheWriteField := tokens.Get("cache.write")
+
+	if !inputField.Exists() && !outputField.Exists() &&
+		!cacheReadField.Exists() && !cacheWriteField.Exists() {
+		return
+	}
+
+	input := int(inputField.Int())
+	output := int(outputField.Int())
+	cacheRead := int(cacheReadField.Int())
+	cacheCreate := int(cacheWriteField.Int())
 
 	normalized := map[string]int{
-		"input_tokens":                t.Input,
-		"output_tokens":               t.Output,
-		"cache_read_input_tokens":     t.Cache.Read,
-		"cache_creation_input_tokens": t.Cache.Write,
+		"input_tokens":                input,
+		"output_tokens":               output,
+		"cache_read_input_tokens":     cacheRead,
+		"cache_creation_input_tokens": cacheCreate,
 	}
 	j, err := json.Marshal(normalized)
 	if err != nil {
 		return
 	}
 	pm.TokenUsage = j
-	pm.OutputTokens = t.Output
-	pm.HasOutputTokens = true
-	pm.ContextTokens = t.Input + t.Cache.Read + t.Cache.Write
-	pm.HasContextTokens = true
+	pm.OutputTokens = output
+	pm.HasOutputTokens = outputField.Exists()
+	pm.ContextTokens = input + cacheRead + cacheCreate
+	pm.HasContextTokens = inputField.Exists() ||
+		cacheReadField.Exists() || cacheWriteField.Exists()
 }
 
 // openCodeDefaultTitleRe matches the exact placeholder format

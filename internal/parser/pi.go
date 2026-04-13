@@ -325,12 +325,11 @@ func parsePiAssistantMessage(
 // shape (OpenCode-style) and the flat cacheRead/cacheCreation
 // shape (Anthropic-style) so both transports work.
 //
-// A present `usage` object is treated as authoritative and its
-// raw counters are normalized even when every value is zero.
-// Coverage flags follow field presence rather than nonzero
-// values, matching the claude parser contract so an explicit
-// zero from an errored request is not conflated with missing
-// usage metadata.
+// Coverage semantics match the claude parser contract: a field
+// present at zero is preserved as "known zero" and sets its
+// coverage flag, while a usage object with no recognized
+// fields (empty `{}` or a foreign schema) leaves TokenUsage
+// empty so the usage query filter skips the row.
 func applyPiTokenUsage(
 	pm *ParsedMessage, line, fallbackModel string,
 ) {
@@ -354,6 +353,11 @@ func applyPiTokenUsage(
 	cacheWriteField := usage.Get("cache.write")
 	if !cacheWriteField.Exists() {
 		cacheWriteField = usage.Get("cacheCreation")
+	}
+
+	if !inputField.Exists() && !outputField.Exists() &&
+		!cacheReadField.Exists() && !cacheWriteField.Exists() {
+		return
 	}
 
 	input := int(inputField.Int())

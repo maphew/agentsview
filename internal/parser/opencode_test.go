@@ -546,6 +546,73 @@ func TestParseOpenCodeDB_TokenUsage(t *testing.T) {
 		s.Session.PeakContextTokens, 12470) // 1 + 500 + 11969
 }
 
+// TestParseOpenCodeDB_UnknownTokensShape verifies that a
+// present but unrecognized `tokens` object (empty {} or a
+// foreign schema) leaves TokenUsage empty so the usage query
+// filter skips the row, rather than fabricating a zero-valued
+// record that pollutes the dashboard.
+func TestParseOpenCodeDB_UnknownTokensShape(t *testing.T) {
+	cases := []struct {
+		name      string
+		tokensRaw string
+	}{
+		{"empty object", `{}`},
+		{"foreign keys only", `{"totalTokens":42,"promptCount":3}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath, seeder, db := newTestDB(t)
+			defer db.Close()
+
+			seeder.AddProject("prj_1", "/tmp/proj")
+			seeder.AddSession("ses_u", "prj_1", "", "Unknown",
+				1700000000000, 1700000010000)
+			seeder.AddMessage("msg_u", "ses_u",
+				1700000000000, 1700000000000, `{"role":"user"}`)
+			seeder.AddPart("prt_u", "msg_u", "ses_u",
+				1700000000000, 1700000000000,
+				`{"type":"text","text":"hi"}`)
+
+			data := `{"role":"assistant","modelID":"gpt-5.4",` +
+				`"providerID":"openai","tokens":` + tc.tokensRaw + `}`
+			seeder.AddMessage("msg_a", "ses_u",
+				1700000005000, 1700000005000, data)
+			seeder.AddPart("prt_a", "msg_a", "ses_u",
+				1700000005000, 1700000005000,
+				`{"type":"text","text":"answer"}`)
+
+			sessions, err := ParseOpenCodeDB(dbPath, "m")
+			if err != nil {
+				t.Fatalf("ParseOpenCodeDB: %v", err)
+			}
+			if len(sessions) != 1 {
+				t.Fatalf("sessions len = %d, want 1", len(sessions))
+			}
+
+			var asst *ParsedMessage
+			for i := range sessions[0].Messages {
+				if sessions[0].Messages[i].Role == RoleAssistant {
+					asst = &sessions[0].Messages[i]
+					break
+				}
+			}
+			if asst == nil {
+				t.Fatal("missing assistant message")
+			}
+			assertEq(t, "Model", asst.Model, "gpt-5.4")
+			if len(asst.TokenUsage) != 0 {
+				t.Fatalf("TokenUsage = %q, want empty",
+					string(asst.TokenUsage))
+			}
+			assertEq(t, "HasOutputTokens",
+				asst.HasOutputTokens, false)
+			assertEq(t, "HasContextTokens",
+				asst.HasContextTokens, false)
+		})
+	}
+}
+
 // TestParseOpenCodeDB_ZeroTokens verifies that an explicit
 // tokens block with every counter set to zero is preserved as
 // "known zero" rather than collapsed to "unknown". The
