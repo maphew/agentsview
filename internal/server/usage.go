@@ -235,15 +235,21 @@ func computeCacheStats(t db.UsageTotals) CacheStats {
 		cs.HitRate = float64(t.CacheReadTokens) /
 			float64(denominator)
 	}
-	// Rough savings estimate: $3.00/MTok average input rate.
-	const avgInputRate = 3.0
-	allInputTokens := t.InputTokens + t.CacheReadTokens +
-		t.CacheCreationTokens
-	uncachedCost := float64(allInputTokens) *
-		avgInputRate / 1_000_000
-	if uncachedCost > 0 {
-		cs.SavingsVsUncached = 1.0 - t.TotalCost/uncachedCost
-	}
+	// SavingsVsUncached is the absolute dollar delta between
+	// what the cache-read tokens would have cost at the full
+	// input rate and what they actually cost at the cache-read
+	// rate. v1 approximates both rates with Anthropic Sonnet
+	// pricing ($3/MTok input, $0.30/MTok cache-read) — good
+	// enough for the headline; revisit if users want precision.
+	const (
+		inputRatePerMTok     = 3.0
+		cacheReadRatePerMTok = 0.30
+	)
+	cacheReadFullCost := float64(t.CacheReadTokens) *
+		inputRatePerMTok / 1_000_000
+	cacheReadActualCost := float64(t.CacheReadTokens) *
+		cacheReadRatePerMTok / 1_000_000
+	cs.SavingsVsUncached = cacheReadFullCost - cacheReadActualCost
 	return cs
 }
 
@@ -265,13 +271,16 @@ func (s *Server) computeComparison(
 	priorFrom := priorTo.AddDate(0, 0, -(days - 1))
 
 	priorFilter := db.UsageFilter{
-		From:       priorFrom.Format("2006-01-02"),
-		To:         priorTo.Format("2006-01-02"),
-		Agent:      f.Agent,
-		Project:    f.Project,
-		Model:      f.Model,
-		Timezone:   f.Timezone,
-		Breakdowns: false,
+		From:           priorFrom.Format("2006-01-02"),
+		To:             priorTo.Format("2006-01-02"),
+		Agent:          f.Agent,
+		Project:        f.Project,
+		Model:          f.Model,
+		ExcludeProject: f.ExcludeProject,
+		ExcludeAgent:   f.ExcludeAgent,
+		ExcludeModel:   f.ExcludeModel,
+		Timezone:       f.Timezone,
+		Breakdowns:     false,
 	}
 	priorResult, err := s.db.GetDailyUsage(
 		r.Context(), priorFilter,

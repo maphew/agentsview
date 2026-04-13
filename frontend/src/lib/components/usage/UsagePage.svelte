@@ -28,28 +28,45 @@
     })),
   );
 
-  // Track every model we've seen in any summary response — never
-  // remove one. Without this the model dropdown would lose excluded
-  // models (since modelTotals only contains non-excluded models) and
-  // the user would have no way to re-include them.
+  // Track every model we've seen in any summary response or
+  // excluded-model filter — never remove one. This keeps the model
+  // dropdown usable even when landing on a shared URL like
+  // /usage?exclude_model=claude-opus, which would otherwise never
+  // show that model in the dropdown (it's filtered out of
+  // modelTotals on every response) and leave the user unable to
+  // re-include it.
   let knownModels: string[] = $state([]);
 
+  function mergeIntoKnownModels(names: string[]): void {
+    if (names.length === 0) return;
+    const set = new Set(knownModels);
+    let changed = false;
+    for (const m of names) {
+      if (m && !set.has(m)) {
+        set.add(m);
+        changed = true;
+      }
+    }
+    if (changed) {
+      knownModels = [...set].sort();
+    }
+  }
+
+  // Seed from the filtered summary response.
   $effect(() => {
     const fromSummary = (usage.summary?.modelTotals ?? [])
       .map((m) => m.model);
-    if (fromSummary.length === 0) return;
+    untrack(() => mergeIntoKnownModels(fromSummary));
+  });
+
+  // Seed from the excluded-model filter so a shared URL like
+  // /usage?exclude_model=foo shows "foo" in the dropdown on first
+  // load, letting the user re-include it without clearing first.
+  $effect(() => {
+    const excluded = usage.excludedModels;
     untrack(() => {
-      const set = new Set(knownModels);
-      let changed = false;
-      for (const m of fromSummary) {
-        if (!set.has(m)) {
-          set.add(m);
-          changed = true;
-        }
-      }
-      if (changed) {
-        knownModels = [...set].sort();
-      }
+      if (!excluded) return;
+      mergeIntoKnownModels(excluded.split(","));
     });
   });
 

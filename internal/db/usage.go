@@ -99,6 +99,14 @@ func (f UsageFilter) location() *time.Location {
 // reference this constant so the set of counted messages stays
 // identical across queries. Drift here is the bug that makes
 // sessionCounts and daily totals disagree.
+//
+// Note: this does NOT filter by s.relationship_type. Duplicate
+// messages across fork/subagent boundaries are handled by the
+// per-query claude_message_id + claude_request_id dedup in
+// GetDailyUsage, which is more precise than a blanket exclusion:
+// a fork session can legitimately contribute unique-keyed messages
+// that should still be counted (see
+// TestGetDailyUsage_DedupesByClaudeMessageAndRequestID).
 const usageMessageEligibility = `
     m.token_usage != ''
     AND m.model != ''

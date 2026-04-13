@@ -148,13 +148,6 @@ func createSessionFixture(
 	if index%3 == 1 {
 		model = "claude-opus-4-20250514"
 	}
-	// Subagent and fork sessions must not appear in /usage
-	// aggregation. Skip seeding token_usage on their messages so
-	// the usage query's eligibility predicates (which match empty
-	// model as the disqualifier) filter them out.
-	if spec.relationshipType != "" {
-		model = ""
-	}
 
 	var msgs []db.Message
 	if spec.suffix == "mixed-content-7" {
