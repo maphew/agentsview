@@ -261,14 +261,28 @@ func ensureFreshData(
 	engine.SyncAllSince(ctx, since, func(sync.Progress) {})
 }
 
-// seedPricing upserts hardcoded fallback rates into
-// model_pricing on every server start, then kicks off a
-// background LiteLLM refresh that overwrites them with live
-// data. The unconditional upsert ensures corrected fallback
-// rates propagate to existing databases without requiring a
-// schema migration.
+// seedPricing ensures fallback rates are present in
+// model_pricing, then kicks off a background LiteLLM refresh.
+//
+// Fallback rates are only upserted when the stored seed
+// version differs from pricing.FallbackVersion (or is
+// absent). This avoids overwriting live LiteLLM rates on
+// every restart while still propagating corrected fallback
+// rates when the binary is upgraded.
 func seedPricing(database *db.DB) {
-	upsertPricing(database, pricing.FallbackPricing())
+	const metaKey = "_fallback_version"
+	stored, err := database.GetPricingMeta(metaKey)
+	if err != nil {
+		log.Printf("pricing seed: %v", err)
+	}
+	if stored != pricing.FallbackVersion {
+		upsertPricing(database, pricing.FallbackPricing())
+		if err := database.SetPricingMeta(
+			metaKey, pricing.FallbackVersion,
+		); err != nil {
+			log.Printf("pricing seed: %v", err)
+		}
+	}
 	go refreshPricingFromLiteLLM(database)
 }
 

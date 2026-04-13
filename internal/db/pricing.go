@@ -63,6 +63,46 @@ func (db *DB) UpsertModelPricing(
 	return tx.Commit()
 }
 
+// GetPricingMeta reads a metadata value stored as a sentinel
+// row in model_pricing. Returns "" if not found.
+func (db *DB) GetPricingMeta(key string) (string, error) {
+	var val string
+	err := db.getReader().QueryRow(
+		`SELECT updated_at FROM model_pricing
+		 WHERE model_pattern = ?`, key,
+	).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf(
+			"reading pricing meta %q: %w", key, err,
+		)
+	}
+	return val, nil
+}
+
+// SetPricingMeta stores a metadata value as a sentinel row
+// in model_pricing with zero pricing fields.
+func (db *DB) SetPricingMeta(key, value string) error {
+	_, err := db.getWriter().Exec(
+		`INSERT INTO model_pricing
+			(model_pattern, input_per_mtok, output_per_mtok,
+			 cache_creation_per_mtok, cache_read_per_mtok,
+			 updated_at)
+		 VALUES (?, 0, 0, 0, 0, ?)
+		 ON CONFLICT(model_pattern) DO UPDATE SET
+			updated_at = excluded.updated_at`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"setting pricing meta %q: %w", key, err,
+		)
+	}
+	return nil
+}
+
 // GetModelPricing returns pricing for an exact model match.
 // Returns nil, nil if not found.
 func (db *DB) GetModelPricing(

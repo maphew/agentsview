@@ -1,5 +1,9 @@
 package pricing
 
+// FallbackVersion must be bumped whenever FallbackPricing
+// rates change so the startup seeder knows to re-upsert.
+const FallbackVersion = "2026-04-13"
+
 // FallbackPricing returns hardcoded pricing for key Claude
 // models. Used when the LiteLLM fetch fails.
 // Prices in USD per million tokens, current as of 2026-04.
