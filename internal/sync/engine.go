@@ -1475,7 +1475,15 @@ func (e *Engine) processFile(
 	cachedMtime, cached := e.skipCache[file.Path]
 	e.skipMu.RUnlock()
 	if cached && cachedMtime == mtime {
-		return processResult{skip: true, mtime: mtime}
+		// Older agentsview builds cached codex_exec files as
+		// non-interactive. Re-check and unskip those files so
+		// the new bulk-sync behavior can import them.
+		if file.Agent == parser.AgentCodex &&
+			parser.IsCodexExecSessionFile(file.Path) {
+			e.clearSkip(file.Path)
+		} else {
+			return processResult{skip: true, mtime: mtime}
+		}
 	}
 
 	var res processResult
@@ -1807,9 +1815,6 @@ func (e *Engine) processCodex(
 	)
 	if err != nil {
 		return processResult{err: err}
-	}
-	if sess == nil {
-		return processResult{} // non-interactive
 	}
 
 	hash, err := ComputeFileHash(file.Path)
@@ -2670,9 +2675,8 @@ func (e *Engine) FindSourceFile(sessionID string) string {
 	return ""
 }
 
-// SyncSingleSession re-syncs a single session by its ID.
-// Unlike the bulk SyncAll path, this includes exec-originated
-// Codex sessions and uses the existing DB project as fallback.
+// SyncSingleSession re-syncs a single session by its ID and
+// uses the existing DB project as fallback where applicable.
 func (e *Engine) SyncSingleSession(sessionID string) error {
 	e.syncMu.Lock()
 	defer e.syncMu.Unlock()
@@ -2704,9 +2708,7 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 	// during a bulk SyncAll.
 	e.clearSkip(path)
 
-	// Reuse processFile for stat and DB-skip logic. For
-	// Claude this is the full pipeline; for Codex we need
-	// includeExec=true so we call the parser directly.
+	// Reuse processFile for stat and DB-skip logic.
 	file := parser.DiscoveredFile{
 		Path:  path,
 		Agent: agent,
@@ -2771,23 +2773,6 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 		return e.writeIncremental(res.incremental)
 	}
 
-	// For Codex, processFile uses includeExec=false which may
-	// return empty results for exec-originated sessions. Re-parse
-	// with includeExec=true when that happens.
-	if len(res.results) == 0 && agent == parser.AgentCodex {
-		execRes := e.processCodexIncludeExec(file)
-		if execRes.err != nil {
-			if res.mtime != 0 {
-				e.cacheSkip(path, res.mtime)
-			}
-			return execRes.err
-		}
-		if len(execRes.results) == 0 {
-			return nil
-		}
-		res.results = execRes.results
-	}
-
 	if len(res.results) == 0 {
 		return nil
 	}
@@ -2809,30 +2794,6 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 	}
 
 	return nil
-}
-
-// processCodexIncludeExec re-parses a Codex session with
-// exec-originated sessions included.
-func (e *Engine) processCodexIncludeExec(
-	file parser.DiscoveredFile,
-) processResult {
-	sess, msgs, err := parser.ParseCodexSession(
-		file.Path, e.machine, true,
-	)
-	if err != nil {
-		return processResult{err: err}
-	}
-	if sess == nil {
-		return processResult{}
-	}
-	if h, herr := ComputeFileHash(file.Path); herr == nil {
-		sess.File.Hash = h
-	}
-	return processResult{
-		results: []parser.ParseResult{
-			{Session: *sess, Messages: msgs},
-		},
-	}
 }
 
 // syncSingleOpenCode re-syncs a single OpenCode session.

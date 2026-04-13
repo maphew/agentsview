@@ -41,10 +41,10 @@ const (
 // syncing files to the database, and this monitor detects the
 // resulting DB changes.
 //
-// As a fallback for sessions the file watcher skips (e.g.
-// codex_exec sessions), it also monitors the source file's
-// mtime and triggers a direct sync when the DB hasn't been
-// updated within syncFallbackDelay.
+// As a fallback when file watching or incremental sync misses
+// a DB update, it also monitors the source file's mtime and
+// triggers a direct sync when the DB hasn't been updated
+// within syncFallbackDelay.
 func (s *Server) sessionMonitor(
 	ctx context.Context, sessionID string,
 ) <-chan struct{} {
@@ -190,8 +190,7 @@ func (s *Server) checkDBForChanges(
 
 	// Fallback: if the file changed but the DB hasn't been
 	// updated within syncFallbackDelay, trigger a direct
-	// sync. This handles sessions the watcher skips (e.g.
-	// codex_exec).
+	// sync.
 	if !fileMtimeChangedAt.IsZero() &&
 		time.Since(*fileMtimeChangedAt) >= syncFallbackDelay {
 		*fileMtimeChangedAt = time.Time{}

@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,6 @@ type codexSessionBuilder struct {
 	sessionID            string
 	project              string
 	ordinal              int
-	includeExec          bool
 	currentModel         string
 	callNames            map[string]string
 	callRefs             map[string]codexToolCallRef
@@ -63,11 +63,10 @@ type codexPendingEvent struct {
 }
 
 func newCodexSessionBuilder(
-	includeExec bool,
+	_ bool,
 ) *codexSessionBuilder {
 	return &codexSessionBuilder{
 		project:              "unknown",
-		includeExec:          includeExec,
 		callNames:            make(map[string]string),
 		callRefs:             make(map[string]codexToolCallRef),
 		agentSpawnCalls:      make(map[string]string),
@@ -78,8 +77,6 @@ func newCodexSessionBuilder(
 }
 
 // processLine handles a single non-empty, valid JSON line.
-// Returns (skip=true) if the session should be discarded
-// (e.g. non-interactive codex_exec).
 func (b *codexSessionBuilder) processLine(
 	line string,
 ) (skip bool) {
@@ -125,10 +122,6 @@ func (b *codexSessionBuilder) handleSessionMeta(
 		}
 	}
 
-	if !b.includeExec &&
-		payload.Get("originator").Str == codexOriginatorExec {
-		return true
-	}
 	return false
 }
 
@@ -1024,9 +1017,36 @@ func extractCodexContent(payload gjson.Result) string {
 	return strings.Join(texts, "\n")
 }
 
+// IsCodexExecSessionFile reports whether the first non-empty
+// session_meta line in a Codex JSONL file has
+// originator=="codex_exec".
+func IsCodexExecSessionFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" || !gjson.Valid(line) {
+			continue
+		}
+		if gjson.Get(line, "type").Str != codexTypeSessionMeta {
+			continue
+		}
+		return gjson.Get(line, "payload.originator").Str ==
+			codexOriginatorExec
+	}
+	return false
+}
+
 // ParseCodexSession parses a Codex JSONL session file.
-// Returns nil session if the session is non-interactive and
-// includeExec is false.
+// The includeExec parameter is retained for backward
+// compatibility; exec-originated sessions are now always
+// parsed and imported.
 func ParseCodexSession(
 	path, machine string, includeExec bool,
 ) (*ParsedSession, []ParsedMessage, error) {

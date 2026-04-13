@@ -554,14 +554,14 @@ func TestSyncSingleSessionHashCodex(t *testing.T) {
 	env.assertResyncRoundTrip(t, sessionID)
 }
 
-func TestSyncSingleSessionCodexExecBypassesCache(
+func TestSyncAllImportsCodexExec(
 	t *testing.T,
 ) {
 	env := setupTestEnv(t)
 
 	uuid := "e5f6a7b8-5678-9012-cdef-123456789012"
-	// Exec-originated session: SyncAll skips these, but
-	// SyncSingleSession should still find them.
+	// Exec-originated sessions should be imported during the
+	// normal bulk sync path.
 	content := testjsonl.NewSessionBuilder().
 		AddCodexMeta(
 			tsEarly, uuid,
@@ -576,21 +576,64 @@ func TestSyncSingleSessionCodexExecBypassesCache(
 		"rollout-20240115-"+uuid+".jsonl", content,
 	)
 
-	// SyncAll skips exec-originated sessions (nil result).
 	env.engine.SyncAll(context.Background(), nil)
-	sess, _ := env.db.GetSession(
-		context.Background(), "codex:"+uuid,
+
+	assertSessionState(
+		t, env.db, "codex:"+uuid,
+		func(sess *db.Session) {
+			if sess.Agent != "codex" {
+				t.Errorf("agent = %q, want codex",
+					sess.Agent)
+			}
+		},
 	)
-	if sess != nil {
-		t.Fatal("exec session should not appear after SyncAll")
+}
+
+func TestSyncAllImportsCodexExecFromLegacySkipCache(
+	t *testing.T,
+) {
+	env := setupTestEnv(t)
+
+	uuid := "f6a7b8c9-6789-0123-def0-234567890123"
+	content := testjsonl.NewSessionBuilder().
+		AddCodexMeta(
+			tsEarly, uuid,
+			"/home/user/code/api", "codex_exec",
+		).
+		AddCodexMessage(tsEarlyS1, "user", "run ls").
+		AddCodexMessage(tsEarlyS5, "assistant", "done").
+		String()
+
+	path := env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-"+uuid+".jsonl", content,
+	)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat codex session: %v", err)
 	}
 
-	// SyncSingleSession should bypass the skip cache and
-	// parse with includeExec=true.
-	err := env.engine.SyncSingleSession("codex:" + uuid)
-	if err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
+	if err := env.db.ReplaceSkippedFiles(map[string]int64{
+		path: info.ModTime().UnixNano(),
+	}); err != nil {
+		t.Fatalf("seed skipped files: %v", err)
 	}
+
+	env.engine = sync.NewEngine(env.db, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude:   {env.claudeDir},
+			parser.AgentCodex:    {env.codexDir},
+			parser.AgentCursor:   {env.cursorDir},
+			parser.AgentGemini:   {env.geminiDir},
+			parser.AgentOpenCode: {env.opencodeDir},
+			parser.AgentIflow:    {env.iflowDir},
+			parser.AgentAmp:      {env.ampDir},
+			parser.AgentPi:       {env.piDir},
+		},
+		Machine: "local",
+	})
+
+	env.engine.SyncAll(context.Background(), nil)
 
 	assertSessionState(
 		t, env.db, "codex:"+uuid,

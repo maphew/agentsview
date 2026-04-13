@@ -53,9 +53,11 @@ func TestParseCodexSession_ExecOriginator(t *testing.T) {
 		testjsonl.CodexMsgJSON("user", "test", tsEarlyS1),
 	)
 
-	t.Run("skips exec originator", func(t *testing.T) {
-		sess, _ := runCodexParserTest(t, "test.jsonl", execContent, false)
-		assert.Nil(t, sess)
+	t.Run("includes exec originator by default", func(t *testing.T) {
+		sess, msgs := runCodexParserTest(t, "test.jsonl", execContent, false)
+		require.NotNil(t, sess)
+		assert.Equal(t, "codex:abc", sess.ID)
+		assert.Equal(t, 1, len(msgs))
 	})
 
 	t.Run("includes exec when requested", func(t *testing.T) {
