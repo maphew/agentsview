@@ -108,10 +108,12 @@
       class="tile"
       tabindex="0"
       role="button"
+      aria-label="Hide {tile.label} from chart"
       onclick={() => onSelect?.(tile.id)}
       onkeydown={(e) => handleKey(e, tile.id)}
       clip-path="url(#{clipId})"
     >
+      <title>Click to hide {tile.label}</title>
       <rect
         x={tile.x}
         y={tile.y}

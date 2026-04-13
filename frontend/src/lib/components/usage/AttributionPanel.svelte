@@ -151,65 +151,70 @@
     <div class="loading">Loading...</div>
   {:else if rows.length === 0}
     <div class="empty">No data for this period</div>
-  {:else if view === "treemap"}
-    <div class="treemap-layout">
-      <div class="treemap-main">
-        <Treemap
-          items={treemapItems}
-          height={260}
-          onSelect={handleSelect}
-        />
+  {:else}
+    <div class="hint">Click to hide from chart</div>
+    {#if view === "treemap"}
+      <div class="treemap-layout">
+        <div class="treemap-main">
+          <Treemap
+            items={treemapItems}
+            height={260}
+            onSelect={handleSelect}
+          />
+        </div>
+        <div class="side-rail">
+          {#each rows as row, i (row.id)}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="rail-row"
+              title="Click to hide {row.label}"
+              onclick={() => handleSelect(row.id)}
+            >
+              <span class="rail-rank">{i + 1}</span>
+              <span
+                class="rail-dot"
+                style="background: {row.color}"
+              ></span>
+              <span class="rail-label">{row.label}</span>
+              <span class="rail-cost">{fmtCost(row.cost)}</span>
+            </div>
+          {/each}
+        </div>
       </div>
-      <div class="side-rail">
+    {:else}
+      <div class="list-view">
         {#each rows as row, i (row.id)}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="rail-row"
+            class="list-row"
+            title="Click to hide {row.label}"
             onclick={() => handleSelect(row.id)}
           >
-            <span class="rail-rank">{i + 1}</span>
+            <span class="list-rank">{i + 1}</span>
             <span
-              class="rail-dot"
+              class="list-dot"
               style="background: {row.color}"
             ></span>
-            <span class="rail-label">{row.label}</span>
-            <span class="rail-cost">{fmtCost(row.cost)}</span>
+            <div class="list-info">
+              <span class="list-label">{row.label}</span>
+              <div class="list-bar-track">
+                <div
+                  class="list-bar-fill"
+                  style="width: {Math.max(row.pct * 100, 1)}%;
+                         background: {row.color};"
+                ></div>
+              </div>
+            </div>
+            <span class="list-pct">
+              {(row.pct * 100).toFixed(1)}%
+            </span>
+            <span class="list-cost">{fmtCost(row.cost)}</span>
           </div>
         {/each}
       </div>
-    </div>
-  {:else}
-    <div class="list-view">
-      {#each rows as row, i (row.id)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="list-row"
-          onclick={() => handleSelect(row.id)}
-        >
-          <span class="list-rank">{i + 1}</span>
-          <span
-            class="list-dot"
-            style="background: {row.color}"
-          ></span>
-          <div class="list-info">
-            <span class="list-label">{row.label}</span>
-            <div class="list-bar-track">
-              <div
-                class="list-bar-fill"
-                style="width: {Math.max(row.pct * 100, 1)}%;
-                       background: {row.color};"
-              ></div>
-            </div>
-          </div>
-          <span class="list-pct">
-            {(row.pct * 100).toFixed(1)}%
-          </span>
-          <span class="list-cost">{fmtCost(row.cost)}</span>
-        </div>
-      {/each}
-    </div>
+    {/if}
   {/if}
 </div>
 
@@ -423,6 +428,13 @@
     font-size: 12px;
     padding: 24px;
     text-align: center;
+  }
+
+  .hint {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    font-style: italic;
   }
 
   @media (max-width: 600px) {
