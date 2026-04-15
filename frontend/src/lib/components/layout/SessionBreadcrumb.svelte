@@ -286,8 +286,9 @@
     }
   }
 
+  // Remote sessions have host-prefixed IDs (host~rawID).
   const isLocal = $derived(
-    session?.machine === "local",
+    !session?.id.includes("~"),
   );
 
   const canResume = $derived(

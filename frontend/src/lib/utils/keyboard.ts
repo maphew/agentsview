@@ -182,7 +182,7 @@ export function registerShortcuts(
       },
       c: () => {
         const session = sessions.activeSession;
-        if (session && supportsResume(session.agent) && session.machine === "local") {
+        if (session && supportsResume(session.agent) && !session.id.includes("~")) {
           // Copy a runnable resume command. Cursor needs the backend cwd
           // applied client-side so the copied command is self-contained.
           resumeSession(session.id, { command_only: true }).then((resp) => {
