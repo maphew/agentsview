@@ -2100,22 +2100,25 @@ type SignalsProjectRow struct {
 	AvgFailureSignals float64  `json:"avg_failure_signals"`
 }
 
-// signalRow holds per-session signal data from the query.
-type signalRow struct {
-	id                     string
-	agent                  string
-	project                string
-	date                   string
-	healthScore            *int
-	healthGrade            *string
-	outcome                string
-	outcomeConfidence      string
-	toolFailureSignalCount int
-	toolRetryCount         int
-	editChurnCount         int
-	compactionCount        int
-	midTaskCompactionCount int
-	contextPressureMax     *float64
+// SignalRow holds per-session signal data from the query.
+// Exported so the PostgreSQL store can build the same rows
+// from its own SELECT and feed them into AggregateSignals
+// without duplicating the aggregation logic.
+type SignalRow struct {
+	ID                     string
+	Agent                  string
+	Project                string
+	Date                   string
+	HealthScore            *int
+	HealthGrade            *string
+	Outcome                string
+	OutcomeConfidence      string
+	ToolFailureSignalCount int
+	ToolRetryCount         int
+	EditChurnCount         int
+	CompactionCount        int
+	MidTaskCompactionCount int
+	ContextPressureMax     *float64
 }
 
 // GetAnalyticsSignals returns aggregated session signal data.
@@ -2156,29 +2159,29 @@ func (db *DB) GetAnalyticsSignals(
 	}
 	defer rows.Close()
 
-	var all []signalRow
+	var all []SignalRow
 	for rows.Next() {
-		var r signalRow
+		var r SignalRow
 		var ts string
 		if err := rows.Scan(
-			&r.id, &r.agent, &r.project, &ts,
-			&r.healthScore, &r.healthGrade,
-			&r.outcome, &r.outcomeConfidence,
-			&r.toolFailureSignalCount,
-			&r.toolRetryCount, &r.editChurnCount,
-			&r.compactionCount, &r.midTaskCompactionCount,
-			&r.contextPressureMax,
+			&r.ID, &r.Agent, &r.Project, &ts,
+			&r.HealthScore, &r.HealthGrade,
+			&r.Outcome, &r.OutcomeConfidence,
+			&r.ToolFailureSignalCount,
+			&r.ToolRetryCount, &r.EditChurnCount,
+			&r.CompactionCount, &r.MidTaskCompactionCount,
+			&r.ContextPressureMax,
 		); err != nil {
 			return SignalsAnalyticsResponse{},
 				fmt.Errorf(
 					"scanning signals row: %w", err,
 				)
 		}
-		r.date = localDate(ts, loc)
-		if !inDateRange(r.date, f.From, f.To) {
+		r.Date = localDate(ts, loc)
+		if !inDateRange(r.Date, f.From, f.To) {
 			continue
 		}
-		if timeIDs != nil && !timeIDs[r.id] {
+		if timeIDs != nil && !timeIDs[r.ID] {
 			continue
 		}
 		all = append(all, r)
@@ -2190,12 +2193,14 @@ func (db *DB) GetAnalyticsSignals(
 			)
 	}
 
-	return aggregateSignals(all), nil
+	return AggregateSignals(all), nil
 }
 
-// aggregateSignals builds the response from collected rows.
-func aggregateSignals(
-	all []signalRow,
+// AggregateSignals builds the response from collected rows.
+// Exported so the PostgreSQL store can reuse the same
+// aggregation logic instead of re-implementing it.
+func AggregateSignals(
+	all []SignalRow,
 ) SignalsAnalyticsResponse {
 	resp := SignalsAnalyticsResponse{
 		GradeDistribution:             make(map[string]int),
@@ -2235,110 +2240,110 @@ func aggregateSignals(
 
 	for _, r := range all {
 		// Scored vs unscored
-		if r.healthScore != nil {
+		if r.HealthScore != nil {
 			resp.ScoredSessions++
-			healthScoreSum += *r.healthScore
+			healthScoreSum += *r.HealthScore
 			healthScoreCount++
 		} else {
 			resp.UnscoredSessions++
 		}
 
 		// Grade distribution
-		if r.healthGrade != nil && *r.healthGrade != "" {
-			resp.GradeDistribution[*r.healthGrade]++
+		if r.HealthGrade != nil && *r.HealthGrade != "" {
+			resp.GradeDistribution[*r.HealthGrade]++
 		}
 
 		// Outcome distribution
-		if r.outcome != "" {
-			resp.OutcomeDistribution[r.outcome]++
+		if r.Outcome != "" {
+			resp.OutcomeDistribution[r.Outcome]++
 		}
-		if r.outcomeConfidence != "" {
-			resp.OutcomeConfidenceDistribution[r.outcomeConfidence]++
+		if r.OutcomeConfidence != "" {
+			resp.OutcomeConfidenceDistribution[r.OutcomeConfidence]++
 		}
 
 		// Tool health
-		resp.ToolHealth.TotalFailureSignals += r.toolFailureSignalCount
-		resp.ToolHealth.TotalRetries += r.toolRetryCount
-		resp.ToolHealth.TotalEditChurn += r.editChurnCount
-		if r.toolFailureSignalCount > 0 {
+		resp.ToolHealth.TotalFailureSignals += r.ToolFailureSignalCount
+		resp.ToolHealth.TotalRetries += r.ToolRetryCount
+		resp.ToolHealth.TotalEditChurn += r.EditChurnCount
+		if r.ToolFailureSignalCount > 0 {
 			resp.ToolHealth.SessionsWithFailures++
 		}
 
 		// Context health
-		if r.compactionCount > 0 {
+		if r.CompactionCount > 0 {
 			resp.ContextHealth.SessionsWithCompaction++
 		}
 		resp.ContextHealth.AvgCompactionCount += float64(
-			r.compactionCount,
+			r.CompactionCount,
 		)
 		resp.ContextHealth.MidTaskCompactionCount +=
-			r.midTaskCompactionCount
-		if r.midTaskCompactionCount > 0 {
+			r.MidTaskCompactionCount
+		if r.MidTaskCompactionCount > 0 {
 			resp.ContextHealth.SessionsWithMidTaskCompac++
 		}
-		if r.contextPressureMax != nil {
+		if r.ContextPressureMax != nil {
 			resp.ContextHealth.SessionsWithContextData++
-			if *r.contextPressureMax >= 0.8 {
+			if *r.ContextPressureMax >= 0.8 {
 				resp.ContextHealth.HighPressureSessions++
 			}
 		}
 
 		// Accumulate by agent
-		ga := agentMap[r.agent]
+		ga := agentMap[r.Agent]
 		if ga == nil {
 			ga = &groupAccum{}
-			agentMap[r.agent] = ga
+			agentMap[r.Agent] = ga
 		}
 		ga.count++
-		ga.failureSignalSum += r.toolFailureSignalCount
-		if r.healthScore != nil {
-			ga.healthScoreSum += *r.healthScore
+		ga.failureSignalSum += r.ToolFailureSignalCount
+		if r.HealthScore != nil {
+			ga.healthScoreSum += *r.HealthScore
 			ga.healthScoreCount++
 		}
-		if r.outcome == "completed" {
+		if r.Outcome == "completed" {
 			ga.completed++
 		}
 
 		// Accumulate by project
-		gp := projectMap[r.project]
+		gp := projectMap[r.Project]
 		if gp == nil {
 			gp = &groupAccum{}
-			projectMap[r.project] = gp
+			projectMap[r.Project] = gp
 		}
 		gp.count++
-		gp.failureSignalSum += r.toolFailureSignalCount
-		if r.healthScore != nil {
-			gp.healthScoreSum += *r.healthScore
+		gp.failureSignalSum += r.ToolFailureSignalCount
+		if r.HealthScore != nil {
+			gp.healthScoreSum += *r.HealthScore
 			gp.healthScoreCount++
 		}
-		if r.outcome == "completed" {
+		if r.Outcome == "completed" {
 			gp.completed++
 		}
 
 		// Accumulate by date (trend)
-		gt := trendMap[r.date]
+		gt := trendMap[r.Date]
 		if gt == nil {
 			gt = &groupAccum{}
-			trendMap[r.date] = gt
+			trendMap[r.Date] = gt
 		}
 		gt.count++
-		gt.failureSignalSum += r.toolFailureSignalCount
-		if r.healthScore != nil {
-			gt.healthScoreSum += *r.healthScore
+		gt.failureSignalSum += r.ToolFailureSignalCount
+		if r.HealthScore != nil {
+			gt.healthScoreSum += *r.HealthScore
 			gt.healthScoreCount++
 		}
-		if r.outcome == "completed" {
+		if r.Outcome == "completed" {
 			gt.completed++
 		}
-		te := trendExtras[r.date]
+		te := trendExtras[r.Date]
 		if te == nil {
 			te = &trendExtra{}
-			trendExtras[r.date] = te
+			trendExtras[r.Date] = te
 		}
-		if r.outcome == "errored" {
+		if r.Outcome == "errored" {
 			te.errored++
 		}
-		if r.outcome == "abandoned" {
+		if r.Outcome == "abandoned" {
 			te.abandoned++
 		}
 	}
@@ -2370,8 +2375,8 @@ func aggregateSignals(
 	if resp.ContextHealth.SessionsWithContextData > 0 {
 		var pressureSum float64
 		for _, r := range all {
-			if r.contextPressureMax != nil {
-				pressureSum += *r.contextPressureMax
+			if r.ContextPressureMax != nil {
+				pressureSum += *r.ContextPressureMax
 			}
 		}
 		avg := math.Round(

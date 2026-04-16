@@ -2064,19 +2064,78 @@ func (s *Store) GetAnalyticsTopSessions(
 }
 
 // GetAnalyticsSignals returns aggregated session signal data.
-// Signal columns are synced to PG but full aggregation is
-// not yet implemented. Returns an empty response for now.
+// Mirrors the SQLite implementation: select per-session signal
+// columns, apply analytics filters, then hand the rows to the
+// shared db.AggregateSignals so the response shape stays
+// identical across stores.
 func (s *Store) GetAnalyticsSignals(
 	ctx context.Context, f db.AnalyticsFilter,
 ) (db.SignalsAnalyticsResponse, error) {
-	return db.SignalsAnalyticsResponse{
-		GradeDistribution:             make(map[string]int),
-		OutcomeDistribution:           make(map[string]int),
-		OutcomeConfidenceDistribution: make(map[string]int),
-		Trend:                         []db.SignalsTrendBucket{},
-		ByAgent:                       []db.SignalsAgentRow{},
-		ByProject:                     []db.SignalsProjectRow{},
-	}, nil
+	loc := analyticsLocation(f)
+	pb := &paramBuilder{}
+	where := buildAnalyticsWhere(f, pgDateCol, pb)
+
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = s.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return db.SignalsAnalyticsResponse{}, err
+		}
+	}
+
+	query := `SELECT id, agent, project, ` + pgDateCol + `,
+		health_score, health_grade, outcome,
+		outcome_confidence,
+		tool_failure_signal_count, tool_retry_count,
+		edit_churn_count, compaction_count,
+		mid_task_compaction_count,
+		context_pressure_max
+		FROM sessions WHERE ` + where
+
+	rows, err := s.pg.QueryContext(ctx, query, pb.args...)
+	if err != nil {
+		return db.SignalsAnalyticsResponse{}, fmt.Errorf(
+			"querying analytics signals: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	var all []db.SignalRow
+	for rows.Next() {
+		var (
+			r  db.SignalRow
+			ts *time.Time
+		)
+		if err := rows.Scan(
+			&r.ID, &r.Agent, &r.Project, &ts,
+			&r.HealthScore, &r.HealthGrade,
+			&r.Outcome, &r.OutcomeConfidence,
+			&r.ToolFailureSignalCount,
+			&r.ToolRetryCount, &r.EditChurnCount,
+			&r.CompactionCount, &r.MidTaskCompactionCount,
+			&r.ContextPressureMax,
+		); err != nil {
+			return db.SignalsAnalyticsResponse{}, fmt.Errorf(
+				"scanning signals row: %w", err,
+			)
+		}
+		r.Date = localDate(scanDateCol(ts), loc)
+		if !inDateRange(r.Date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[r.ID] {
+			continue
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		return db.SignalsAnalyticsResponse{}, fmt.Errorf(
+			"iterating signals rows: %w", err,
+		)
+	}
+
+	return db.AggregateSignals(all), nil
 }
 
 // rankTopSessions sorts sessions by duration (if

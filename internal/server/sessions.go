@@ -137,16 +137,17 @@ func (s *Server) handleGetSession(
 	resp := sessionDetailResponse{Session: *session}
 	if session.HealthScore != nil {
 		result := signals.ComputeHealthScore(signals.ScoreInput{
-			Outcome:            session.Outcome,
-			OutcomeConfidence:  session.OutcomeConfidence,
-			HasToolCalls:       session.HasToolCalls,
-			FailureSignalCount: session.ToolFailureSignalCount,
-			RetryCount:         session.ToolRetryCount,
-			EditChurnCount:     session.EditChurnCount,
-			ConsecutiveFailMax: session.ConsecutiveFailureMax,
-			HasContextData:     session.HasContextData,
-			CompactionCount:    session.CompactionCount,
-			PressureMax:        session.ContextPressureMax,
+			Outcome:                session.Outcome,
+			OutcomeConfidence:      session.OutcomeConfidence,
+			HasToolCalls:           session.HasToolCalls,
+			FailureSignalCount:     session.ToolFailureSignalCount,
+			RetryCount:             session.ToolRetryCount,
+			EditChurnCount:         session.EditChurnCount,
+			ConsecutiveFailMax:     session.ConsecutiveFailureMax,
+			HasContextData:         session.HasContextData,
+			CompactionCount:        session.CompactionCount,
+			MidTaskCompactionCount: session.MidTaskCompactionCount,
+			PressureMax:            session.ContextPressureMax,
 		})
 		resp.HealthScoreBasis = result.Basis
 		resp.HealthPenalties = result.Penalties
