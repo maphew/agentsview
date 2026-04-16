@@ -2556,12 +2556,15 @@ func computeFinalStreak(calls []signals.ToolCallRow) int {
 }
 
 // RecomputeSignals recomputes signals for a single session
-// from existing DB data. Used by backfill and deferred
-// recompute.
+// from existing DB data. Returns nil on success (including
+// when the session no longer exists). Returns an error when
+// the recompute could not complete -- BackfillSignals uses
+// that signal to keep the one-shot completion marker unset
+// so the next startup can retry.
 func (e *Engine) RecomputeSignals(
 	ctx context.Context, sessionID string,
-) {
-	e.recomputeSignalsFromDB(ctx, sessionID)
+) error {
+	return e.recomputeSignalsFromDB(ctx, sessionID)
 }
 
 // recomputeSignalsFromDB loads a session's full message history
@@ -2571,10 +2574,15 @@ func (e *Engine) RecomputeSignals(
 // incremental writes).
 func (e *Engine) recomputeSignalsFromDB(
 	ctx context.Context, sessionID string,
-) {
+) error {
 	sess, err := e.db.GetSessionFull(ctx, sessionID)
-	if err != nil || sess == nil {
-		return
+	if err != nil {
+		return fmt.Errorf(
+			"loading session %s: %w", sessionID, err,
+		)
+	}
+	if sess == nil {
+		return nil
 	}
 	msgs, err := e.db.GetAllMessages(ctx, sessionID)
 	if err != nil {
@@ -2582,7 +2590,9 @@ func (e *Engine) recomputeSignalsFromDB(
 			"signals: load messages %s: %v",
 			sessionID, err,
 		)
-		return
+		return fmt.Errorf(
+			"loading messages %s: %w", sessionID, err,
+		)
 	}
 	update := computeSignalsFromMessages(*sess, msgs)
 	if err := e.db.UpdateSessionSignals(
@@ -2591,7 +2601,11 @@ func (e *Engine) recomputeSignalsFromDB(
 		log.Printf(
 			"signals: update %s: %v", sessionID, err,
 		)
+		return fmt.Errorf(
+			"updating signals %s: %w", sessionID, err,
+		)
 	}
+	return nil
 }
 
 // isAutomatedFromSession recomputes the is_automated flag using
@@ -2666,6 +2680,19 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 			continue
 		}
 
+		// Advance data_version only after the message write
+		// succeeded. UpsertSession deliberately does not
+		// touch this column so a transient write failure
+		// won't leave the session marked at the current
+		// parser version with stale messages.
+		if err := e.db.SetSessionDataVersion(
+			s.ID, db.CurrentDataVersion(),
+		); err != nil {
+			log.Printf(
+				"set data_version for %s: %v", s.ID, err,
+			)
+		}
+
 		update := computeSignalsFromMessages(s, msgs)
 		if err := e.db.UpdateSessionSignals(
 			s.ID, update,
@@ -2730,7 +2757,10 @@ func (e *Engine) writeIncremental(
 		)
 	}
 
-	e.recomputeSignalsFromDB(
+	// Errors here are already logged by recomputeSignalsFromDB
+	// and are non-fatal for incremental sync; the next
+	// incremental write will retry.
+	_ = e.recomputeSignalsFromDB(
 		context.Background(), inc.sessionID,
 	)
 
@@ -2815,6 +2845,16 @@ func (e *Engine) writeSessionFull(pw pendingWrite) error {
 		return err
 	}
 
+	// See writeBatch for why data_version is bumped here
+	// rather than inside UpsertSession.
+	if err := e.db.SetSessionDataVersion(
+		s.ID, db.CurrentDataVersion(),
+	); err != nil {
+		log.Printf(
+			"set data_version for %s: %v", s.ID, err,
+		)
+	}
+
 	update := computeSignalsFromMessages(s, msgs)
 	if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
 		log.Printf(
@@ -2883,11 +2923,15 @@ func toDBSession(pw pendingWrite) db.Session {
 		SourceVersion:        pw.sess.SourceVersion,
 		ParserMalformedLines: pw.sess.MalformedLines,
 		IsTruncated:          pw.sess.IsTruncated,
-		DataVersion:          db.CurrentDataVersion(),
-		FilePath:             strPtr(pw.sess.File.Path),
-		FileSize:             int64Ptr(pw.sess.File.Size),
-		FileMtime:            int64Ptr(pw.sess.File.Mtime),
-		FileHash:             strPtr(pw.sess.File.Hash),
+		// data_version is intentionally left at the
+		// existing column default (0). UpsertSession does
+		// not persist this field; the caller bumps it via
+		// SetSessionDataVersion only after the message
+		// rewrite succeeds.
+		FilePath:  strPtr(pw.sess.File.Path),
+		FileSize:  int64Ptr(pw.sess.File.Size),
+		FileMtime: int64Ptr(pw.sess.File.Mtime),
+		FileHash:  strPtr(pw.sess.File.Hash),
 	}
 	if pw.sess.FirstMessage != "" {
 		s.FirstMessage = &pw.sess.FirstMessage

@@ -673,6 +673,13 @@ func (db *DB) UpsertSession(s Session) error {
 		s.FirstMessage != nil &&
 		IsAutomatedSession(*s.FirstMessage)
 
+	// data_version is intentionally NOT advanced here. The
+	// caller must call SetSessionDataVersion only after the
+	// associated message rewrite succeeds, so a transient
+	// failure to write messages doesn't mark the file as
+	// up-to-date and starve the rewrite on the next sync.
+	// New rows are seeded with 0 (the default) and bumped to
+	// the current version once their messages land.
 	_, err := db.getWriter().Exec(`
 		INSERT INTO sessions (
 			id, project, machine, agent, first_message, display_name,
@@ -681,12 +688,12 @@ func (db *DB) UpsertSession(s Session) error {
 			relationship_type,
 			total_output_tokens, peak_context_tokens,
 			has_total_output_tokens, has_peak_context_tokens,
-			is_automated, data_version,
+			is_automated,
 			cwd, git_branch, source_session_id,
 			source_version, parser_malformed_lines,
 			is_truncated,
 			file_path, file_size, file_mtime, file_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project = excluded.project,
 			machine = excluded.machine,
@@ -703,7 +710,6 @@ func (db *DB) UpsertSession(s Session) error {
 			has_total_output_tokens = excluded.has_total_output_tokens,
 			has_peak_context_tokens = excluded.has_peak_context_tokens,
 			is_automated = excluded.is_automated,
-			data_version = excluded.data_version,
 			cwd = excluded.cwd,
 			git_branch = excluded.git_branch,
 			source_session_id = excluded.source_session_id,
@@ -720,7 +726,7 @@ func (db *DB) UpsertSession(s Session) error {
 		s.RelationshipType,
 		s.TotalOutputTokens, s.PeakContextTokens,
 		s.HasTotalOutputTokens, s.HasPeakContextTokens,
-		isAutomated, s.DataVersion,
+		isAutomated,
 		s.Cwd, s.GitBranch, s.SourceSessionID,
 		s.SourceVersion, s.ParserMalformedLines,
 		s.IsTruncated,
@@ -865,6 +871,30 @@ func (db *DB) GetSessionDataVersion(id string) int {
 		return 0
 	}
 	return v
+}
+
+// SetSessionDataVersion stamps the parser data_version on a
+// session row. Call this only after the associated message
+// rewrite has succeeded -- skipping it on failure ensures the
+// next sync re-parses the file instead of treating it as
+// already current. Bumps local_modified_at so the change
+// propagates through the next pg push.
+func (db *DB) SetSessionDataVersion(id string, version int) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.getWriter().Exec(
+		`UPDATE sessions SET
+			data_version = ?,
+			local_modified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`,
+		version, id,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"setting data_version for %s: %w", id, err,
+		)
+	}
+	return nil
 }
 
 // GetSessionMessageCount returns the message_count for a

@@ -105,6 +105,16 @@ func runHealthDetail(
 	printHealthDetail(os.Stdout, *sess)
 }
 
+// resolveLookupLimit caps the partial-match query for
+// ambiguity detection. The previous limit of 5 was a real
+// hole: if the exact ID was in the top 5 but a colliding
+// short-ID match fell outside that window, the function would
+// silently resolve to the exact match instead of reporting
+// ambiguity. A limit this high also acts as a defensive bound
+// -- a user with hundreds of substring matches has bigger
+// problems than a missed ambiguity warning.
+const resolveLookupLimit = 1000
+
 // resolveSessionID returns the unique session id matching the
 // input (full ID or substring against id), or "" when no row
 // matches. Substring matching covers the short IDs shown in
@@ -121,7 +131,9 @@ func runHealthDetail(
 func resolveSessionID(
 	ctx context.Context, database *db.DB, partial string,
 ) (string, error) {
-	matches, err := database.FindSessionIDsByPartial(ctx, partial, 5)
+	matches, err := database.FindSessionIDsByPartial(
+		ctx, partial, resolveLookupLimit,
+	)
 	if err != nil {
 		return "", err
 	}

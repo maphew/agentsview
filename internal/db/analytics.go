@@ -70,24 +70,45 @@ func (f AnalyticsFilter) location() *time.Location {
 
 // utcRange returns UTC time bounds padded by ±14h to cover
 // all possible timezone offsets. The WHERE clause uses these
-// to leverage the started_at index.
+// to leverage the started_at index. Empty From/To inputs
+// collapse to wide-open sentinels so a zero AnalyticsFilter
+// matches every session (mirrors the PG store).
 func (f AnalyticsFilter) utcRange() (string, string) {
-	from := f.From + "T00:00:00Z"
-	to := f.To + "T23:59:59Z"
+	const (
+		unboundedFrom = "0001-01-01T00:00:00Z"
+		unboundedTo   = "9999-12-31T23:59:59Z"
+	)
+	from := unboundedFrom
+	if f.From != "" {
+		from = f.From + "T00:00:00Z"
+	}
+	to := unboundedTo
+	if f.To != "" {
+		to = f.To + "T23:59:59Z"
+	}
 
 	tFrom, err := time.Parse(time.RFC3339, from)
 	if err != nil {
-		return from, to
+		return unboundedFrom, unboundedTo
 	}
 	tTo, err := time.Parse(time.RFC3339, to)
 	if err != nil {
-		return from, to
+		return unboundedFrom, unboundedTo
 	}
 
-	// Pad by max UTC offset (±14h)
-	paddedFrom := tFrom.Add(-14 * time.Hour).Format(time.RFC3339)
-	paddedTo := tTo.Add(14 * time.Hour).Format(time.RFC3339)
-	return paddedFrom, paddedTo
+	// Skip ±14h padding on the sentinels to avoid pushing the
+	// lower bound below year 1.
+	if f.From == "" {
+		from = unboundedFrom
+	} else {
+		from = tFrom.Add(-14 * time.Hour).Format(time.RFC3339)
+	}
+	if f.To == "" {
+		to = unboundedTo
+	} else {
+		to = tTo.Add(14 * time.Hour).Format(time.RFC3339)
+	}
+	return from, to
 }
 
 // buildWhere returns a WHERE clause and args for common
@@ -283,8 +304,16 @@ func percentileFloat(sorted []float64, pct float64) float64 {
 }
 
 // inDateRange checks if a local date falls within [from, to].
+// Empty bounds are treated as unbounded so callers can pass a
+// zero AnalyticsFilter to get every session.
 func inDateRange(date, from, to string) bool {
-	return date >= from && date <= to
+	if from != "" && date < from {
+		return false
+	}
+	if to != "" && date > to {
+		return false
+	}
+	return true
 }
 
 // medianInt returns the median of a sorted int slice of

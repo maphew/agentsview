@@ -358,6 +358,65 @@ func TestResolveSessionID(t *testing.T) {
 		})
 }
 
+// TestResolveSessionIDCollisionBeyondTopFew exercises the
+// resolveLookupLimit bump: the previous limit of 5 could miss
+// a short-ID collision when the colliding row sat outside the
+// top-5 partial-match window. We seed many partial matches
+// with timestamps that push the collider past position 5 and
+// confirm ambiguity is still reported.
+func TestResolveSessionIDCollisionBeyondTopFew(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	upsert := func(id string, started string) {
+		t.Helper()
+		err := database.UpsertSession(db.Session{
+			ID: id, Project: "p", Machine: "m",
+			Agent: "claude", MessageCount: 1,
+			StartedAt: &started,
+		})
+		if err != nil {
+			t.Fatalf("upsert %q: %v", id, err)
+		}
+	}
+
+	// shortID() truncates the segment after the last "~" to
+	// 8 chars, so any input that can collide via shortID is
+	// at most 8 chars long. Use an 8-char input, the exact
+	// full ID, several distractor substring matches that
+	// crowd the top of the result set, and one collider
+	// whose first 8 chars equal the input -- pushed past
+	// position 5 by an old timestamp.
+	const partial = "abcdef12"
+	upsert(partial, "2026-04-15T12:00:00Z")
+	for i := range 10 {
+		ts := "2026-04-15T10:00:0" + string(rune('0'+i)) + "Z"
+		// Each distractor contains partial as a substring
+		// but its own shortID starts with "x-" so it won't
+		// trigger the ambiguity check on its own.
+		upsert(
+			"x-"+partial+"-"+string(rune('a'+i)), ts,
+		)
+	}
+	// Collider: starts with partial, so shortID() == partial.
+	// Old timestamp pushes it to the bottom of the partial
+	// match result set (well beyond the previous limit of 5).
+	upsert(partial+"-collide", "2020-01-01T00:00:00Z")
+
+	ctx := context.Background()
+	_, err = resolveSessionID(ctx, database, partial)
+	if err == nil {
+		t.Fatal("expected ambiguity error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error %q lacks 'ambiguous'", err.Error())
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func parseLocalDate(t *testing.T, ts string) string {

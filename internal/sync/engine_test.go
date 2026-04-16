@@ -824,18 +824,25 @@ func TestShouldSkipFileWithIDPrefix(t *testing.T) {
 
 	// Store a session with prefixed ID and file metadata.
 	sess := db.Session{
-		ID:          "host~abc-123",
-		Project:     "test",
-		Machine:     "host",
-		Agent:       "claude",
-		DataVersion: db.CurrentDataVersion(),
-		FilePath:    strPtr("host:/remote/session.jsonl"),
-		FileSize:    int64Ptr(1024),
+		ID:       "host~abc-123",
+		Project:  "test",
+		Machine:  "host",
+		Agent:    "claude",
+		FilePath: strPtr("host:/remote/session.jsonl"),
+		FileSize: int64Ptr(1024),
 		FileMtime: int64Ptr(
 			int64(1700000000000000000),
 		),
 	}
 	if err := database.UpsertSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	// data_version is no longer persisted by UpsertSession;
+	// stamp it explicitly so the skip check sees a current
+	// row.
+	if err := database.SetSessionDataVersion(
+		sess.ID, db.CurrentDataVersion(),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -870,18 +877,22 @@ func TestShouldSkipByPathWithRewriter(t *testing.T) {
 
 	// Store a session with rewritten file path.
 	sess := db.Session{
-		ID:          "host~codex:abc",
-		Project:     "test",
-		Machine:     "host",
-		Agent:       "codex",
-		DataVersion: db.CurrentDataVersion(),
-		FilePath:    strPtr("host:/remote/codex/abc.jsonl"),
-		FileSize:    int64Ptr(2048),
+		ID:       "host~codex:abc",
+		Project:  "test",
+		Machine:  "host",
+		Agent:    "codex",
+		FilePath: strPtr("host:/remote/codex/abc.jsonl"),
+		FileSize: int64Ptr(2048),
 		FileMtime: int64Ptr(
 			int64(1700000000000000000),
 		),
 	}
 	if err := database.UpsertSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetSessionDataVersion(
+		sess.ID, db.CurrentDataVersion(),
+	); err != nil {
 		t.Fatal(err)
 	}
 

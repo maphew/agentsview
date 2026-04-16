@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -229,5 +230,75 @@ func TestPendingSignalSessions(t *testing.T) {
 	}
 	if ids[0] != "ps-old" {
 		t.Errorf("got ID %q, want ps-old", ids[0])
+	}
+}
+
+// TestBackfillSignalsMarkerOnlyOnSuccess guards the
+// completion-marker contract: the one-shot marker must only be
+// set when every session was processed successfully. Partial
+// runs (e.g. a concurrent resync that disconnects the DB
+// mid-backfill) must leave the marker unset so the next
+// startup retries.
+func TestBackfillSignalsMarkerOnlyOnSuccess(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "ok-1", "p")
+	insertSession(t, d, "ok-2", "p")
+	insertSession(t, d, "fail-1", "p")
+
+	// One session fails -- marker must NOT be set.
+	err := d.BackfillSignals(
+		ctx,
+		func(_ context.Context, id string) error {
+			if id == "fail-1" {
+				return fmt.Errorf("simulated failure")
+			}
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from partial backfill, got nil")
+	}
+
+	// Marker check: a second BackfillSignals call must NOT
+	// short-circuit since the marker is unset.
+	calls := 0
+	err = d.BackfillSignals(
+		ctx,
+		func(_ context.Context, _ string) error {
+			calls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf(
+			"second backfill saw %d sessions, want 3 "+
+				"(marker should not be set after partial run)",
+			calls,
+		)
+	}
+
+	// Now the marker should be set; a third call short-circuits.
+	calls = 0
+	err = d.BackfillSignals(
+		ctx,
+		func(_ context.Context, _ string) error {
+			calls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("third call: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf(
+			"third backfill saw %d sessions, want 0 "+
+				"(marker should be set after clean run)",
+			calls,
+		)
 	}
 }

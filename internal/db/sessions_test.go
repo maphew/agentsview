@@ -221,3 +221,70 @@ func TestUpsertSession_DisplayNameInsertOnly(t *testing.T) {
 		t.Errorf("MessageCount = %d, want 2", s.MessageCount)
 	}
 }
+
+// TestUpsertSessionDoesNotAdvanceDataVersion guards the
+// invariant that data_version is never touched by
+// UpsertSession -- it must only advance via
+// SetSessionDataVersion after a successful message rewrite,
+// so a transient write failure cannot leave a session row
+// stamped at the current parser version with stale
+// messages.
+func TestUpsertSessionDoesNotAdvanceDataVersion(t *testing.T) {
+	d := testDB(t)
+
+	// New session: data_version stays 0 even when the
+	// caller passes a non-zero value on the struct.
+	if err := d.UpsertSession(Session{
+		ID:           "dv-1",
+		Project:      "p",
+		Machine:      "m",
+		Agent:        "claude",
+		MessageCount: 1,
+		DataVersion:  CurrentDataVersion(),
+	}); err != nil {
+		t.Fatalf("UpsertSession (insert): %v", err)
+	}
+	if got := d.GetSessionDataVersion("dv-1"); got != 0 {
+		t.Errorf(
+			"after insert, data_version = %d, want 0", got,
+		)
+	}
+
+	// Stamp a current value to simulate a successful write.
+	if err := d.SetSessionDataVersion(
+		"dv-1", CurrentDataVersion(),
+	); err != nil {
+		t.Fatalf("SetSessionDataVersion: %v", err)
+	}
+	if got := d.GetSessionDataVersion("dv-1"); got !=
+		CurrentDataVersion() {
+		t.Errorf(
+			"after Set, data_version = %d, want %d",
+			got, CurrentDataVersion(),
+		)
+	}
+
+	// Re-upserting (e.g. as part of an incremental sync)
+	// must NOT clobber the stamped version with the
+	// struct's value (here 0), and must NOT replace it
+	// with a future "current" value before the rewrite
+	// succeeds.
+	if err := d.UpsertSession(Session{
+		ID:           "dv-1",
+		Project:      "p",
+		Machine:      "m",
+		Agent:        "claude",
+		MessageCount: 5,
+		DataVersion:  0,
+	}); err != nil {
+		t.Fatalf("UpsertSession (update): %v", err)
+	}
+	if got := d.GetSessionDataVersion("dv-1"); got !=
+		CurrentDataVersion() {
+		t.Errorf(
+			"after re-upsert, data_version = %d, want %d "+
+				"(must be preserved across UpsertSession)",
+			got, CurrentDataVersion(),
+		)
+	}
+}

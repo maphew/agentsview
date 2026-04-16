@@ -42,22 +42,52 @@ func pgInPlaceholders(
 }
 
 // analyticsUTCRange returns UTC time bounds padded by +/-14h
-// to cover all possible timezone offsets.
+// to cover all possible timezone offsets. Empty From/To
+// inputs (callers like the Store API can construct a zero
+// AnalyticsFilter when "all time" is intended) collapse to
+// effectively unbounded sentinel values so the resulting
+// ::timestamptz cast is always valid -- the previous version
+// concatenated empty + "T00:00:00Z" and produced literals
+// like "T00:00:00Z" which PG rejected at runtime.
 func analyticsUTCRange(
 	f db.AnalyticsFilter,
 ) (string, string) {
-	from := f.From + "T00:00:00Z"
-	to := f.To + "T23:59:59Z"
+	const (
+		// Wide-open sentinels. PG TIMESTAMPTZ tolerates
+		// these literals across every supported version.
+		unboundedFrom = "0001-01-01T00:00:00Z"
+		unboundedTo   = "9999-12-31T23:59:59Z"
+	)
+	from := unboundedFrom
+	if f.From != "" {
+		from = f.From + "T00:00:00Z"
+	}
+	to := unboundedTo
+	if f.To != "" {
+		to = f.To + "T23:59:59Z"
+	}
 	tFrom, err := time.Parse(time.RFC3339, from)
 	if err != nil {
-		return from, to
+		return unboundedFrom, unboundedTo
 	}
 	tTo, err := time.Parse(time.RFC3339, to)
 	if err != nil {
-		return from, to
+		return unboundedFrom, unboundedTo
 	}
-	return tFrom.Add(-14 * time.Hour).Format(time.RFC3339),
-		tTo.Add(14 * time.Hour).Format(time.RFC3339)
+	// Padding by ±14h could push the lower sentinel below
+	// year 1 (which TIMESTAMPTZ does not accept); skip the
+	// pad when we're already on a sentinel boundary.
+	if f.From == "" {
+		from = unboundedFrom
+	} else {
+		from = tFrom.Add(-14 * time.Hour).Format(time.RFC3339)
+	}
+	if f.To == "" {
+		to = unboundedTo
+	} else {
+		to = tTo.Add(14 * time.Hour).Format(time.RFC3339)
+	}
+	return from, to
 }
 
 // buildAnalyticsWhere builds a WHERE clause with PG
@@ -155,8 +185,16 @@ func localDate(ts string, loc *time.Location) string {
 }
 
 // inDateRange checks if a local date falls within [from, to].
+// Empty bounds are treated as unbounded so callers can pass a
+// zero AnalyticsFilter to get every session.
 func inDateRange(date, from, to string) bool {
-	return date >= from && date <= to
+	if from != "" && date < from {
+		return false
+	}
+	if to != "" && date > to {
+		return false
+	}
+	return true
 }
 
 // medianInt returns the median of a sorted int slice.

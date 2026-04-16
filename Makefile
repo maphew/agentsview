@@ -72,32 +72,44 @@ PROD_DATA_DIR ?= $(HOME)/.agentsview
 SNAPSHOT_DIR ?= tmp/prod-snapshot
 # Resolve SNAPSHOT_DIR so relative and absolute paths both work.
 SNAPSHOT_ABS := $(abspath $(SNAPSHOT_DIR))
-PROD_DATA_ABS := $(abspath $(PROD_DATA_DIR))
-REPO_ROOT_ABS := $(abspath .)
+
+# Sentinel file written into a snapshot directory the first time
+# we populate it. Subsequent runs require this marker before
+# touching any contents, so pointing SNAPSHOT_DIR at an
+# unrelated existing directory cannot accidentally delete
+# someone's files. The previous version used rm -rf on the
+# whole directory; that left dangerous edge cases (e.g.
+# SNAPSHOT_DIR=tmp wiping unrelated tmp/ contents) even with a
+# denylist, so we now only ever delete a small set of files we
+# know we wrote.
+SNAPSHOT_MARKER := .agentsview-snapshot
 
 dev-snapshot: build
 	@if [ ! -f "$(PROD_DATA_DIR)/sessions.db" ]; then \
 		echo "error: prod sessions.db not found at $(PROD_DATA_DIR)/sessions.db" >&2; \
 		exit 1; \
 	fi
-	@# Refuse to rm -rf paths that obviously aren't a snapshot
-	@# directory: empty, root, $HOME, the repo checkout, or the
-	@# prod data dir itself. $(abspath ...) collapses bad input
-	@# (e.g. SNAPSHOT_DIR="") to the repo root, so this check is
-	@# the only thing standing between a typo and a wiped tree.
-	@if [ -z "$(SNAPSHOT_ABS)" ] \
-		|| [ "$(SNAPSHOT_ABS)" = "/" ] \
-		|| [ "$(SNAPSHOT_ABS)" = "$(HOME)" ] \
-		|| [ "$(SNAPSHOT_ABS)" = "$(REPO_ROOT_ABS)" ] \
-		|| [ "$(SNAPSHOT_ABS)" = "$(PROD_DATA_ABS)" ]; then \
-		echo "error: refusing to operate on SNAPSHOT_DIR=$(SNAPSHOT_ABS)" >&2; \
-		echo "       set SNAPSHOT_DIR to a dedicated snapshot path" >&2; \
+	@if [ -z "$(SNAPSHOT_ABS)" ]; then \
+		echo "error: SNAPSHOT_DIR resolved to empty path" >&2; \
 		exit 1; \
 	fi
+	@if [ -d "$(SNAPSHOT_ABS)" ] && [ ! -f "$(SNAPSHOT_ABS)/$(SNAPSHOT_MARKER)" ]; then \
+		if [ -n "$$(ls -A "$(SNAPSHOT_ABS)" 2>/dev/null)" ]; then \
+			echo "error: $(SNAPSHOT_ABS) is non-empty and missing the $(SNAPSHOT_MARKER) marker" >&2; \
+			echo "       refusing to touch a directory we did not create" >&2; \
+			echo "       remove the directory manually if you want to reuse this path" >&2; \
+			exit 1; \
+		fi; \
+	fi
+	@mkdir -p "$(SNAPSHOT_ABS)"
+	@touch "$(SNAPSHOT_ABS)/$(SNAPSHOT_MARKER)"
 	@if [ "$${RESNAPSHOT:-1}" = "1" ] || [ ! -f "$(SNAPSHOT_ABS)/sessions.db" ]; then \
 		echo "Snapshotting $(PROD_DATA_DIR)/sessions.db -> $(SNAPSHOT_ABS)/sessions.db"; \
-		rm -rf "$(SNAPSHOT_ABS)"; \
-		mkdir -p "$(SNAPSHOT_ABS)"; \
+		for f in sessions.db sessions.db-wal sessions.db-shm \
+		         config.toml config.json config.json.bak \
+		         debug.log; do \
+			rm -f "$(SNAPSHOT_ABS)/$$f"; \
+		done; \
 		sqlite3 "$(PROD_DATA_DIR)/sessions.db" \
 			".backup $(SNAPSHOT_ABS)/sessions.db"; \
 	else \

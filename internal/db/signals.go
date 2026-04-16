@@ -119,11 +119,15 @@ func (db *DB) PendingSignalSessions(
 
 // BackfillSignals runs a one-time computation of session
 // signals for all sessions. Guarded by a stats marker so it
-// only runs once. computeFn is called for each session to
-// compute and store signals.
+// only runs once. computeFn returns nil on success or an
+// error to signal that the per-session recompute could not
+// be completed (e.g. the DB connection went away during a
+// concurrent resync swap). The completion marker is only set
+// when every session was processed successfully -- partial
+// runs leave the marker unset so the next startup retries.
 func (db *DB) BackfillSignals(
 	ctx context.Context,
-	computeFn func(ctx context.Context, sessionID string),
+	computeFn func(ctx context.Context, sessionID string) error,
 ) error {
 	db.mu.Lock()
 	var done int
@@ -169,11 +173,17 @@ func (db *DB) BackfillSignals(
 		return err
 	}
 
+	var failed int
 	for i, id := range ids {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		computeFn(ctx, id)
+		if err := computeFn(ctx, id); err != nil {
+			failed++
+			log.Printf(
+				"backfill: %s: %v", id, err,
+			)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -186,6 +196,14 @@ func (db *DB) BackfillSignals(
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	if failed > 0 {
+		return fmt.Errorf(
+			"backfill incomplete: %d/%d sessions failed; "+
+				"marker not set, next startup will retry",
+			failed, len(ids),
+		)
 	}
 
 	log.Printf(

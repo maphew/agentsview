@@ -147,8 +147,8 @@ func runServe(cfg config.Config) {
 		go func() {
 			if err := database.BackfillSignals(
 				ctx,
-				func(bCtx context.Context, id string) {
-					engine.RecomputeSignals(bCtx, id)
+				func(bCtx context.Context, id string) error {
+					return engine.RecomputeSignals(bCtx, id)
 				},
 			); err != nil && ctx.Err() == nil {
 				log.Printf("signals backfill: %v", err)
@@ -530,7 +530,10 @@ func recomputePendingSessions(
 		len(ids),
 	)
 	for _, id := range ids {
-		engine.RecomputeSignals(context.Background(), id)
+		// Errors are already logged by RecomputeSignals; the
+		// deferred-recompute loop is best-effort, the next
+		// pass will retry any that failed.
+		_ = engine.RecomputeSignals(context.Background(), id)
 	}
 }
 
