@@ -2034,6 +2034,464 @@ func (db *DB) GetAnalyticsVelocity(
 	return resp, nil
 }
 
+// --- Signals ---
+
+// SignalsAnalyticsResponse holds aggregated session signal data.
+type SignalsAnalyticsResponse struct {
+	ScoredSessions                int                  `json:"scored_sessions"`
+	UnscoredSessions              int                  `json:"unscored_sessions"`
+	GradeDistribution             map[string]int       `json:"grade_distribution"`
+	AvgHealthScore                *float64             `json:"avg_health_score"`
+	OutcomeDistribution           map[string]int       `json:"outcome_distribution"`
+	OutcomeConfidenceDistribution map[string]int       `json:"outcome_confidence_distribution"`
+	ToolHealth                    SignalsToolHealth    `json:"tool_health"`
+	ContextHealth                 SignalsContextHealth `json:"context_health"`
+	Trend                         []SignalsTrendBucket `json:"trend"`
+	ByAgent                       []SignalsAgentRow    `json:"by_agent"`
+	ByProject                     []SignalsProjectRow  `json:"by_project"`
+}
+
+// SignalsToolHealth holds aggregate tool failure metrics.
+type SignalsToolHealth struct {
+	TotalFailureSignals  int     `json:"total_failure_signals"`
+	TotalRetries         int     `json:"total_retries"`
+	TotalEditChurn       int     `json:"total_edit_churn"`
+	SessionsWithFailures int     `json:"sessions_with_failures"`
+	FailureRate          float64 `json:"failure_rate"`
+}
+
+// SignalsContextHealth holds aggregate context pressure metrics.
+type SignalsContextHealth struct {
+	AvgCompactionCount        float64  `json:"avg_compaction_count"`
+	SessionsWithCompaction    int      `json:"sessions_with_compaction"`
+	MidTaskCompactionCount    int      `json:"mid_task_compaction_count"`
+	SessionsWithMidTaskCompac int      `json:"sessions_with_mid_task_compaction"`
+	SessionsWithContextData   int      `json:"sessions_with_context_data"`
+	AvgContextPressure        *float64 `json:"avg_context_pressure"`
+	HighPressureSessions      int      `json:"high_pressure_sessions"`
+}
+
+// SignalsTrendBucket holds signal data for one date bucket.
+type SignalsTrendBucket struct {
+	Date              string   `json:"date"`
+	SessionCount      int      `json:"session_count"`
+	AvgHealthScore    *float64 `json:"avg_health_score"`
+	Completed         int      `json:"completed"`
+	Errored           int      `json:"errored"`
+	Abandoned         int      `json:"abandoned"`
+	AvgFailureSignals float64  `json:"avg_failure_signals"`
+}
+
+// SignalsAgentRow holds signal data grouped by agent.
+type SignalsAgentRow struct {
+	Agent             string   `json:"agent"`
+	SessionCount      int      `json:"session_count"`
+	AvgHealthScore    *float64 `json:"avg_health_score"`
+	CompletedRate     float64  `json:"completed_rate"`
+	AvgFailureSignals float64  `json:"avg_failure_signals"`
+}
+
+// SignalsProjectRow holds signal data grouped by project.
+type SignalsProjectRow struct {
+	Project           string   `json:"project"`
+	SessionCount      int      `json:"session_count"`
+	AvgHealthScore    *float64 `json:"avg_health_score"`
+	CompletedRate     float64  `json:"completed_rate"`
+	AvgFailureSignals float64  `json:"avg_failure_signals"`
+}
+
+// signalRow holds per-session signal data from the query.
+type signalRow struct {
+	id                     string
+	agent                  string
+	project                string
+	date                   string
+	healthScore            *int
+	healthGrade            *string
+	outcome                string
+	outcomeConfidence      string
+	toolFailureSignalCount int
+	toolRetryCount         int
+	editChurnCount         int
+	compactionCount        int
+	midTaskCompactionCount int
+	contextPressureMax     *float64
+}
+
+// GetAnalyticsSignals returns aggregated session signal data.
+func (db *DB) GetAnalyticsSignals(
+	ctx context.Context, f AnalyticsFilter,
+) (SignalsAnalyticsResponse, error) {
+	loc := f.location()
+	dateCol := "COALESCE(NULLIF(started_at, ''), created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return SignalsAnalyticsResponse{}, err
+		}
+	}
+
+	query := `SELECT id, agent, project,
+		` + dateCol + `,
+		health_score, health_grade, outcome,
+		outcome_confidence,
+		tool_failure_signal_count, tool_retry_count,
+		edit_churn_count, compaction_count,
+		mid_task_compaction_count,
+		context_pressure_max
+		FROM sessions WHERE ` + where
+
+	rows, err := db.getReader().QueryContext(
+		ctx, query, args...,
+	)
+	if err != nil {
+		return SignalsAnalyticsResponse{},
+			fmt.Errorf(
+				"querying analytics signals: %w", err,
+			)
+	}
+	defer rows.Close()
+
+	var all []signalRow
+	for rows.Next() {
+		var r signalRow
+		var ts string
+		if err := rows.Scan(
+			&r.id, &r.agent, &r.project, &ts,
+			&r.healthScore, &r.healthGrade,
+			&r.outcome, &r.outcomeConfidence,
+			&r.toolFailureSignalCount,
+			&r.toolRetryCount, &r.editChurnCount,
+			&r.compactionCount, &r.midTaskCompactionCount,
+			&r.contextPressureMax,
+		); err != nil {
+			return SignalsAnalyticsResponse{},
+				fmt.Errorf(
+					"scanning signals row: %w", err,
+				)
+		}
+		r.date = localDate(ts, loc)
+		if !inDateRange(r.date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[r.id] {
+			continue
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		return SignalsAnalyticsResponse{},
+			fmt.Errorf(
+				"iterating signals rows: %w", err,
+			)
+	}
+
+	return aggregateSignals(all), nil
+}
+
+// aggregateSignals builds the response from collected rows.
+func aggregateSignals(
+	all []signalRow,
+) SignalsAnalyticsResponse {
+	resp := SignalsAnalyticsResponse{
+		GradeDistribution:             make(map[string]int),
+		OutcomeDistribution:           make(map[string]int),
+		OutcomeConfidenceDistribution: make(map[string]int),
+	}
+
+	if len(all) == 0 {
+		resp.Trend = []SignalsTrendBucket{}
+		resp.ByAgent = []SignalsAgentRow{}
+		resp.ByProject = []SignalsProjectRow{}
+		return resp
+	}
+
+	type groupAccum struct {
+		count            int
+		healthScoreSum   int
+		healthScoreCount int
+		completed        int
+		failureSignalSum int
+	}
+
+	totalCount := len(all)
+	var healthScoreSum int
+	var healthScoreCount int
+
+	agentMap := make(map[string]*groupAccum)
+	projectMap := make(map[string]*groupAccum)
+	trendMap := make(map[string]*groupAccum)
+
+	// Also track trend-specific outcome counts.
+	type trendExtra struct {
+		errored   int
+		abandoned int
+	}
+	trendExtras := make(map[string]*trendExtra)
+
+	for _, r := range all {
+		// Scored vs unscored
+		if r.healthScore != nil {
+			resp.ScoredSessions++
+			healthScoreSum += *r.healthScore
+			healthScoreCount++
+		} else {
+			resp.UnscoredSessions++
+		}
+
+		// Grade distribution
+		if r.healthGrade != nil && *r.healthGrade != "" {
+			resp.GradeDistribution[*r.healthGrade]++
+		}
+
+		// Outcome distribution
+		if r.outcome != "" {
+			resp.OutcomeDistribution[r.outcome]++
+		}
+		if r.outcomeConfidence != "" {
+			resp.OutcomeConfidenceDistribution[r.outcomeConfidence]++
+		}
+
+		// Tool health
+		resp.ToolHealth.TotalFailureSignals += r.toolFailureSignalCount
+		resp.ToolHealth.TotalRetries += r.toolRetryCount
+		resp.ToolHealth.TotalEditChurn += r.editChurnCount
+		if r.toolFailureSignalCount > 0 {
+			resp.ToolHealth.SessionsWithFailures++
+		}
+
+		// Context health
+		if r.compactionCount > 0 {
+			resp.ContextHealth.SessionsWithCompaction++
+		}
+		resp.ContextHealth.AvgCompactionCount += float64(
+			r.compactionCount,
+		)
+		resp.ContextHealth.MidTaskCompactionCount +=
+			r.midTaskCompactionCount
+		if r.midTaskCompactionCount > 0 {
+			resp.ContextHealth.SessionsWithMidTaskCompac++
+		}
+		if r.contextPressureMax != nil {
+			resp.ContextHealth.SessionsWithContextData++
+			if *r.contextPressureMax >= 0.8 {
+				resp.ContextHealth.HighPressureSessions++
+			}
+		}
+
+		// Accumulate by agent
+		ga := agentMap[r.agent]
+		if ga == nil {
+			ga = &groupAccum{}
+			agentMap[r.agent] = ga
+		}
+		ga.count++
+		ga.failureSignalSum += r.toolFailureSignalCount
+		if r.healthScore != nil {
+			ga.healthScoreSum += *r.healthScore
+			ga.healthScoreCount++
+		}
+		if r.outcome == "completed" {
+			ga.completed++
+		}
+
+		// Accumulate by project
+		gp := projectMap[r.project]
+		if gp == nil {
+			gp = &groupAccum{}
+			projectMap[r.project] = gp
+		}
+		gp.count++
+		gp.failureSignalSum += r.toolFailureSignalCount
+		if r.healthScore != nil {
+			gp.healthScoreSum += *r.healthScore
+			gp.healthScoreCount++
+		}
+		if r.outcome == "completed" {
+			gp.completed++
+		}
+
+		// Accumulate by date (trend)
+		gt := trendMap[r.date]
+		if gt == nil {
+			gt = &groupAccum{}
+			trendMap[r.date] = gt
+		}
+		gt.count++
+		gt.failureSignalSum += r.toolFailureSignalCount
+		if r.healthScore != nil {
+			gt.healthScoreSum += *r.healthScore
+			gt.healthScoreCount++
+		}
+		if r.outcome == "completed" {
+			gt.completed++
+		}
+		te := trendExtras[r.date]
+		if te == nil {
+			te = &trendExtra{}
+			trendExtras[r.date] = te
+		}
+		if r.outcome == "errored" {
+			te.errored++
+		}
+		if r.outcome == "abandoned" {
+			te.abandoned++
+		}
+	}
+
+	// Average health score
+	if healthScoreCount > 0 {
+		avg := math.Round(
+			float64(healthScoreSum)/
+				float64(healthScoreCount)*10,
+		) / 10
+		resp.AvgHealthScore = &avg
+	}
+
+	// Tool health failure rate
+	if totalCount > 0 {
+		resp.ToolHealth.FailureRate = math.Round(
+			float64(resp.ToolHealth.SessionsWithFailures)/
+				float64(totalCount)*1000,
+		) / 10
+	}
+
+	// Context health averages
+	if totalCount > 0 {
+		resp.ContextHealth.AvgCompactionCount = math.Round(
+			resp.ContextHealth.AvgCompactionCount/
+				float64(totalCount)*10,
+		) / 10
+	}
+	if resp.ContextHealth.SessionsWithContextData > 0 {
+		var pressureSum float64
+		for _, r := range all {
+			if r.contextPressureMax != nil {
+				pressureSum += *r.contextPressureMax
+			}
+		}
+		avg := math.Round(
+			pressureSum/
+				float64(
+					resp.ContextHealth.SessionsWithContextData,
+				)*1000,
+		) / 1000
+		resp.ContextHealth.AvgContextPressure = &avg
+	}
+
+	// Build trend (sorted by date)
+	resp.Trend = make(
+		[]SignalsTrendBucket, 0, len(trendMap),
+	)
+	for date, g := range trendMap {
+		bucket := SignalsTrendBucket{
+			Date:         date,
+			SessionCount: g.count,
+			Completed:    g.completed,
+		}
+		if te := trendExtras[date]; te != nil {
+			bucket.Errored = te.errored
+			bucket.Abandoned = te.abandoned
+		}
+		if g.healthScoreCount > 0 {
+			avg := math.Round(
+				float64(g.healthScoreSum)/
+					float64(g.healthScoreCount)*10,
+			) / 10
+			bucket.AvgHealthScore = &avg
+		}
+		if g.count > 0 {
+			bucket.AvgFailureSignals = math.Round(
+				float64(g.failureSignalSum)/
+					float64(g.count)*10,
+			) / 10
+		}
+		resp.Trend = append(resp.Trend, bucket)
+	}
+	sort.Slice(resp.Trend, func(i, j int) bool {
+		return resp.Trend[i].Date < resp.Trend[j].Date
+	})
+
+	// Build by-agent (sorted alphabetically)
+	agentKeys := make([]string, 0, len(agentMap))
+	for k := range agentMap {
+		agentKeys = append(agentKeys, k)
+	}
+	sort.Strings(agentKeys)
+	resp.ByAgent = make(
+		[]SignalsAgentRow, 0, len(agentKeys),
+	)
+	for _, agent := range agentKeys {
+		g := agentMap[agent]
+		row := SignalsAgentRow{
+			Agent:        agent,
+			SessionCount: g.count,
+		}
+		if g.healthScoreCount > 0 {
+			avg := math.Round(
+				float64(g.healthScoreSum)/
+					float64(g.healthScoreCount)*10,
+			) / 10
+			row.AvgHealthScore = &avg
+		}
+		if g.count > 0 {
+			row.CompletedRate = math.Round(
+				float64(g.completed)/
+					float64(g.count)*1000,
+			) / 10
+			row.AvgFailureSignals = math.Round(
+				float64(g.failureSignalSum)/
+					float64(g.count)*10,
+			) / 10
+		}
+		resp.ByAgent = append(resp.ByAgent, row)
+	}
+
+	// Build by-project (sorted by session count desc)
+	resp.ByProject = make(
+		[]SignalsProjectRow, 0, len(projectMap),
+	)
+	for project, g := range projectMap {
+		row := SignalsProjectRow{
+			Project:      project,
+			SessionCount: g.count,
+		}
+		if g.healthScoreCount > 0 {
+			avg := math.Round(
+				float64(g.healthScoreSum)/
+					float64(g.healthScoreCount)*10,
+			) / 10
+			row.AvgHealthScore = &avg
+		}
+		if g.count > 0 {
+			row.CompletedRate = math.Round(
+				float64(g.completed)/
+					float64(g.count)*1000,
+			) / 10
+			row.AvgFailureSignals = math.Round(
+				float64(g.failureSignalSum)/
+					float64(g.count)*10,
+			) / 10
+		}
+		resp.ByProject = append(resp.ByProject, row)
+	}
+	sort.Slice(resp.ByProject, func(i, j int) bool {
+		if resp.ByProject[i].SessionCount !=
+			resp.ByProject[j].SessionCount {
+			return resp.ByProject[i].SessionCount >
+				resp.ByProject[j].SessionCount
+		}
+		return resp.ByProject[i].Project <
+			resp.ByProject[j].Project
+	})
+
+	return resp
+}
+
 // --- Top Sessions ---
 
 // TopSession holds summary info for a ranked session.

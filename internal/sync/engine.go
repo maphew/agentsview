@@ -15,6 +15,7 @@ import (
 
 	"github.com/wesm/agentsview/internal/db"
 	"github.com/wesm/agentsview/internal/parser"
+	"github.com/wesm/agentsview/internal/signals"
 	"github.com/wesm/agentsview/internal/timeutil"
 )
 
@@ -1698,14 +1699,22 @@ func (e *Engine) persistSkipCache() int {
 func (e *Engine) shouldSkipFile(
 	sessionID string, info os.FileInfo,
 ) bool {
+	fullID := e.idPrefix + sessionID
 	storedSize, storedMtime, ok := e.db.GetSessionFileInfo(
-		e.idPrefix + sessionID,
+		fullID,
 	)
 	if !ok {
 		return false
 	}
-	return storedSize == info.Size() &&
-		storedMtime == info.ModTime().UnixNano()
+	if storedSize != info.Size() ||
+		storedMtime != info.ModTime().UnixNano() {
+		return false
+	}
+	if e.db.GetSessionDataVersion(fullID) <
+		db.CurrentDataVersion() {
+		return false
+	}
+	return true
 }
 
 // shouldSkipByPath checks file size and mtime against what is
@@ -1724,8 +1733,15 @@ func (e *Engine) shouldSkipByPath(
 	if !ok {
 		return false
 	}
-	return storedSize == info.Size() &&
-		storedMtime == info.ModTime().UnixNano()
+	if storedSize != info.Size() ||
+		storedMtime != info.ModTime().UnixNano() {
+		return false
+	}
+	if e.db.GetDataVersionByPath(lookupPath) <
+		db.CurrentDataVersion() {
+		return false
+	}
+	return true
 }
 
 // fakeSnapshotInfo wraps a pre-computed size and mtime
@@ -1831,6 +1847,14 @@ func (e *Engine) tryIncrementalJSONL(
 	}
 	inc, ok := e.db.GetSessionForIncremental(lookupPath)
 	if !ok || inc.FileSize <= 0 {
+		return processResult{}, false
+	}
+
+	// Existing rows from an older parser lack new metadata
+	// columns. Force a full parse so the rewrite picks them
+	// up rather than appending new rows on top of stale ones.
+	if e.db.GetSessionDataVersion(inc.ID) <
+		db.CurrentDataVersion() {
 		return processResult{}, false
 	}
 
@@ -2517,6 +2541,70 @@ func (e *Engine) processIflow(
 	return processResult{results: results}
 }
 
+// computeFinalStreak counts trailing consecutive failures
+// from the end of the tool call list.
+func computeFinalStreak(calls []signals.ToolCallRow) int {
+	streak := 0
+	for i := len(calls) - 1; i >= 0; i-- {
+		if signals.IsFailure(calls[i]) {
+			streak++
+		} else {
+			break
+		}
+	}
+	return streak
+}
+
+// RecomputeSignals recomputes signals for a single session
+// from existing DB data. Used by backfill and deferred
+// recompute.
+func (e *Engine) RecomputeSignals(
+	ctx context.Context, sessionID string,
+) {
+	e.recomputeSignalsFromDB(ctx, sessionID)
+}
+
+// recomputeSignalsFromDB loads a session's full message history
+// and stored metadata, runs the pure in-memory signal compute
+// over them, and persists the result. Used when callers don't
+// already have the message slice in memory (legacy backfill,
+// incremental writes).
+func (e *Engine) recomputeSignalsFromDB(
+	ctx context.Context, sessionID string,
+) {
+	sess, err := e.db.GetSessionFull(ctx, sessionID)
+	if err != nil || sess == nil {
+		return
+	}
+	msgs, err := e.db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		log.Printf(
+			"signals: load messages %s: %v",
+			sessionID, err,
+		)
+		return
+	}
+	update := computeSignalsFromMessages(*sess, msgs)
+	if err := e.db.UpdateSessionSignals(
+		sessionID, update,
+	); err != nil {
+		log.Printf(
+			"signals: update %s: %v", sessionID, err,
+		)
+	}
+}
+
+// isAutomatedFromSession recomputes the is_automated flag using
+// the same rule UpsertSession applies. Hoisted out of UpsertSession
+// so callers can set the field on their in-memory Session before
+// running signal computation, ensuring the same value is used by
+// outcome classification and persisted to the row.
+func isAutomatedFromSession(s db.Session) bool {
+	return s.UserMessageCount <= 1 &&
+		s.FirstMessage != nil &&
+		db.IsAutomatedSession(*s.FirstMessage)
+}
+
 type pendingWrite struct {
 	sess parser.ParsedSession
 	msgs []parser.ParsedMessage
@@ -2529,6 +2617,19 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 		s.MessageCount, s.UserMessageCount =
 			postFilterCounts(msgs)
 		e.applyRemoteRewrites(&s, msgs)
+		s.IsAutomated = isAutomatedFromSession(s)
+
+		// Detect stale parser version BEFORE UpsertSession
+		// overwrites it. Existing message rows from an
+		// older parser lack new metadata columns, and newly
+		// emitted compact-boundary messages can shift the
+		// ordinal stream — both demand a full rewrite
+		// rather than the append-only writeMessages path.
+		stale := false
+		if existing := e.db.GetSessionDataVersion(s.ID); existing > 0 &&
+			existing < db.CurrentDataVersion() {
+			stale = true
+		}
 
 		// UpsertSession first: the session row must exist
 		// before messages can be inserted (FK constraint).
@@ -2551,11 +2652,27 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 			continue
 		}
 
-		if err := e.writeMessages(
-			s.ID, msgs,
-		); err != nil {
-			log.Printf("%v", err)
+		var werr error
+		if stale {
+			werr = e.db.ReplaceSessionMessages(s.ID, msgs)
+		} else {
+			werr = e.writeMessages(s.ID, msgs)
+		}
+		if werr != nil {
+			log.Printf(
+				"write messages for %s: %v",
+				s.ID, werr,
+			)
 			continue
+		}
+
+		update := computeSignalsFromMessages(s, msgs)
+		if err := e.db.UpdateSessionSignals(
+			s.ID, update,
+		); err != nil {
+			log.Printf(
+				"signals: update %s: %v", s.ID, err,
+			)
 		}
 	}
 
@@ -2612,6 +2729,11 @@ func (e *Engine) writeIncremental(
 			inc.sessionID, err,
 		)
 	}
+
+	e.recomputeSignalsFromDB(
+		context.Background(), inc.sessionID,
+	)
+
 	return nil
 }
 
@@ -2672,6 +2794,7 @@ func (e *Engine) writeSessionFull(pw pendingWrite) error {
 	s.MessageCount, s.UserMessageCount =
 		postFilterCounts(msgs)
 	e.applyRemoteRewrites(&s, msgs)
+	s.IsAutomated = isAutomatedFromSession(s)
 	if err := e.db.UpsertSession(s); err != nil {
 		if errors.Is(err, db.ErrSessionExcluded) {
 			if pw.sess.File.Path != "" {
@@ -2691,6 +2814,14 @@ func (e *Engine) writeSessionFull(pw pendingWrite) error {
 		)
 		return err
 	}
+
+	update := computeSignalsFromMessages(s, msgs)
+	if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
+		log.Printf(
+			"signals: update %s: %v", s.ID, err,
+		)
+	}
+
 	return nil
 }
 
@@ -2746,6 +2877,13 @@ func toDBSession(pw pendingWrite) db.Session {
 		PeakContextTokens:    pw.sess.PeakContextTokens,
 		HasTotalOutputTokens: hasTotal,
 		HasPeakContextTokens: hasPeak,
+		Cwd:                  pw.sess.Cwd,
+		GitBranch:            pw.sess.GitBranch,
+		SourceSessionID:      pw.sess.SourceSessionID,
+		SourceVersion:        pw.sess.SourceVersion,
+		ParserMalformedLines: pw.sess.MalformedLines,
+		IsTruncated:          pw.sess.IsTruncated,
+		DataVersion:          db.CurrentDataVersion(),
 		FilePath:             strPtr(pw.sess.File.Path),
 		FileSize:             int64Ptr(pw.sess.File.Size),
 		FileMtime:            int64Ptr(pw.sess.File.Mtime),
@@ -2770,23 +2908,29 @@ func toDBMessages(pw pendingWrite, blocked map[string]bool) []db.Message {
 	for i, m := range pw.msgs {
 		hasCtx, hasOut := m.TokenPresence()
 		msgs[i] = db.Message{
-			SessionID:        pw.sess.ID,
-			Ordinal:          m.Ordinal,
-			Role:             string(m.Role),
-			Content:          m.Content,
-			Timestamp:        timeutil.Format(m.Timestamp),
-			HasThinking:      m.HasThinking,
-			HasToolUse:       m.HasToolUse,
-			ContentLength:    m.ContentLength,
-			IsSystem:         m.IsSystem,
-			Model:            m.Model,
-			TokenUsage:       m.TokenUsage,
-			ContextTokens:    m.ContextTokens,
-			OutputTokens:     m.OutputTokens,
-			HasContextTokens: hasCtx,
-			HasOutputTokens:  hasOut,
-			ClaudeMessageID:  m.ClaudeMessageID,
-			ClaudeRequestID:  m.ClaudeRequestID,
+			SessionID:         pw.sess.ID,
+			Ordinal:           m.Ordinal,
+			Role:              string(m.Role),
+			Content:           m.Content,
+			Timestamp:         timeutil.Format(m.Timestamp),
+			HasThinking:       m.HasThinking,
+			HasToolUse:        m.HasToolUse,
+			ContentLength:     m.ContentLength,
+			IsSystem:          m.IsSystem,
+			Model:             m.Model,
+			TokenUsage:        m.TokenUsage,
+			ContextTokens:     m.ContextTokens,
+			OutputTokens:      m.OutputTokens,
+			HasContextTokens:  hasCtx,
+			HasOutputTokens:   hasOut,
+			ClaudeMessageID:   m.ClaudeMessageID,
+			ClaudeRequestID:   m.ClaudeRequestID,
+			SourceType:        m.SourceType,
+			SourceSubtype:     m.SourceSubtype,
+			SourceUUID:        m.SourceUUID,
+			SourceParentUUID:  m.SourceParentUUID,
+			IsSidechain:       m.IsSidechain,
+			IsCompactBoundary: m.IsCompactBoundary,
 			ToolCalls: convertToolCalls(
 				pw.sess.ID, m.ToolCalls,
 			),

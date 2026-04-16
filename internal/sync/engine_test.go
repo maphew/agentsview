@@ -824,12 +824,13 @@ func TestShouldSkipFileWithIDPrefix(t *testing.T) {
 
 	// Store a session with prefixed ID and file metadata.
 	sess := db.Session{
-		ID:       "host~abc-123",
-		Project:  "test",
-		Machine:  "host",
-		Agent:    "claude",
-		FilePath: strPtr("host:/remote/session.jsonl"),
-		FileSize: int64Ptr(1024),
+		ID:          "host~abc-123",
+		Project:     "test",
+		Machine:     "host",
+		Agent:       "claude",
+		DataVersion: db.CurrentDataVersion(),
+		FilePath:    strPtr("host:/remote/session.jsonl"),
+		FileSize:    int64Ptr(1024),
 		FileMtime: int64Ptr(
 			int64(1700000000000000000),
 		),
@@ -869,12 +870,13 @@ func TestShouldSkipByPathWithRewriter(t *testing.T) {
 
 	// Store a session with rewritten file path.
 	sess := db.Session{
-		ID:       "host~codex:abc",
-		Project:  "test",
-		Machine:  "host",
-		Agent:    "codex",
-		FilePath: strPtr("host:/remote/codex/abc.jsonl"),
-		FileSize: int64Ptr(2048),
+		ID:          "host~codex:abc",
+		Project:     "test",
+		Machine:     "host",
+		Agent:       "codex",
+		DataVersion: db.CurrentDataVersion(),
+		FilePath:    strPtr("host:/remote/codex/abc.jsonl"),
+		FileSize:    int64Ptr(2048),
 		FileMtime: int64Ptr(
 			int64(1700000000000000000),
 		),

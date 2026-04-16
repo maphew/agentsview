@@ -30,6 +30,18 @@ const sessionBaseCols = `id, project, machine, agent,
 	total_output_tokens, peak_context_tokens,
 	has_total_output_tokens, has_peak_context_tokens,
 	is_automated,
+	tool_failure_signal_count, tool_retry_count,
+	edit_churn_count, consecutive_failure_max,
+	outcome, outcome_confidence,
+	ended_with_role, final_failure_streak,
+	signals_pending_since,
+	compaction_count, mid_task_compaction_count,
+	context_pressure_max,
+	health_score, health_grade,
+	has_tool_calls, has_context_data,
+	data_version,
+	cwd, git_branch, source_session_id, source_version,
+	parser_malformed_lines, is_truncated,
 	deleted_at, created_at`
 
 // sessionPruneCols extends sessionBaseCols with file metadata
@@ -41,6 +53,18 @@ const sessionPruneCols = `id, project, machine, agent,
 	total_output_tokens, peak_context_tokens,
 	has_total_output_tokens, has_peak_context_tokens,
 	is_automated,
+	tool_failure_signal_count, tool_retry_count,
+	edit_churn_count, consecutive_failure_max,
+	outcome, outcome_confidence,
+	ended_with_role, final_failure_streak,
+	signals_pending_since,
+	compaction_count, mid_task_compaction_count,
+	context_pressure_max,
+	health_score, health_grade,
+	has_tool_calls, has_context_data,
+	data_version,
+	cwd, git_branch, source_session_id, source_version,
+	parser_malformed_lines, is_truncated,
 	deleted_at, file_path, file_size, created_at`
 
 // sessionFullCols includes all columns for a complete session record.
@@ -51,6 +75,18 @@ const sessionFullCols = `id, project, machine, agent,
 	total_output_tokens, peak_context_tokens,
 	has_total_output_tokens, has_peak_context_tokens,
 	is_automated,
+	tool_failure_signal_count, tool_retry_count,
+	edit_churn_count, consecutive_failure_max,
+	outcome, outcome_confidence,
+	ended_with_role, final_failure_streak,
+	signals_pending_since,
+	compaction_count, mid_task_compaction_count,
+	context_pressure_max,
+	health_score, health_grade,
+	has_tool_calls, has_context_data,
+	data_version,
+	cwd, git_branch, source_session_id, source_version,
+	parser_malformed_lines, is_truncated,
 	deleted_at, file_path, file_size, file_mtime,
 	file_hash, local_modified_at, created_at`
 
@@ -78,6 +114,19 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 		&s.TotalOutputTokens, &s.PeakContextTokens,
 		&s.HasTotalOutputTokens, &s.HasPeakContextTokens,
 		&s.IsAutomated,
+		&s.ToolFailureSignalCount, &s.ToolRetryCount,
+		&s.EditChurnCount, &s.ConsecutiveFailureMax,
+		&s.Outcome, &s.OutcomeConfidence,
+		&s.EndedWithRole, &s.FinalFailureStreak,
+		&s.SignalsPendingSince,
+		&s.CompactionCount, &s.MidTaskCompactionCount,
+		&s.ContextPressureMax,
+		&s.HealthScore, &s.HealthGrade,
+		&s.HasToolCalls, &s.HasContextData,
+		&s.DataVersion,
+		&s.Cwd, &s.GitBranch,
+		&s.SourceSessionID, &s.SourceVersion,
+		&s.ParserMalformedLines, &s.IsTruncated,
 		&s.DeletedAt, &s.CreatedAt,
 	)
 	return s, err
@@ -102,13 +151,39 @@ type Session struct {
 	HasTotalOutputTokens bool    `json:"has_total_output_tokens"`
 	HasPeakContextTokens bool    `json:"has_peak_context_tokens"`
 	IsAutomated          bool    `json:"is_automated"`
-	DeletedAt            *string `json:"deleted_at,omitempty"`
-	FilePath             *string `json:"file_path,omitempty"`
-	FileSize             *int64  `json:"file_size,omitempty"`
-	FileMtime            *int64  `json:"file_mtime,omitempty"`
-	FileHash             *string `json:"file_hash,omitempty"`
-	LocalModifiedAt      *string `json:"local_modified_at,omitempty"`
-	CreatedAt            string  `json:"created_at"`
+
+	// Session signals (computed from messages/tool_calls).
+	ToolFailureSignalCount int      `json:"tool_failure_signal_count"`
+	ToolRetryCount         int      `json:"tool_retry_count"`
+	EditChurnCount         int      `json:"edit_churn_count"`
+	ConsecutiveFailureMax  int      `json:"consecutive_failure_max"`
+	Outcome                string   `json:"outcome"`
+	OutcomeConfidence      string   `json:"outcome_confidence"`
+	EndedWithRole          string   `json:"ended_with_role"`
+	FinalFailureStreak     int      `json:"final_failure_streak"`
+	SignalsPendingSince    *string  `json:"signals_pending_since,omitempty"`
+	CompactionCount        int      `json:"compaction_count"`
+	MidTaskCompactionCount int      `json:"mid_task_compaction_count"`
+	ContextPressureMax     *float64 `json:"context_pressure_max,omitempty"`
+	HealthScore            *int     `json:"health_score,omitempty"`
+	HealthGrade            *string  `json:"health_grade,omitempty"`
+	HasToolCalls           bool     `json:"-"`
+	HasContextData         bool     `json:"-"`
+	DataVersion            int      `json:"-"`
+	Cwd                    string   `json:"cwd,omitempty"`
+	GitBranch              string   `json:"git_branch,omitempty"`
+	SourceSessionID        string   `json:"source_session_id,omitempty"`
+	SourceVersion          string   `json:"source_version,omitempty"`
+	ParserMalformedLines   int      `json:"parser_malformed_lines,omitempty"`
+	IsTruncated            bool     `json:"is_truncated,omitempty"`
+
+	DeletedAt       *string `json:"deleted_at,omitempty"`
+	FilePath        *string `json:"file_path,omitempty"`
+	FileSize        *int64  `json:"file_size,omitempty"`
+	FileMtime       *int64  `json:"file_mtime,omitempty"`
+	FileHash        *string `json:"file_hash,omitempty"`
+	LocalModifiedAt *string `json:"local_modified_at,omitempty"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // SessionCursor is the opaque pagination token.
@@ -194,17 +269,20 @@ type SessionFilter struct {
 	ExcludeProject   string // exclude sessions with this project name
 	Machine          string
 	Agent            string
-	Date             string // exact date YYYY-MM-DD
-	DateFrom         string // range start (inclusive)
-	DateTo           string // range end (inclusive)
-	ActiveSince      string // ISO-8601 timestamp; filters on most recent activity
-	MinMessages      int    // message_count >= N (0 = no filter)
-	MaxMessages      int    // message_count <= N (0 = no filter)
-	MinUserMessages  int    // user_message_count >= N (0 = no filter)
-	ExcludeOneShot   bool   // exclude sessions with user_message_count <= 1
-	ExcludeAutomated bool   // exclude sessions where is_automated = 1
-	IncludeChildren  bool   // include subagent sessions (for sidebar grouping)
-	Cursor           string // opaque cursor from previous page
+	Date             string   // exact date YYYY-MM-DD
+	DateFrom         string   // range start (inclusive)
+	DateTo           string   // range end (inclusive)
+	ActiveSince      string   // ISO-8601 timestamp; filters on most recent activity
+	MinMessages      int      // message_count >= N (0 = no filter)
+	MaxMessages      int      // message_count <= N (0 = no filter)
+	MinUserMessages  int      // user_message_count >= N (0 = no filter)
+	ExcludeOneShot   bool     // exclude sessions with user_message_count <= 1
+	ExcludeAutomated bool     // exclude sessions where is_automated = 1
+	IncludeChildren  bool     // include subagent sessions (for sidebar grouping)
+	Outcome          []string // filter by outcome values
+	HealthGrade      []string // filter by health grade values
+	MinToolFailures  *int     // minimum tool_failure_signal_count
+	Cursor           string   // opaque cursor from previous page
 	Limit            int
 }
 
@@ -338,6 +416,32 @@ func buildSessionFilter(f SessionFilter) (string, []any) {
 
 	if f.ExcludeAutomated {
 		filterPreds = append(filterPreds, "is_automated = 0")
+	}
+
+	if len(f.Outcome) > 0 {
+		placeholders := make([]string, len(f.Outcome))
+		for i, v := range f.Outcome {
+			placeholders[i] = "?"
+			filterArgs = append(filterArgs, v)
+		}
+		filterPreds = append(filterPreds,
+			"outcome IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(f.HealthGrade) > 0 {
+		placeholders := make([]string, len(f.HealthGrade))
+		for i, v := range f.HealthGrade {
+			placeholders[i] = "?"
+			filterArgs = append(filterArgs, v)
+		}
+		filterPreds = append(filterPreds,
+			"health_grade IN ("+
+				strings.Join(placeholders, ",")+
+				")")
+	}
+	if f.MinToolFailures != nil {
+		filterPreds = append(filterPreds,
+			"tool_failure_signal_count >= ?")
+		filterArgs = append(filterArgs, *f.MinToolFailures)
 	}
 
 	// Simple case: no IncludeChildren or no user filters.
@@ -500,6 +604,19 @@ func (db *DB) GetSessionFull(
 		&s.TotalOutputTokens, &s.PeakContextTokens,
 		&s.HasTotalOutputTokens, &s.HasPeakContextTokens,
 		&s.IsAutomated,
+		&s.ToolFailureSignalCount, &s.ToolRetryCount,
+		&s.EditChurnCount, &s.ConsecutiveFailureMax,
+		&s.Outcome, &s.OutcomeConfidence,
+		&s.EndedWithRole, &s.FinalFailureStreak,
+		&s.SignalsPendingSince,
+		&s.CompactionCount, &s.MidTaskCompactionCount,
+		&s.ContextPressureMax,
+		&s.HealthScore, &s.HealthGrade,
+		&s.HasToolCalls, &s.HasContextData,
+		&s.DataVersion,
+		&s.Cwd, &s.GitBranch,
+		&s.SourceSessionID, &s.SourceVersion,
+		&s.ParserMalformedLines, &s.IsTruncated,
 		&s.DeletedAt, &s.FilePath, &s.FileSize,
 		&s.FileMtime, &s.FileHash, &s.LocalModifiedAt, &s.CreatedAt,
 	)
@@ -564,9 +681,12 @@ func (db *DB) UpsertSession(s Session) error {
 			relationship_type,
 			total_output_tokens, peak_context_tokens,
 			has_total_output_tokens, has_peak_context_tokens,
-			is_automated,
+			is_automated, data_version,
+			cwd, git_branch, source_session_id,
+			source_version, parser_malformed_lines,
+			is_truncated,
 			file_path, file_size, file_mtime, file_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project = excluded.project,
 			machine = excluded.machine,
@@ -583,6 +703,13 @@ func (db *DB) UpsertSession(s Session) error {
 			has_total_output_tokens = excluded.has_total_output_tokens,
 			has_peak_context_tokens = excluded.has_peak_context_tokens,
 			is_automated = excluded.is_automated,
+			data_version = excluded.data_version,
+			cwd = excluded.cwd,
+			git_branch = excluded.git_branch,
+			source_session_id = excluded.source_session_id,
+			source_version = excluded.source_version,
+			parser_malformed_lines = excluded.parser_malformed_lines,
+			is_truncated = excluded.is_truncated,
 			file_path = excluded.file_path,
 			file_size = excluded.file_size,
 			file_mtime = excluded.file_mtime,
@@ -593,7 +720,10 @@ func (db *DB) UpsertSession(s Session) error {
 		s.RelationshipType,
 		s.TotalOutputTokens, s.PeakContextTokens,
 		s.HasTotalOutputTokens, s.HasPeakContextTokens,
-		isAutomated,
+		isAutomated, s.DataVersion,
+		s.Cwd, s.GitBranch, s.SourceSessionID,
+		s.SourceVersion, s.ParserMalformedLines,
+		s.IsTruncated,
 		s.FilePath, s.FileSize, s.FileMtime, s.FileHash)
 	if err != nil {
 		return fmt.Errorf("upserting session %s: %w", s.ID, err)
@@ -678,6 +808,63 @@ func (db *DB) GetSessionFilePath(id string) string {
 		return ""
 	}
 	return fp.String
+}
+
+// FindSessionIDsByPartial returns up to limit session IDs that
+// contain the given substring. Used by CLI lookups so users can
+// reference sessions by a short prefix shown in list output.
+// Excludes soft-deleted sessions.
+func (db *DB) FindSessionIDsByPartial(
+	ctx context.Context, partial string, limit int,
+) ([]string, error) {
+	if partial == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := db.getReader().QueryContext(ctx,
+		`SELECT id FROM sessions
+		 WHERE id LIKE ? AND deleted_at IS NULL
+		 ORDER BY COALESCE(
+		     NULLIF(ended_at, ''),
+		     NULLIF(started_at, ''),
+		     created_at
+		 ) DESC
+		 LIMIT ?`,
+		"%"+partial+"%", limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"finding sessions by partial id %q: %w",
+			partial, err,
+		)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf(
+				"scanning session id: %w", err,
+			)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetSessionDataVersion returns the data_version for a session.
+// Returns 0 when the session does not exist.
+func (db *DB) GetSessionDataVersion(id string) int {
+	var v int
+	err := db.getReader().QueryRow(
+		"SELECT data_version FROM sessions WHERE id = ?", id,
+	).Scan(&v)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // GetSessionMessageCount returns the message_count for a
@@ -834,6 +1021,21 @@ func (db *DB) GetFileInfoByPath(
 		return 0, 0, false
 	}
 	return s.Int64, m.Int64, true
+}
+
+// GetDataVersionByPath returns the minimum data_version for
+// sessions matching a file_path. Returns 0 when no session
+// exists for the path.
+func (db *DB) GetDataVersionByPath(path string) int {
+	var v int
+	err := db.getReader().QueryRow(
+		"SELECT MIN(data_version) FROM sessions"+
+			" WHERE file_path = ?", path,
+	).Scan(&v)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // ResetAllMtimes zeroes file_mtime for every session, forcing
@@ -1151,6 +1353,19 @@ func (db *DB) FindPruneCandidates(
 			&s.TotalOutputTokens, &s.PeakContextTokens,
 			&s.HasTotalOutputTokens, &s.HasPeakContextTokens,
 			&s.IsAutomated,
+			&s.ToolFailureSignalCount, &s.ToolRetryCount,
+			&s.EditChurnCount, &s.ConsecutiveFailureMax,
+			&s.Outcome, &s.OutcomeConfidence,
+			&s.EndedWithRole, &s.FinalFailureStreak,
+			&s.SignalsPendingSince,
+			&s.CompactionCount, &s.MidTaskCompactionCount,
+			&s.ContextPressureMax,
+			&s.HealthScore, &s.HealthGrade,
+			&s.HasToolCalls, &s.HasContextData,
+			&s.DataVersion,
+			&s.Cwd, &s.GitBranch,
+			&s.SourceSessionID, &s.SourceVersion,
+			&s.ParserMalformedLines, &s.IsTruncated,
 			&s.DeletedAt, &s.FilePath, &s.FileSize, &s.CreatedAt,
 		)
 		if err != nil {
@@ -1414,6 +1629,19 @@ func (db *DB) ListSessionsModifiedBetween(
 			&s.TotalOutputTokens, &s.PeakContextTokens,
 			&s.HasTotalOutputTokens, &s.HasPeakContextTokens,
 			&s.IsAutomated,
+			&s.ToolFailureSignalCount, &s.ToolRetryCount,
+			&s.EditChurnCount, &s.ConsecutiveFailureMax,
+			&s.Outcome, &s.OutcomeConfidence,
+			&s.EndedWithRole, &s.FinalFailureStreak,
+			&s.SignalsPendingSince,
+			&s.CompactionCount, &s.MidTaskCompactionCount,
+			&s.ContextPressureMax,
+			&s.HealthScore, &s.HealthGrade,
+			&s.HasToolCalls, &s.HasContextData,
+			&s.DataVersion,
+			&s.Cwd, &s.GitBranch,
+			&s.SourceSessionID, &s.SourceVersion,
+			&s.ParserMalformedLines, &s.IsTruncated,
 			&s.DeletedAt, &s.FilePath, &s.FileSize,
 			&s.FileMtime, &s.FileHash, &s.LocalModifiedAt, &s.CreatedAt,
 		)

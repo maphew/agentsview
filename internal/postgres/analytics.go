@@ -2063,6 +2063,22 @@ func (s *Store) GetAnalyticsTopSessions(
 	}, nil
 }
 
+// GetAnalyticsSignals returns aggregated session signal data.
+// Signal columns are synced to PG but full aggregation is
+// not yet implemented. Returns an empty response for now.
+func (s *Store) GetAnalyticsSignals(
+	ctx context.Context, f db.AnalyticsFilter,
+) (db.SignalsAnalyticsResponse, error) {
+	return db.SignalsAnalyticsResponse{
+		GradeDistribution:             make(map[string]int),
+		OutcomeDistribution:           make(map[string]int),
+		OutcomeConfidenceDistribution: make(map[string]int),
+		Trend:                         []db.SignalsTrendBucket{},
+		ByAgent:                       []db.SignalsAgentRow{},
+		ByProject:                     []db.SignalsProjectRow{},
+	}, nil
+}
+
 // rankTopSessions sorts sessions by duration (if
 // needsGoSort), truncates to top 10, and rounds DurationMin.
 func rankTopSessions(
