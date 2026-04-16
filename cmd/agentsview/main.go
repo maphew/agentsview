@@ -137,14 +137,23 @@ func runServe(cfg config.Config) {
 		stopWatcher, unwatchedDirs := startFileWatcher(cfg, engine)
 		defer stopWatcher()
 
-		if err := database.BackfillSignals(
-			ctx,
-			func(bCtx context.Context, id string) {
-				engine.RecomputeSignals(bCtx, id)
-			},
-		); err != nil {
-			log.Printf("signals backfill: %v", err)
-		}
+		// Backfill runs in the background. On a large DB (e.g.
+		// after copying tens of thousands of orphaned sessions
+		// during a resync), walking every row to recompute
+		// signals would otherwise block the HTTP server from
+		// listening for minutes. Backfill is idempotent and
+		// guarded by a one-shot marker, so concurrent writes
+		// from the file watcher and periodic sync are safe.
+		go func() {
+			if err := database.BackfillSignals(
+				ctx,
+				func(bCtx context.Context, id string) {
+					engine.RecomputeSignals(bCtx, id)
+				},
+			); err != nil && ctx.Err() == nil {
+				log.Printf("signals backfill: %v", err)
+			}
+		}()
 
 		go startPeriodicSync(engine, database)
 		if len(unwatchedDirs) > 0 {
