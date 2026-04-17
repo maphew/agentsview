@@ -27,43 +27,31 @@ const (
 	tokenUseResolveMatchLimit = 2
 )
 
-// isCanonicalSessionID reports whether id is already in the
-// canonical form stored in sessions.id: either a host-prefixed
-// remote ID ("host~<id>") or an ID beginning with a registered
-// agent prefix ("codex:", "kimi:", ...). A bare input with no
-// recognised prefix is treated as a raw ID even when it contains
-// ':' because agents like Kimi and OpenClaw emit colon-bearing
-// raw IDs.
-func isCanonicalSessionID(id string) bool {
-	host, rawID := parser.StripHostPrefix(id)
-	if host != "" {
-		return true
-	}
-	for _, def := range parser.Registry {
-		if def.IDPrefix != "" &&
-			strings.HasPrefix(rawID, def.IDPrefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // resolveRawSessionID translates a user-supplied session ID into
 // the canonical form stored in sessions.id. Callers may pass
 // either a canonical ID ("codex:<uuid>") or a bare raw ID as
 // emitted by the underlying agent — including raw IDs that
-// contain colons themselves (Kimi: "<project-hash>:<session-uuid>",
-// OpenClaw: "<agentId>:<sessionId>"). Resolution order:
+// themselves contain colons (Kimi: "<project-hash>:<session-uuid>",
+// OpenClaw: "<agentId>:<sessionId>", legacy Kiro IDE).
 //
-//  1. Input already carries a canonical prefix (host~... or
-//     <agent>:...) -> returned unchanged.
-//  2. DB lookup: exact match OR suffix match against ":<input>";
-//     exact match wins, otherwise most-recent suffix match wins
-//     (rare ambiguity is reported to stderr).
-//  3. Disk probe: iterate file-based agents and check their
-//     FindSourceFunc for any configured directory; first hit
-//     yields "<prefix><input>".
-//  4. No match anywhere: returned unchanged with known=false.
+// Resolution order (short-circuit only on host-prefixed IDs, which
+// are unambiguously remote; any other input — even one that begins
+// with a registered prefix — flows through DB and disk probes
+// because the first colon-delimited component can legitimately be
+// part of a raw ID):
+//
+//  1. Host-prefixed input -> returned unchanged.
+//  2. DB lookup: exact row (if any) sorts ahead of suffix matches
+//     in SQL; suffix matches come back in most-recent order. If
+//     multiple suffix matches exist without an exact row, the
+//     most recent wins and an ambiguity warning is emitted.
+//  3. Canonical disk probe: when input begins with a registered
+//     agent prefix, strip the prefix and call that agent's
+//     FindSourceFunc so a truly canonical-but-unsynced ID on disk
+//     still resolves.
+//  4. Raw disk probe: call every file-based agent's FindSourceFunc
+//     with the raw input; the first hit yields "<prefix><input>".
+//  5. No match anywhere: returned unchanged with known=false.
 //
 // known reports whether resolution found evidence for the ID.
 // When false, the caller should skip on-demand sync because it
@@ -74,7 +62,7 @@ func resolveRawSessionID(
 	agentDirs map[parser.AgentType][]string,
 	input string,
 ) (resolved string, known bool) {
-	if isCanonicalSessionID(input) {
+	if host, _ := parser.StripHostPrefix(input); host != "" {
 		return input, true
 	}
 
@@ -86,10 +74,8 @@ func resolveRawSessionID(
 			"warning: session id lookup failed: %v\n", err)
 	}
 	if len(matches) > 0 {
-		for _, m := range matches {
-			if m == input {
-				return m, true
-			}
+		if matches[0] == input {
+			return input, true
 		}
 		if len(matches) > 1 {
 			fmt.Fprintf(os.Stderr,
@@ -101,6 +87,31 @@ func resolveRawSessionID(
 		return matches[0], true
 	}
 
+	// Canonical disk probe: if the input starts with a known
+	// agent prefix, trust that interpretation first and strip
+	// before calling FindSourceFunc (which rejects IDs with
+	// colons via IsValidSessionID).
+	for _, def := range parser.Registry {
+		if def.IDPrefix == "" || !def.FileBased ||
+			def.FindSourceFunc == nil {
+			continue
+		}
+		if !strings.HasPrefix(input, def.IDPrefix) {
+			continue
+		}
+		bareID := strings.TrimPrefix(input, def.IDPrefix)
+		for _, dir := range agentDirs[def.Type] {
+			if def.FindSourceFunc(dir, bareID) != "" {
+				return input, true
+			}
+		}
+	}
+
+	// Raw disk probe: treat input as a raw agent ID. Agents
+	// whose raw IDs cannot contain ':' (most of them) reject
+	// the input via IsValidSessionID; agents that accept
+	// colon-bearing raw IDs (Kimi, OpenClaw, Kiro IDE) may
+	// match.
 	for _, def := range parser.Registry {
 		if !def.FileBased || def.FindSourceFunc == nil {
 			continue

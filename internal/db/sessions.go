@@ -882,11 +882,12 @@ func (db *DB) FindSessionIDsByRawSuffix(
 		 WHERE (id = ?1
 		        OR SUBSTR(id, -(LENGTH(?1) + 1)) = ':' || ?1)
 		   AND deleted_at IS NULL
-		 ORDER BY COALESCE(
-		     NULLIF(ended_at, ''),
-		     NULLIF(started_at, ''),
-		     created_at
-		 ) DESC
+		 ORDER BY (id = ?1) DESC,
+		          COALESCE(
+		              NULLIF(ended_at, ''),
+		              NULLIF(started_at, ''),
+		              created_at
+		          ) DESC
 		 LIMIT ?2`,
 		raw, limit,
 	)

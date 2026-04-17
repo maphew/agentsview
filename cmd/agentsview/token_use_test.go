@@ -42,19 +42,38 @@ func upsertSession(
 	}
 }
 
-func TestResolveSessionID_PrefixedInput_ReturnedUnchanged(t *testing.T) {
+func TestResolveSessionID_PrefixedInput_NoEvidence_UnchangedNotKnown(t *testing.T) {
 	d := newTestDB(t)
 	ctx := context.Background()
 
-	// Even when the DB has no matching row, a prefixed input
-	// must be returned unchanged (exact-match contract).
+	// A prefixed input with no DB row and no disk evidence is
+	// returned unchanged so downstream lookup/error messages
+	// use what the caller typed, but known=false so the caller
+	// skips the on-demand sync that would only warn about a
+	// missing source file.
 	input := "codex:019d5490-fe31-7e62-838c-8ba4193f245d"
 	got, known := resolveRawSessionID(ctx, d, nil, input)
 	if got != input {
 		t.Errorf("got %q, want %q", got, input)
 	}
+	if known {
+		t.Errorf("known = true, want false (no evidence)")
+	}
+}
+
+func TestResolveSessionID_HostPrefixedInput_ReturnedUnchanged(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	// Host-prefixed IDs are unambiguously canonical remote IDs;
+	// resolution short-circuits without touching DB or disk.
+	input := "other-host~codex:abc-123"
+	got, known := resolveRawSessionID(ctx, d, nil, input)
+	if got != input {
+		t.Errorf("got %q, want %q", got, input)
+	}
 	if !known {
-		t.Errorf("known = false, want true (prefixed input trusted)")
+		t.Errorf("known = false, want true (host-prefixed)")
 	}
 }
 
@@ -176,6 +195,31 @@ func TestResolveSessionID_BareClaudeAndPrefixedSameUUID_ClaudeExactWins(t *testi
 	}
 }
 
+func TestResolveSessionID_ExactMatchWinsOverNewerCollisions(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	// Bare Claude session is the exact match but older than
+	// multiple prefixed sessions sharing the same suffix. The
+	// exact row must always win, even if a LIMIT on the suffix
+	// query would exclude it by recency.
+	bare := "88888888-8888-8888-8888-888888888888"
+	upsertSession(t, d, bare, "claude", "2026-04-10T10:00:00Z")
+	upsertSession(t, d, "codex:"+bare, "codex",
+		"2026-04-15T10:00:00Z")
+	upsertSession(t, d, "amp:"+bare, "amp",
+		"2026-04-17T10:00:00Z")
+
+	got, known := resolveRawSessionID(ctx, d, nil, bare)
+	if got != bare {
+		t.Errorf("got %q, want %q (exact match must beat "+
+			"newer suffix collisions)", got, bare)
+	}
+	if !known {
+		t.Errorf("known = false, want true")
+	}
+}
+
 func TestResolveSessionID_KimiRawID_ResolvesToPrefixed(t *testing.T) {
 	d := newTestDB(t)
 	ctx := context.Background()
@@ -214,19 +258,82 @@ func TestResolveSessionID_OpenClawRawID_ResolvesToPrefixed(t *testing.T) {
 	}
 }
 
-func TestResolveSessionID_CanonicalKimiID_ReturnedUnchanged(t *testing.T) {
+func TestResolveSessionID_CanonicalKimiID_ResolvesWhenInDB(t *testing.T) {
 	d := newTestDB(t)
 	ctx := context.Background()
 
-	// A fully canonical Kimi ID contains two colons; it must
-	// be returned as-is (the "kimi:" prefix is the signal).
+	// A canonical Kimi ID already in the DB resolves via the
+	// exact-match branch. A canonical ID with no DB row and no
+	// disk evidence falls through to known=false so no
+	// misleading sync warning is emitted.
 	input := "kimi:proj-abc:77777777-7777-7777-7777-777777777777"
+	upsertSession(t, d, input, "kimi", "2026-04-17T10:00:00Z")
+
 	got, known := resolveRawSessionID(ctx, d, nil, input)
 	if got != input {
-		t.Errorf("got %q, want %q (canonical)", got, input)
+		t.Errorf("got %q, want %q (exact DB match)", got, input)
 	}
 	if !known {
-		t.Errorf("known = false, want true (canonical prefix)")
+		t.Errorf("known = false, want true (exact DB match)")
+	}
+}
+
+func TestResolveSessionID_CanonicalCodexID_OnDiskNotInDB(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	// Canonical "codex:<uuid>" not yet synced but present on
+	// disk must resolve via the canonical disk probe — which
+	// strips the prefix before calling FindSourceFunc (the
+	// underlying finder rejects colon-bearing IDs).
+	codexDir := filepath.Join(t.TempDir(), "codex-sessions")
+	uuid := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	dayDir := filepath.Join(codexDir, "2026", "04", "17")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	fname := "rollout-2026-04-17T10-00-00-" + uuid + ".jsonl"
+	if err := os.WriteFile(
+		filepath.Join(dayDir, fname), []byte("{}\n"), 0o644,
+	); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	agentDirs := map[parser.AgentType][]string{
+		parser.AgentCodex: {codexDir},
+	}
+	input := "codex:" + uuid
+	got, known := resolveRawSessionID(ctx, d, agentDirs, input)
+	if got != input {
+		t.Errorf("got %q, want %q (canonical on disk)", got, input)
+	}
+	if !known {
+		t.Errorf("known = false, want true (canonical disk probe)")
+	}
+}
+
+func TestResolveSessionID_RawOpenClawCollidesWithCodexPrefix(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	// OpenClaw permits arbitrary alphanumeric-dash-underscore
+	// agent IDs, so a user may have one literally named "codex".
+	// The raw OpenClaw ID "codex:abc-123" is stored as
+	// "openclaw:codex:abc-123". Passing the raw form must not
+	// be short-circuited as a canonical Codex ID — DB suffix
+	// resolution must take precedence.
+	raw := "codex:abc-123"
+	stored := "openclaw:" + raw
+	upsertSession(t, d, stored, "openclaw",
+		"2026-04-17T10:00:00Z")
+
+	got, known := resolveRawSessionID(ctx, d, nil, raw)
+	if got != stored {
+		t.Errorf("got %q, want %q (raw openclaw must beat "+
+			"canonical-prefix short-circuit)", got, stored)
+	}
+	if !known {
+		t.Errorf("known = false, want true")
 	}
 }
 
