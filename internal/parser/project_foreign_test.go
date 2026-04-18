@@ -9,24 +9,24 @@ import (
 	"testing"
 )
 
-// TestExtractProjectFromCwd_ForeignPath_SkipsStatWalk verifies that
-// a cwd falling inside a locally-configured autofs prefix does not
-// trigger any filesystem stat calls. On macOS, statting under /home
-// fires autofs, which cascades into opendirectoryd/automountd
-// lookups via /usr/libexec/od_user_homes. At bulk-remote-sync scale
-// this pegs both daemons at 100s of % CPU, so the git-root walk
-// must be skipped for such paths.
-func TestExtractProjectFromCwd_ForeignPath_SkipsStatWalk(t *testing.T) {
+// TestExtractProjectFromCwd_AutofsUnresolved_SkipsWalk verifies
+// that a cwd under an autofs prefix whose first component does
+// not resolve locally (the classic "Linux cwd on a macOS box"
+// case) pays for exactly one stat — the probe — and skips the
+// full git-root walk. Without the skip, statting every ancestor
+// hammers automountd/opendirectoryd via /usr/libexec/od_user_homes.
+func TestExtractProjectFromCwd_AutofsUnresolved_SkipsWalk(t *testing.T) {
 	origPrefixes := autofsPrefixes
 	defer func() { autofsPrefixes = origPrefixes }()
 	autofsPrefixes = []string{"/home/"}
+	resetAutofsProbes()
 
 	orig := osStat
 	defer func() { osStat = orig }()
 	var count atomic.Int64
 	osStat = func(path string) (os.FileInfo, error) {
 		count.Add(1)
-		return orig(path)
+		return nil, os.ErrNotExist
 	}
 
 	cwd := "/home/wes/code/example-project"
@@ -36,10 +36,77 @@ func TestExtractProjectFromCwd_ForeignPath_SkipsStatWalk(t *testing.T) {
 		t.Errorf("ExtractProjectFromCwdWithBranch(%q) = %q, want %q",
 			cwd, got, want)
 	}
-	if n := count.Load(); n != 0 {
-		t.Errorf("osStat called %d times for autofs-managed cwd %q; "+
-			"expected 0 (git-root walk should be skipped)",
-			n, cwd)
+	if n := count.Load(); n != 1 {
+		t.Errorf("osStat called %d times for unresolved autofs cwd "+
+			"%q; expected 1 (probe only, walk skipped)", n, cwd)
+	}
+}
+
+// TestExtractProjectFromCwd_AutofsUnresolved_ProbeCached checks
+// that a bulk sync with many cwds under the same autofs first
+// component pays for only one stat across the batch.
+func TestExtractProjectFromCwd_AutofsUnresolved_ProbeCached(t *testing.T) {
+	origPrefixes := autofsPrefixes
+	defer func() { autofsPrefixes = origPrefixes }()
+	autofsPrefixes = []string{"/home/"}
+	resetAutofsProbes()
+
+	orig := osStat
+	defer func() { osStat = orig }()
+	var count atomic.Int64
+	osStat = func(path string) (os.FileInfo, error) {
+		count.Add(1)
+		return nil, os.ErrNotExist
+	}
+
+	for _, cwd := range []string{
+		"/home/wes/code/proj-a",
+		"/home/wes/code/proj-b",
+		"/home/wes/code/nested/proj-c/src",
+	} {
+		_ = ExtractProjectFromCwdWithBranch(cwd, "")
+	}
+	if n := count.Load(); n != 1 {
+		t.Errorf("osStat called %d times across 3 cwds sharing "+
+			"/home/wes; expected 1 (cached probe)", n)
+	}
+}
+
+// TestExtractProjectFromCwd_AutofsResolved_Walks is the regression
+// guard for the reviewer's concern: enterprise hosts where an
+// autofs prefix has a real backing (e.g. NFS-mounted /home) must
+// still resolve projects to their repository roots. A resolving
+// probe lets the git-root walk proceed normally.
+func TestExtractProjectFromCwd_AutofsResolved_Walks(t *testing.T) {
+	origPrefixes := autofsPrefixes
+	defer func() { autofsPrefixes = origPrefixes }()
+	autofsPrefixes = []string{"/home/"}
+	resetAutofsProbes()
+
+	// Use a real directory's FileInfo so IsDir() answers true
+	// when the probe "resolves".
+	realDir := t.TempDir()
+	realInfo, err := os.Stat(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orig := osStat
+	defer func() { osStat = orig }()
+	var count atomic.Int64
+	osStat = func(path string) (os.FileInfo, error) {
+		count.Add(1)
+		if path == "/home/wes" {
+			return realInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	cwd := "/home/wes/code/example"
+	_ = ExtractProjectFromCwdWithBranch(cwd, "")
+	if n := count.Load(); n < 2 {
+		t.Errorf("with resolving autofs probe, expected the walk "+
+			"to stat multiple paths (probe + walk); got %d", n)
 	}
 }
 

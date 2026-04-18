@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -89,14 +90,12 @@ func ExtractProjectFromCwdWithBranch(
 	}
 	cleaned := filepath.Clean(norm)
 
-	// Skip the git-root walk when cwd uses a path convention
-	// foreign to the running OS. There is no local directory to
-	// find, and on macOS walking under /home/* triggers autofs
-	// (auto_home -> /usr/libexec/od_user_homes), which cascades
-	// into opendirectoryd lookups across every user record —
-	// pathological when bulk-processing remote sessions whose
-	// cwds all share a /home/<user>/... prefix.
-	if !isForeignOSPath(cwd, winPath) {
+	// Skip the git-root walk when the cwd cannot resolve to a
+	// real local filesystem location. On macOS a bulk walk under
+	// an unbacked autofs prefix cascades through automountd into
+	// opendirectoryd (/usr/libexec/od_user_homes), so we probe
+	// the prefix once before walking.
+	if !isForeignOSPath(cwd, cleaned, winPath) {
 		if root := findGitRepoRoot(cleaned); root != "" {
 			name := filepath.Base(root)
 			if isInvalidPathBase(name) {
@@ -212,27 +211,74 @@ func detectAutofsPrefixes() []string {
 }
 
 // isForeignOSPath reports whether cwd should bypass the local
-// git-root walk. Two cases qualify:
+// git-root walk.
 //
 //   - Windows-convention paths on POSIX hosts (drive letters, UNC
 //     prefixes) cannot exist as real filesystem locations.
-//   - Paths under a locally-configured autofs prefix: walking them
-//     triggers automountd, which on macOS cascades into
-//     opendirectoryd enumeration of every user record.
+//   - Paths under a local autofs prefix whose first component does
+//     not resolve: walking them on macOS triggers automountd per
+//     ancestor, and auto_home's resolver asks opendirectoryd to
+//     enumerate every user record — a hundred-percent-CPU storm
+//     under bulk remote sync.
 //
-// The autofs set is discovered from /etc/auto_master, so hosts
-// that have replaced the default /home autofs entry with a real
-// mount are not misclassified.
-func isForeignOSPath(cwd string, winPath bool) bool {
+// An autofs prefix that does resolve (e.g. an enterprise NFS-backed
+// /home) falls through to the walk so repository roots are still
+// found.
+func isForeignOSPath(cwd, cleaned string, winPath bool) bool {
 	if winPath {
 		return runtime.GOOS != "windows"
 	}
 	for _, prefix := range autofsPrefixes {
-		if strings.HasPrefix(cwd, prefix) {
-			return true
+		if !strings.HasPrefix(cleaned, prefix) {
+			continue
 		}
+		return !autofsFirstLevelResolves(prefix, cleaned)
 	}
 	return false
+}
+
+// autofsProbes memoises whether the first path component under an
+// autofs prefix actually resolves locally. The cache is keyed by
+// the probed path (e.g. "/home/wes"), so a bulk sync whose cwds
+// all share a single <prefix>/<user> pays one stat overall rather
+// than one per session.
+var (
+	autofsProbesMu sync.RWMutex
+	autofsProbes   = map[string]bool{}
+)
+
+// resetAutofsProbes clears the probe cache. Intended for tests
+// that need deterministic probe counts.
+func resetAutofsProbes() {
+	autofsProbesMu.Lock()
+	autofsProbes = map[string]bool{}
+	autofsProbesMu.Unlock()
+}
+
+// autofsFirstLevelResolves probes whether <prefix>/<first-comp>
+// exists as a real filesystem entry on this host. The result is
+// cached per probed path.
+func autofsFirstLevelResolves(prefix, cleaned string) bool {
+	rest := cleaned[len(prefix):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	key := prefix + rest
+
+	autofsProbesMu.RLock()
+	resolves, ok := autofsProbes[key]
+	autofsProbesMu.RUnlock()
+	if ok {
+		return resolves
+	}
+
+	_, err := osStat(key)
+	resolves = err == nil
+
+	autofsProbesMu.Lock()
+	autofsProbes[key] = resolves
+	autofsProbesMu.Unlock()
+	return resolves
 }
 
 // looksLikeWindowsPath returns true when cwd appears to use
