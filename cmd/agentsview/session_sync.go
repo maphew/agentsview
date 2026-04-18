@@ -44,6 +44,18 @@ func newSessionSyncCommand() *cobra.Command {
 					tr.URL,
 				)
 			}
+			if tr.Mode == transportDirect && tr.DirectReadOnly {
+				// A daemon is active but its TCP probe failed.
+				// Opening a writable engine here would race the
+				// daemon for SQLite write ownership, so refuse
+				// rather than compete.
+				return errors.New(
+					"local daemon is active but not responding; " +
+						"refusing to sync directly to avoid competing " +
+						"for write ownership. Retry once the daemon " +
+						"is reachable, or stop it to sync locally",
+				)
+			}
 
 			svc, cleanup, err := syncService(cfg, tr)
 			if err != nil {

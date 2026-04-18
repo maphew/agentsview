@@ -1181,7 +1181,8 @@ func bulkInsertMessages(
 			}
 			args = append(args,
 				sessionID, m.Ordinal, m.Role,
-				sanitizePG(m.Content), m.ThinkingText, ts,
+				sanitizePG(m.Content),
+				sanitizePG(m.ThinkingText), ts,
 				m.HasThinking,
 				m.HasToolUse, m.ContentLength, m.IsSystem,
 				m.Model, string(m.TokenUsage),

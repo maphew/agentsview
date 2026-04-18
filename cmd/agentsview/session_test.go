@@ -447,6 +447,35 @@ func TestSessionSync_AgainstReadOnlyDaemon_Refuses(t *testing.T) {
 		"should refuse against pg serve daemon")
 }
 
+// TestSessionSync_WhenDaemonActiveButUnreachable_Refuses verifies
+// that `session sync` refuses to open a writable engine when the
+// detected transport is DirectReadOnly (live state file + PID, but
+// TCP probe failing). Falling through would race the daemon for
+// SQLite write ownership.
+func TestSessionSync_WhenDaemonActiveButUnreachable_Refuses(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENT_VIEWER_DATA_DIR", dataDir)
+
+	// Bind then immediately close so the port is guaranteed
+	// free and no TCP listener is accepting.
+	ln, port := freeTCPListener(t)
+	ln.Close()
+
+	_, err := server.WriteStateFile(
+		dataDir, "127.0.0.1", port, "test", false,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { server.RemoveStateFile(dataDir, port) })
+
+	_, err = executeCommand(newRootCommand(),
+		"session", "sync", "some-id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not responding",
+		"should refuse against unreachable active daemon")
+	assert.NotContains(t, err.Error(), "no file_path",
+		"must not fall through to direct-write engine")
+}
+
 // TestSessionWatch_ExitsOnCancel verifies that `session watch`
 // exits cleanly when the cobra Command's context is cancelled,
 // without hanging on the upstream channel. Any NDJSON emitted
