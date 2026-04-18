@@ -8,6 +8,11 @@ import (
 	"unicode"
 )
 
+// osStat is indirected through a var so tests can intercept stat
+// calls from the git-root walker. Production code always uses
+// os.Stat via this binding.
+var osStat = os.Stat
+
 var projectMarkers = []string{
 	"code", "projects", "repos", "src", "work", "dev",
 }
@@ -84,14 +89,14 @@ func ExtractProjectFromCwdWithBranch(
 	}
 	cleaned := filepath.Clean(norm)
 
-	// On non-Windows, a converted Windows path like "C:/Users/..."
-	// is treated as relative by filepath and would cause
-	// findGitRepoRoot to walk up from the process CWD. Skip git
-	// root detection only for foreign Windows paths on POSIX;
-	// on actual Windows hosts, drive-letter paths are native and
-	// git root detection must still run.
-	foreignWinPath := winPath && runtime.GOOS != "windows"
-	if !foreignWinPath {
+	// Skip the git-root walk when cwd uses a path convention
+	// foreign to the running OS. There is no local directory to
+	// find, and on macOS walking under /home/* triggers autofs
+	// (auto_home -> /usr/libexec/od_user_homes), which cascades
+	// into opendirectoryd lookups across every user record —
+	// pathological when bulk-processing remote sessions whose
+	// cwds all share a /home/<user>/... prefix.
+	if !isForeignOSPath(cwd, winPath) {
 		if root := findGitRepoRoot(cleaned); root != "" {
 			name := filepath.Base(root)
 			if isInvalidPathBase(name) {
@@ -152,6 +157,28 @@ func projectFromWorktreeLayout(path string) string {
 	return ""
 }
 
+// isForeignOSPath reports whether cwd uses a path convention that
+// cannot correspond to a local filesystem location on the running
+// OS. Walking such a path with os.Stat is both futile and, on
+// macOS, actively harmful: /home is an autofs mount point whose
+// map resolver (/usr/libexec/od_user_homes) enumerates every user
+// record through opendirectoryd, so bulk probes from remote-sync
+// runs peg opendirectoryd and automountd at many hundred percent
+// CPU. Windows-style paths on POSIX were the original case; the
+// cross-OS home-prefix cases cover the autofs storm symmetrically.
+func isForeignOSPath(cwd string, winPath bool) bool {
+	if winPath {
+		return runtime.GOOS != "windows"
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return strings.HasPrefix(cwd, "/home/")
+	case "linux":
+		return strings.HasPrefix(cwd, "/Users/")
+	}
+	return false
+}
+
 // looksLikeWindowsPath returns true when cwd appears to use
 // Windows path conventions: a drive letter (e.g. "C:\...") or a
 // UNC prefix ("\\server\..."). On POSIX, backslash is a legal
@@ -191,7 +218,7 @@ func findGitRepoRoot(cwd string) string {
 
 	dir := cwd
 	cwdMissing := false
-	if info, err := os.Stat(dir); err == nil {
+	if info, err := osStat(dir); err == nil {
 		if !info.IsDir() {
 			dir = filepath.Dir(dir)
 		}
@@ -212,7 +239,7 @@ func findGitRepoRoot(cwd string) string {
 	if cwdMissing {
 		sibDir := dir
 		for {
-			if _, err := os.Stat(sibDir); err == nil {
+			if _, err := osStat(sibDir); err == nil {
 				break
 			}
 			parent := filepath.Dir(sibDir)
@@ -228,7 +255,7 @@ func findGitRepoRoot(cwd string) string {
 
 	for {
 		gitPath := filepath.Join(dir, ".git")
-		info, err := os.Stat(gitPath)
+		info, err := osStat(gitPath)
 		if err == nil {
 			if info.IsDir() {
 				return dir
@@ -259,7 +286,7 @@ func findGitRepoRoot(cwd string) string {
 func repoRootFromSiblings(dir, cwd string) string {
 	// If dir is itself a repo or worktree, let the normal
 	// upward walk handle it.
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+	if _, err := osStat(filepath.Join(dir, ".git")); err == nil {
 		return ""
 	}
 	entries, err := os.ReadDir(dir)
@@ -282,7 +309,7 @@ func repoRootFromSiblings(dir, cwd string) string {
 			continue
 		}
 		gitPath := filepath.Join(dir, entry.Name(), ".git")
-		info, err := os.Stat(gitPath)
+		info, err := osStat(gitPath)
 		if err != nil {
 			continue
 		}
