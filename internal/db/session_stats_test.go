@@ -153,6 +153,70 @@ func floatsClose(a, b, eps float64) bool {
 	return d <= eps
 }
 
+// seedToolCallsByCategory inserts one assistant message per entry in
+// categories and a matching tool_calls row. Used by tool_mix tests
+// that need precise control over category values (unlike
+// seedAssistantActivity, which always writes category='file').
+func seedToolCallsByCategory(
+	t *testing.T, d *DB, sessionID string, categories []string,
+) {
+	t.Helper()
+	if len(categories) == 0 {
+		return
+	}
+	msgs := make([]Message, 0, len(categories))
+	for i, cat := range categories {
+		msgs = append(msgs, asstMsg(sessionID, i+1, "reply-"+cat))
+	}
+	if err := d.InsertMessages(msgs); err != nil {
+		t.Fatalf("seedToolCallsByCategory %s: InsertMessages: %v",
+			sessionID, err)
+	}
+	for i, cat := range categories {
+		ord := i + 1
+		if _, err := d.getWriter().Exec(`
+			INSERT INTO tool_calls
+				(message_id, session_id, tool_name, category)
+			SELECT id, session_id, ?, ?
+			FROM messages
+			WHERE session_id = ? AND ordinal = ?`,
+			cat, cat, sessionID, ord,
+		); err != nil {
+			t.Fatalf("seedToolCallsByCategory %s: %q: %v",
+				sessionID, cat, err)
+		}
+	}
+}
+
+// seedModelMessages inserts one assistant message per (model, tokens)
+// pair so the model_mix query sees a stable per-message row with known
+// output_tokens. Ordinals are taken relative to startOrd so callers can
+// layer multiple seed passes onto the same session without colliding.
+func seedModelMessages(
+	t *testing.T, d *DB, sessionID string, startOrd int,
+	pairs []struct {
+		model  string
+		tokens int
+	},
+) {
+	t.Helper()
+	if len(pairs) == 0 {
+		return
+	}
+	msgs := make([]Message, 0, len(pairs))
+	for i, p := range pairs {
+		m := asstMsg(sessionID, startOrd+i, "reply")
+		m.Model = p.model
+		m.OutputTokens = p.tokens
+		m.HasOutputTokens = true
+		msgs = append(msgs, m)
+	}
+	if err := d.InsertMessages(msgs); err != nil {
+		t.Fatalf("seedModelMessages %s: InsertMessages: %v",
+			sessionID, err)
+	}
+}
+
 func TestArchetypeLabel(t *testing.T) {
 	cases := []struct {
 		userMsgs int
@@ -880,5 +944,203 @@ func TestGetSessionStats_Velocity_ZeroActive(t *testing.T) {
 	if stats.Velocity.MessagesPerActiveHour != 0 {
 		t.Errorf("MessagesPerActiveHour: got %v want 0",
 			stats.Velocity.MessagesPerActiveHour)
+	}
+}
+
+func TestGetSessionStats_ToolMixAndModelMix(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// Session tm1: 4 tool_calls across 3 categories (Bash×2, Edit, Read).
+	insertSessionFixture(t, d, sessionFixture{
+		id: "tm1", agent: "claude", userMsgs: 5,
+		startedAt: hoursAgo(4),
+	})
+	seedToolCallsByCategory(t, d, "tm1",
+		[]string{"Bash", "Bash", "Edit", "Read"})
+
+	// Session tm2: 2 tool_calls (Grep, Bash).
+	insertSessionFixture(t, d, sessionFixture{
+		id: "tm2", agent: "claude", userMsgs: 3,
+		startedAt: hoursAgo(3),
+	})
+	seedToolCallsByCategory(t, d, "tm2",
+		[]string{"Grep", "Bash"})
+
+	// Session mm1: 2 claude-opus-4-7 assistant messages (1000 + 2000).
+	insertSessionFixture(t, d, sessionFixture{
+		id: "mm1", agent: "claude", userMsgs: 2,
+		startedAt: hoursAgo(2),
+	})
+	seedModelMessages(t, d, "mm1", 1, []struct {
+		model  string
+		tokens int
+	}{
+		{"claude-opus-4-7", 1000},
+		{"claude-opus-4-7", 2000},
+	})
+
+	// Session mm2: 1 claude-sonnet-4-6 assistant message (500 tokens).
+	insertSessionFixture(t, d, sessionFixture{
+		id: "mm2", agent: "claude", userMsgs: 2,
+		startedAt: hoursAgo(2),
+	})
+	seedModelMessages(t, d, "mm2", 1, []struct {
+		model  string
+		tokens int
+	}{
+		{"claude-sonnet-4-6", 500},
+	})
+
+	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
+	if err != nil {
+		t.Fatalf("GetSessionStats: %v", err)
+	}
+
+	wantCats := map[string]int{
+		"Bash": 3,
+		"Edit": 1,
+		"Read": 1,
+		"Grep": 1,
+	}
+	gotCats := stats.ToolMix.ByCategory
+	if len(gotCats) != len(wantCats) {
+		t.Errorf("ToolMix.ByCategory len: got %d want %d (got=%v)",
+			len(gotCats), len(wantCats), gotCats)
+	}
+	for cat, want := range wantCats {
+		if gotCats[cat] != want {
+			t.Errorf("ToolMix.ByCategory[%q]: got %d want %d",
+				cat, gotCats[cat], want)
+		}
+	}
+	if stats.ToolMix.TotalCalls != 6 {
+		t.Errorf("ToolMix.TotalCalls: got %d want 6",
+			stats.ToolMix.TotalCalls)
+	}
+
+	wantTokens := map[string]int64{
+		"claude-opus-4-7":   3000,
+		"claude-sonnet-4-6": 500,
+	}
+	gotTokens := stats.ModelMix.ByTokens
+	if len(gotTokens) != len(wantTokens) {
+		t.Errorf("ModelMix.ByTokens len: got %d want %d (got=%v)",
+			len(gotTokens), len(wantTokens), gotTokens)
+	}
+	for model, want := range wantTokens {
+		if gotTokens[model] != want {
+			t.Errorf("ModelMix.ByTokens[%q]: got %d want %d",
+				model, gotTokens[model], want)
+		}
+	}
+}
+
+// Window and agent filters must gate both mixes: tool_calls and
+// messages attached to sessions outside the window or not matching
+// the agent filter must not appear in ToolMix or ModelMix.
+func TestGetSessionStats_ToolMixAndModelMix_Filters(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// In-window claude session: should contribute to both mixes.
+	// seedToolCallsByCategory uses ordinals 1..2; seedModelMessages
+	// starts at 3 to avoid the UNIQUE(session_id, ordinal) collision.
+	insertSessionFixture(t, d, sessionFixture{
+		id: "in1", agent: "claude", userMsgs: 3,
+		startedAt: hoursAgo(2),
+	})
+	seedToolCallsByCategory(t, d, "in1", []string{"Bash", "Read"})
+	seedModelMessages(t, d, "in1", 3, []struct {
+		model  string
+		tokens int
+	}{
+		{"claude-opus-4-7", 800},
+	})
+
+	// Out-of-window session (50 days old): must be excluded entirely.
+	oldStart := time.Now().UTC().Add(-50 * 24 * time.Hour).
+		Format(time.RFC3339)
+	insertSessionFixture(t, d, sessionFixture{
+		id: "old1", agent: "claude", userMsgs: 3,
+		startedAt: oldStart,
+	})
+	seedToolCallsByCategory(t, d, "old1", []string{"Edit", "Edit"})
+	seedModelMessages(t, d, "old1", 3, []struct {
+		model  string
+		tokens int
+	}{
+		{"claude-opus-4-7", 9000},
+	})
+
+	// Wrong-agent session inside the window: excluded by Agent=claude.
+	insertSessionFixture(t, d, sessionFixture{
+		id: "cx1", agent: "codex", userMsgs: 3,
+		startedAt: hoursAgo(2),
+	})
+	seedToolCallsByCategory(t, d, "cx1", []string{"Grep"})
+	seedModelMessages(t, d, "cx1", 2, []struct {
+		model  string
+		tokens int
+	}{
+		{"codex-gpt-5", 7000},
+	})
+
+	stats, err := d.GetSessionStats(ctx, StatsFilter{
+		Since: "28d", Agent: "claude",
+	})
+	if err != nil {
+		t.Fatalf("GetSessionStats: %v", err)
+	}
+
+	// Only in1's 2 tool_calls survive.
+	if stats.ToolMix.TotalCalls != 2 {
+		t.Errorf("ToolMix.TotalCalls: got %d want 2",
+			stats.ToolMix.TotalCalls)
+	}
+	if stats.ToolMix.ByCategory["Bash"] != 1 ||
+		stats.ToolMix.ByCategory["Read"] != 1 {
+		t.Errorf("ToolMix.ByCategory: got %v want Bash=1 Read=1",
+			stats.ToolMix.ByCategory)
+	}
+	if stats.ToolMix.ByCategory["Edit"] != 0 {
+		t.Errorf("out-of-window Edit leaked: got %d",
+			stats.ToolMix.ByCategory["Edit"])
+	}
+	if stats.ToolMix.ByCategory["Grep"] != 0 {
+		t.Errorf("wrong-agent Grep leaked: got %d",
+			stats.ToolMix.ByCategory["Grep"])
+	}
+
+	// Only in1's 800 tokens survive.
+	if got := stats.ModelMix.ByTokens["claude-opus-4-7"]; got != 800 {
+		t.Errorf("ModelMix.ByTokens[claude-opus-4-7]: got %d want 800",
+			got)
+	}
+	if _, ok := stats.ModelMix.ByTokens["codex-gpt-5"]; ok {
+		t.Errorf("wrong-agent model leaked: %v",
+			stats.ModelMix.ByTokens)
+	}
+}
+
+// Empty-window case: no sessions → both mixes must serialize as empty
+// maps (not nil) so the JSON output keeps stable keys.
+func TestGetSessionStats_ToolMixAndModelMix_Empty(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
+	if err != nil {
+		t.Fatalf("GetSessionStats: %v", err)
+	}
+	if stats.ToolMix.ByCategory == nil {
+		t.Errorf("ToolMix.ByCategory: got nil want non-nil map")
+	}
+	if stats.ToolMix.TotalCalls != 0 {
+		t.Errorf("ToolMix.TotalCalls: got %d want 0",
+			stats.ToolMix.TotalCalls)
+	}
+	if stats.ModelMix.ByTokens == nil {
+		t.Errorf("ModelMix.ByTokens: got nil want non-nil map")
 	}
 }

@@ -23,9 +23,9 @@ type StatsFilter struct {
 }
 
 // GetSessionStats computes the v1 session-stats JSON response.
-// Sections not yet wired (distributions, velocity, tool_mix, etc.)
-// remain at their zero values until the tasks that implement them
-// land.
+// Sections not yet wired (adoption, cache_economics, temporal,
+// outcomes, agent_portfolio) remain at their zero values until the
+// tasks that implement them land.
 func (db *DB) GetSessionStats(
 	ctx context.Context, f StatsFilter,
 ) (*SessionStats, error) {
@@ -72,7 +72,109 @@ func (db *DB) GetSessionStats(
 	}
 	computeVelocity(stats, accum)
 
+	if err := db.computeToolAndModelMix(
+		ctx, stats, sessionIDs,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"computing tool/model mix: %w", err,
+		)
+	}
+
 	return stats, nil
+}
+
+// computeToolAndModelMix fills stats.ToolMix and stats.ModelMix from
+// tool_calls and messages attached to sessionIDs. The session-level
+// window and agent/project filters are already applied in
+// loadSessionsInWindow — restricting to sessionIDs inherits those
+// predicates without re-running the WHERE clause.
+//
+// Both mix maps are always non-nil so the JSON output keeps stable
+// keys when the window contains no sessions.
+func (db *DB) computeToolAndModelMix(
+	ctx context.Context, stats *SessionStats, sessionIDs []string,
+) error {
+	stats.ToolMix.ByCategory = map[string]int{}
+	stats.ModelMix.ByTokens = map[string]int64{}
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+
+	if err := queryChunked(sessionIDs,
+		func(chunk []string) error {
+			return db.accumulateToolMix(ctx, stats, chunk)
+		}); err != nil {
+		return err
+	}
+
+	return queryChunked(sessionIDs,
+		func(chunk []string) error {
+			return db.accumulateModelMix(ctx, stats, chunk)
+		})
+}
+
+// accumulateToolMix folds one chunk of session IDs into
+// stats.ToolMix. Each row in tool_calls increments the matching
+// category bucket and the total counter; empty-string categories are
+// silently grouped under "" so the total stays consistent with
+// GetAnalyticsTools.
+func (db *DB) accumulateToolMix(
+	ctx context.Context, stats *SessionStats, sessionIDs []string,
+) error {
+	ph, args := inPlaceholders(sessionIDs)
+	q := `SELECT category, COUNT(*)
+		FROM tool_calls
+		WHERE session_id IN ` + ph + `
+		GROUP BY category`
+	rows, err := db.getReader().QueryContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("querying tool_calls mix: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var category string
+		var count int
+		if err := rows.Scan(&category, &count); err != nil {
+			return fmt.Errorf("scanning tool_calls mix: %w", err)
+		}
+		stats.ToolMix.ByCategory[category] += count
+		stats.ToolMix.TotalCalls += count
+	}
+	return rows.Err()
+}
+
+// accumulateModelMix folds one chunk of session IDs into
+// stats.ModelMix. Token contribution is messages.output_tokens summed
+// per model — the per-message cost column, matching the spec's
+// "model_mix.by_tokens reflects total output tokens per model".
+// Messages with empty model or zero output_tokens are ignored so
+// untagged / pre-token-accounting rows never distort the distribution.
+func (db *DB) accumulateModelMix(
+	ctx context.Context, stats *SessionStats, sessionIDs []string,
+) error {
+	ph, args := inPlaceholders(sessionIDs)
+	q := `SELECT model, COALESCE(SUM(output_tokens), 0)
+		FROM messages
+		WHERE session_id IN ` + ph + `
+			AND model != ''
+		GROUP BY model`
+	rows, err := db.getReader().QueryContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("querying model mix: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var model string
+		var total int64
+		if err := rows.Scan(&model, &total); err != nil {
+			return fmt.Errorf("scanning model mix: %w", err)
+		}
+		if total == 0 {
+			continue
+		}
+		stats.ModelMix.ByTokens[model] += total
+	}
+	return rows.Err()
 }
 
 // computeVelocity fills SessionStats.Velocity from an already-populated
