@@ -17,9 +17,25 @@ func TestSanitizeTerminal(t *testing.T) {
 			want: "hello world",
 		},
 		{
-			name: "whitespace preserved",
+			name: "newline and tab preserved; CR stripped",
 			in:   "line1\nline2\ttab\rcr",
-			want: "line1\nline2\ttab\rcr",
+			want: "line1\nline2\ttabcr",
+		},
+		{
+			// Bare \r on a TTY returns the cursor to column 0
+			// and lets later text overwrite earlier output —
+			// a spoofing vector even without ANSI escapes.
+			name: "strips bare CR to block overwrite attacks",
+			in:   "safe output\rEVIL",
+			want: "safe outputEVIL",
+		},
+		{
+			// CRLF from Windows-style sources collapses to LF;
+			// terminals treat \n alone as a newline so display
+			// still looks right.
+			name: "CRLF collapses to LF",
+			in:   "line1\r\nline2",
+			want: "line1\nline2",
 		},
 		{
 			name: "strips ESC (C0)",

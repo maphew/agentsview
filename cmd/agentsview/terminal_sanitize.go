@@ -8,12 +8,15 @@ import (
 	"unicode/utf8"
 )
 
-// sanitizeTerminal strips C0/C1 control bytes (including ESC) from
-// s so that session-derived text — message content, display names,
-// project names, tool names, etc. — cannot drive terminal escape
-// sequences when printed in --format human mode. Preserves the
-// printable whitespace controls \n, \r, \t so existing formatting
-// still works.
+// sanitizeTerminal strips C0/C1 control bytes (including ESC and
+// CR) from s so that session-derived text — message content,
+// display names, project names, tool names, etc. — cannot drive
+// terminal escape sequences when printed in --format human mode.
+// Preserves only \n and \t so line breaks and tabs still work;
+// carriage return is dropped because bare \r returns the cursor
+// to column 0 and lets "safe\rEVIL" overwrite earlier output
+// without any ANSI involved. CRLF input still renders correctly
+// because terminals treat lone \n as a newline.
 //
 // Rationale: even though agentsview is a single-user tool and
 // session files are generally trusted, content flows in from
@@ -38,7 +41,7 @@ func sanitizeTerminal(s string) string {
 			continue
 		}
 		switch {
-		case r == '\n' || r == '\r' || r == '\t':
+		case r == '\n' || r == '\t':
 			b.WriteRune(r)
 		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
 			// C0, DEL, C1 controls: dropped.
@@ -53,11 +56,12 @@ func sanitizeTerminal(s string) string {
 // hasControlBytes is a fast-path check that avoids building a new
 // string when s is already clean. It only looks at raw bytes — the
 // UTF-8 range pass in sanitizeTerminal handles rune boundaries.
+// Keep the preserved set here in sync with sanitizeTerminal.
 func hasControlBytes(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c == '\n' || c == '\r' || c == '\t':
+		case c == '\n' || c == '\t':
 			continue
 		case c < 0x20, c == 0x7f, c >= 0x80 && c <= 0x9f:
 			return true
