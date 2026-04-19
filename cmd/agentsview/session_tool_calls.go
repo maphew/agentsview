@@ -39,7 +39,8 @@ func newSessionToolCallsCommand() *cobra.Command {
 }
 
 // printToolCallsHuman writes a tabwriter-aligned table. Timestamp
-// is trimmed to 19 chars (YYYY-MM-DDTHH:MM:SS).
+// is trimmed to 19 chars (YYYY-MM-DDTHH:MM:SS). Session-derived
+// fields are sanitized for terminal safety.
 func printToolCallsHuman(w io.Writer, list *service.ToolCallList) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ORDINAL\tTIMESTAMP\tTOOL\tCATEGORY")
@@ -49,7 +50,10 @@ func printToolCallsHuman(w io.Writer, list *service.ToolCallList) error {
 			ts = ts[:19]
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n",
-			tc.Ordinal, ts, tc.ToolName, tc.Category)
+			tc.Ordinal,
+			sanitizeTerminal(ts),
+			sanitizeTerminal(tc.ToolName),
+			sanitizeTerminal(tc.Category))
 	}
 	return tw.Flush()
 }

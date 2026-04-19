@@ -136,10 +136,16 @@ func printSessionListHuman(
 			started = (*s.StartedAt)[:16]
 		}
 		fmt.Fprintf(w, "%-40s  %-20s  %-15s  %s\n",
-			s.ID, s.Project, s.Agent, started)
+			sanitizeTerminal(s.ID),
+			sanitizeTerminal(s.Project),
+			sanitizeTerminal(s.Agent),
+			sanitizeTerminal(started))
 	}
 	if list.NextCursor != "" {
-		fmt.Fprintf(w, "\nMore results: --cursor %s\n", list.NextCursor)
+		// Cursor is an opaque server-minted string. Sanitize too
+		// so a malicious DB row can't feed escapes through a hint.
+		fmt.Fprintf(w, "\nMore results: --cursor %s\n",
+			sanitizeTerminal(list.NextCursor))
 	}
 	return nil
 }

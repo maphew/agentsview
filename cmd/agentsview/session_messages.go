@@ -67,6 +67,8 @@ func newSessionMessagesCommand() *cobra.Command {
 
 // printMessagesHuman prints each message as a header block followed
 // by its content. Timestamp is trimmed to YYYY-MM-DDTHH:MM:SS.
+// Session-derived fields are sanitized so escape sequences embedded
+// in agent output can't spoof the terminal.
 func printMessagesHuman(w io.Writer, list *service.MessageList) error {
 	for _, m := range list.Messages {
 		ts := m.Timestamp
@@ -74,8 +76,8 @@ func printMessagesHuman(w io.Writer, list *service.MessageList) error {
 			ts = ts[:19]
 		}
 		fmt.Fprintf(w, "--- #%d  %s  %s ---\n",
-			m.Ordinal, m.Role, ts)
-		fmt.Fprintln(w, m.Content)
+			m.Ordinal, sanitizeTerminal(m.Role), sanitizeTerminal(ts))
+		fmt.Fprintln(w, sanitizeTerminal(m.Content))
 		fmt.Fprintln(w)
 	}
 	return nil

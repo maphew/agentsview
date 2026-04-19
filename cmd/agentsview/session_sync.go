@@ -70,7 +70,8 @@ func newSessionSyncCommand() *cobra.Command {
 			if outputFormat(cmd) == "json" {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(detail)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "synced: %s\n", detail.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "synced: %s\n",
+				sanitizeTerminal(detail.ID))
 			return nil
 		},
 	}

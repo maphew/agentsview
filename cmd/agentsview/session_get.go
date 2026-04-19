@@ -50,18 +50,20 @@ func printSessionDetailHuman(w io.Writer, s *service.SessionDetail) error {
 	if s.DisplayName != nil && *s.DisplayName != "" {
 		name = *s.DisplayName
 	}
-	fmt.Fprintf(w, "%s %s\n", label("ID"), s.ID)
-	fmt.Fprintf(w, "%s %s\n", label("Name"), name)
-	fmt.Fprintf(w, "%s %s\n", label("Project"), s.Project)
-	fmt.Fprintf(w, "%s %s\n", label("Agent"), s.Agent)
-	fmt.Fprintf(w, "%s %s\n", label("Machine"), s.Machine)
-	fmt.Fprintf(w, "%s %s\n", label("Started At"), derefStringOrDash(s.StartedAt))
-	fmt.Fprintf(w, "%s %s\n", label("Ended At"), derefStringOrDash(s.EndedAt))
+	fmt.Fprintf(w, "%s %s\n", label("ID"), sanitizeTerminal(s.ID))
+	fmt.Fprintf(w, "%s %s\n", label("Name"), sanitizeTerminal(name))
+	fmt.Fprintf(w, "%s %s\n", label("Project"), sanitizeTerminal(s.Project))
+	fmt.Fprintf(w, "%s %s\n", label("Agent"), sanitizeTerminal(s.Agent))
+	fmt.Fprintf(w, "%s %s\n", label("Machine"), sanitizeTerminal(s.Machine))
+	fmt.Fprintf(w, "%s %s\n",
+		label("Started At"), sanitizeTerminal(derefStringOrDash(s.StartedAt)))
+	fmt.Fprintf(w, "%s %s\n",
+		label("Ended At"), sanitizeTerminal(derefStringOrDash(s.EndedAt)))
 	fmt.Fprintf(w, "%s %d/%d\n",
 		label("Messages"), s.UserMessageCount, s.MessageCount)
 	if s.Outcome != "" {
-		fmt.Fprintf(w, "%s %s [%s]\n",
-			label("Outcome"), s.Outcome, s.OutcomeConfidence)
+		fmt.Fprintf(w, "%s %s [%s]\n", label("Outcome"),
+			sanitizeTerminal(s.Outcome), sanitizeTerminal(s.OutcomeConfidence))
 	}
 	if s.HealthScore != nil {
 		grade := "-"
@@ -69,7 +71,7 @@ func printSessionDetailHuman(w io.Writer, s *service.SessionDetail) error {
 			grade = *s.HealthGrade
 		}
 		fmt.Fprintf(w, "%s %d (%s)\n",
-			label("Health"), *s.HealthScore, grade)
+			label("Health"), *s.HealthScore, sanitizeTerminal(grade))
 	} else {
 		fmt.Fprintf(w, "%s -\n", label("Health"))
 	}
