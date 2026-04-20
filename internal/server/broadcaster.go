@@ -72,6 +72,18 @@ func (b *Broadcaster) Emit(scope string) {
 	now := time.Now()
 	if b.minInterval == 0 || b.lastEmit.IsZero() ||
 		now.Sub(b.lastEmit) >= b.minInterval {
+		// Leading edge. Cancel any trailing state left over from the
+		// prior window: without this, a timer whose goroutine had
+		// already fired and was waiting on b.mu could acquire it
+		// after this call and deliver a stale coalesced event. Stop
+		// prevents unfired timers from running; clearing pending
+		// makes flushTrailing a no-op for timers whose goroutine
+		// already started.
+		b.pending = nil
+		if b.timer != nil {
+			b.timer.Stop()
+			b.timer = nil
+		}
 		b.lastEmit = now
 		b.broadcastLocked(Event{Scope: scope})
 		return

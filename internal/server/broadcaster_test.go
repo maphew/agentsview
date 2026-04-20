@@ -164,6 +164,53 @@ func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 	}
 }
 
+func TestBroadcaster_LeadingEdgeCancelsPendingTrailing(t *testing.T) {
+	const interval = 50 * time.Millisecond
+	b := newBroadcasterWithInterval(interval)
+	sub, unsub := b.Subscribe()
+	defer unsub()
+
+	// Leading broadcast fills the window.
+	b.Emit("a")
+	select {
+	case <-sub:
+	case <-time.After(interval):
+		t.Fatal("leading emit did not broadcast")
+	}
+
+	// Rate-limited emit schedules a trailing broadcast of "b".
+	b.Emit("b")
+
+	// Simulate the race: another Emit arrives just after the window
+	// boundary but before the in-flight trailing timer can acquire
+	// the lock. Backdating lastEmit forces the next Emit to take the
+	// leading branch while pending is still set and the timer is
+	// still armed.
+	b.mu.Lock()
+	b.lastEmit = time.Now().Add(-2 * interval)
+	b.mu.Unlock()
+
+	b.Emit("c")
+	select {
+	case ev := <-sub:
+		if ev.Scope != "c" {
+			t.Errorf("leading broadcast scope %q, want %q", ev.Scope, "c")
+		}
+	case <-time.After(interval):
+		t.Fatal("second leading emit did not broadcast")
+	}
+
+	// The pre-existing trailing timer for "b" may still fire. If the
+	// leading branch did not cancel pending/timer, flushTrailing
+	// would now deliver a stale "b" broadcast. Wait past the
+	// original deadline and assert no extra event arrives.
+	select {
+	case ev := <-sub:
+		t.Fatalf("stale trailing broadcast after leading edge: %v", ev)
+	case <-time.After(2 * interval):
+	}
+}
+
 func TestBroadcaster_EmitAfterIntervalBroadcastsImmediately(t *testing.T) {
 	const interval = 50 * time.Millisecond
 	b := newBroadcasterWithInterval(interval)
