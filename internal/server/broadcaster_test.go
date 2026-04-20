@@ -7,7 +7,7 @@ import (
 )
 
 func TestBroadcaster_EmitFansOutToAllSubscribers(t *testing.T) {
-	b := NewBroadcaster()
+	b := NewBroadcaster(10 * time.Second)
 	sub1, unsub1 := b.Subscribe()
 	defer unsub1()
 	sub2, unsub2 := b.Subscribe()
@@ -31,7 +31,7 @@ func TestBroadcaster_EmitIsNonBlockingOnSlowSubscriber(t *testing.T) {
 	// Disable rate limiting so every Emit attempts a broadcast, which
 	// is what exercises the non-blocking select-default path against
 	// a slow subscriber.
-	b := newBroadcasterWithInterval(0)
+	b := NewBroadcaster(0)
 	slow, unsub := b.Subscribe()
 	defer unsub()
 
@@ -66,7 +66,7 @@ func TestBroadcaster_EmitIsNonBlockingOnSlowSubscriber(t *testing.T) {
 }
 
 func TestBroadcaster_UnsubscribeStopsDelivery(t *testing.T) {
-	b := NewBroadcaster()
+	b := NewBroadcaster(10 * time.Second)
 	sub, unsub := b.Subscribe()
 	unsub()
 
@@ -86,7 +86,7 @@ func TestBroadcaster_UnsubscribeStopsDelivery(t *testing.T) {
 func TestBroadcaster_ConcurrentSubscribeAndEmit(t *testing.T) {
 	// Disable rate limiting so each subscriber's Emit reliably
 	// produces a broadcast during the race.
-	b := newBroadcasterWithInterval(0)
+	b := NewBroadcaster(0)
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
@@ -104,7 +104,7 @@ func TestBroadcaster_ConcurrentSubscribeAndEmit(t *testing.T) {
 }
 
 func TestBroadcaster_LeadingEdgeEmitsImmediately(t *testing.T) {
-	b := newBroadcasterWithInterval(time.Second)
+	b := NewBroadcaster(time.Second)
 	sub, unsub := b.Subscribe()
 	defer unsub()
 
@@ -122,7 +122,7 @@ func TestBroadcaster_LeadingEdgeEmitsImmediately(t *testing.T) {
 
 func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 	const interval = 100 * time.Millisecond
-	b := newBroadcasterWithInterval(interval)
+	b := NewBroadcaster(interval)
 	sub, unsub := b.Subscribe()
 	defer unsub()
 
@@ -166,7 +166,7 @@ func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 
 func TestBroadcaster_LeadingEdgeCancelsPendingTrailing(t *testing.T) {
 	const interval = 50 * time.Millisecond
-	b := newBroadcasterWithInterval(interval)
+	b := NewBroadcaster(interval)
 	sub, unsub := b.Subscribe()
 	defer unsub()
 
@@ -219,7 +219,7 @@ func TestBroadcaster_StaleTrailingCallbackDoesNotConsumeNewerPending(t *testing.
 	// broadcasts the newer pending event immediately, violating the
 	// rate limit.
 	const interval = 50 * time.Millisecond
-	b := newBroadcasterWithInterval(interval)
+	b := NewBroadcaster(interval)
 	sub, unsub := b.Subscribe()
 	defer unsub()
 
@@ -276,7 +276,7 @@ func TestBroadcaster_StaleTrailingCallbackDoesNotConsumeNewerPending(t *testing.
 
 func TestBroadcaster_EmitAfterIntervalBroadcastsImmediately(t *testing.T) {
 	const interval = 50 * time.Millisecond
-	b := newBroadcasterWithInterval(interval)
+	b := NewBroadcaster(interval)
 	sub, unsub := b.Subscribe()
 	defer unsub()
 

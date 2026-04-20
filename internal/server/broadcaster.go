@@ -10,13 +10,6 @@ import (
 // starts dropping events on its channel.
 const broadcasterBufferCap = 8
 
-// broadcasterEmitInterval is the minimum wall-clock time between
-// broadcasts to subscribers. Emits that arrive within this window
-// after a prior broadcast are coalesced into a single trailing
-// broadcast that fires once the window elapses. Bounds dashboard
-// refetch work when many agents are actively writing files.
-const broadcasterEmitInterval = 10 * time.Second
-
 // Event is a refresh signal sent by the sync engine after a pass
 // that wrote data. Scope is advisory — subscribers may filter on
 // it but are free to treat it as "refetch now".
@@ -52,19 +45,14 @@ type Broadcaster struct {
 	timerGen uint64
 }
 
-// NewBroadcaster creates an empty broadcaster with the production
-// rate-limit interval.
-func NewBroadcaster() *Broadcaster {
-	return newBroadcasterWithInterval(broadcasterEmitInterval)
-}
-
-// newBroadcasterWithInterval lets tests use a short window (or
-// disable rate limiting with 0) without exposing the tuning knob
-// to production callers.
-func newBroadcasterWithInterval(d time.Duration) *Broadcaster {
+// NewBroadcaster creates an empty broadcaster. minInterval is the
+// minimum wall-clock time between broadcasts; zero (or any
+// non-positive value) disables coalescing so every Emit fans out
+// immediately.
+func NewBroadcaster(minInterval time.Duration) *Broadcaster {
 	return &Broadcaster{
 		subs:        make(map[chan Event]struct{}),
-		minInterval: d,
+		minInterval: minInterval,
 	}
 }
 

@@ -98,7 +98,7 @@ func runServe(cfg config.Config) {
 	)
 	defer stop()
 
-	broadcaster := server.NewBroadcaster()
+	broadcaster := server.NewBroadcaster(cfg.EventsCoalesceInterval)
 
 	var engine *sync.Engine
 	if !cfg.NoSync {

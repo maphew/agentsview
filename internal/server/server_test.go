@@ -113,7 +113,8 @@ func setupWithServerOpts(
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	broadcaster := server.NewBroadcaster()
+	// Disable coalescing in tests so emits fan out deterministically.
+	broadcaster := server.NewBroadcaster(0)
 	engineCfg := sync.EngineConfig{
 		AgentDirs: map[parser.AgentType][]string{
 			parser.AgentClaude: {claudeDir},

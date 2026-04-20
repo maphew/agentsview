@@ -97,6 +97,13 @@ type Config struct {
 
 	ResultContentBlockedCategories []string `json:"result_content_blocked_categories,omitempty" toml:"result_content_blocked_categories"`
 
+	// EventsCoalesceInterval is the minimum wall-clock time between
+	// SSE data_changed broadcasts to connected clients. Emits that
+	// arrive within this window after a prior broadcast are coalesced
+	// into a single trailing broadcast, bounding dashboard refetch
+	// work during bursts of sync activity. Zero disables coalescing.
+	EventsCoalesceInterval time.Duration `json:"events_coalesce_interval,omitempty" toml:"events_coalesce_interval"`
+
 	// HostExplicit is true when the user passed --host on the CLI.
 	// Used to prevent auto-bind to 0.0.0.0 when the user
 	// explicitly requested a specific host.
@@ -158,6 +165,7 @@ func Default() (Config, error) {
 		agentDirSource:                 agentDirSource,
 		WatchExcludePatterns:           []string{".git", "node_modules", "__pycache__", ".venv", "venv", "vendor", ".next"},
 		ResultContentBlockedCategories: []string{"Read", "Glob"},
+		EventsCoalesceInterval:         10 * time.Second,
 	}, nil
 }
 
@@ -599,6 +607,10 @@ func RegisterServeFlags(fs *flag.FlagSet) {
 		"require-auth", false,
 		"Require a bearer token for all API requests",
 	)
+	fs.Duration(
+		"events-coalesce-interval", 10*time.Second,
+		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
+	)
 }
 
 // RegisterServePFlags registers serve-command flags on fs.
@@ -659,6 +671,10 @@ func RegisterServePFlags(fs *pflag.FlagSet) {
 		"require-auth", false,
 		"Require a bearer token for all API requests",
 	)
+	fs.Duration(
+		"events-coalesce-interval", 10*time.Second,
+		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
+	)
 }
 
 // applyFlags copies explicitly-set flags from fs into cfg.
@@ -714,6 +730,10 @@ func applyFlagValue(cfg *Config, name, value string) {
 		cfg.DisableUpdateCheck = value == "true"
 	case "require-auth":
 		cfg.RequireAuth = value == "true"
+	case "events-coalesce-interval":
+		if d, err := time.ParseDuration(value); err == nil {
+			cfg.EventsCoalesceInterval = d
+		}
 	}
 }
 
