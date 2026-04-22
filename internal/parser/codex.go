@@ -1236,9 +1236,11 @@ func IsIncrementalFullParseFallback(err error) bool {
 }
 
 func isCodexSystemMessage(content string) bool {
+	trimmed := strings.TrimSpace(content)
 	return strings.HasPrefix(content, "# AGENTS.md") ||
 		strings.HasPrefix(content, "<environment_context>") ||
 		strings.HasPrefix(content, "<INSTRUCTIONS>") ||
+		strings.HasPrefix(trimmed, "<turn_aborted>") ||
 		isCodexSubagentNotification(content)
 }
 

@@ -1506,3 +1506,30 @@ func TestReadCodexModelAtOffset(t *testing.T) {
 		assert.Equal(t, "", got)
 	})
 }
+
+// TestParseCodexSession_TurnAbortedNotCountedAsUser pins the
+// behavior that Codex's synthetic <turn_aborted> "user" message
+// (emitted when codex exec is interrupted) is filtered like other
+// system messages and does not inflate UserMessageCount. Without
+// this, a single-turn roborev review session whose codex process
+// was killed during shutdown gets UserMessageCount=2 and falls
+// through the IsAutomatedSession single-turn gate.
+func TestParseCodexSession_TurnAbortedNotCountedAsUser(t *testing.T) {
+	turnAborted := "<turn_aborted>\nThe user interrupted the previous turn on purpose. " +
+		"Any running unified exec processes may still be running in the background. " +
+		"If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>"
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON("abc", "/tmp", "codex_exec", tsEarly),
+		testjsonl.CodexMsgJSON("user", "You are a code reviewer. Review the diff.", tsEarlyS1),
+		testjsonl.CodexMsgJSON("user", turnAborted, tsEarlyS5),
+	)
+	sess, msgs := runCodexParserTest(t, "test.jsonl", content, false)
+
+	require.NotNil(t, sess)
+	assert.Equal(t, 1, sess.UserMessageCount,
+		"<turn_aborted> synthetic must not be counted as a user message")
+	for _, m := range msgs {
+		assert.NotContains(t, m.Content, "<turn_aborted>",
+			"<turn_aborted> synthetic must be filtered from message list")
+	}
+}
