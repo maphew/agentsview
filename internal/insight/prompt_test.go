@@ -163,6 +163,38 @@ func TestBuildPrompt(t *testing.T) {
 			},
 			wantContains: []string{"No sessions found"},
 		},
+		{
+			name: "excludes automated sessions",
+			req: GenerateRequest{
+				Type:     "daily_activity",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-15",
+			},
+			seed: func(t *testing.T, d *db.DB) {
+				// A normal user session.
+				dbtest.SeedSession(t, d, "user-session", "my-app", func(s *db.Session) {
+					s.MessageCount = 5
+					s.UserMessageCount = 2
+					s.StartedAt = dbtest.Ptr("2025-01-15T10:00:00Z")
+					s.EndedAt = dbtest.Ptr("2025-01-15T11:00:00Z")
+					s.FirstMessage = dbtest.Ptr("Fix the login bug")
+				})
+				// An automated session: roborev review, single-turn,
+				// is_automated must be true.
+				dbtest.SeedSession(t, d, "auto-session", "my-app", func(s *db.Session) {
+					s.MessageCount = 2
+					s.UserMessageCount = 1
+					s.StartedAt = dbtest.Ptr("2025-01-15T12:00:00Z")
+					s.EndedAt = dbtest.Ptr("2025-01-15T12:05:00Z")
+					s.FirstMessage = dbtest.Ptr(
+						"You are a code reviewer. Review the diff.",
+					)
+					s.IsAutomated = true
+				})
+			},
+			wantContains: []string{"user-session", "Fix the login bug"},
+			wantNot:      []string{"auto-session", "code reviewer"},
+		},
 	}
 
 	for _, tt := range tests {
