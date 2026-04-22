@@ -558,7 +558,7 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-const isAutomatedBackfillMetadataKey = "is_automated_backfill_v2"
+const isAutomatedBackfillMetadataKey = "is_automated_backfill_v3"
 
 // backfillIsAutomatedPG recomputes is_automated for all PG
 // sessions, correcting both false negatives (new patterns) and
