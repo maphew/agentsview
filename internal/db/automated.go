@@ -1,6 +1,9 @@
 package db
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // IsAutomatedBackfillMarker is the stats/sync_metadata key that
 // gates the one-time is_automated re-classification. Bump the
@@ -26,6 +29,7 @@ var automatedPrefixes = []string{
 	"## Analysis Request",
 	"# Fix Request",
 	"You are a helpful assistant working on a software project.",
+	"You are combining multiple code review outputs into a single GitHub PR comment.",
 }
 
 // automatedSubstrings are patterns matched anywhere in the
@@ -33,6 +37,15 @@ var automatedPrefixes = []string{
 // longer prompts.
 var automatedSubstrings = []string{
 	"invoked by roborev to perform this review",
+	"You are a conversation title generator",
+}
+
+// automatedExactMatches are first messages that, after trimming
+// surrounding whitespace, exactly equal one of these strings.
+// Used for prompts too generic for prefix or substring matching
+// (e.g., a single-word warmup ping).
+var automatedExactMatches = []string{
+	"Warmup",
 }
 
 // IsAutomatedSession returns true if the first message
@@ -48,5 +61,6 @@ func IsAutomatedSession(firstMessage string) bool {
 			return true
 		}
 	}
-	return false
+	trimmed := strings.TrimSpace(firstMessage)
+	return slices.Contains(automatedExactMatches, trimmed)
 }

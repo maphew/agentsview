@@ -118,6 +118,32 @@ func TestIsAutomatedSession(t *testing.T) {
 			true,
 		},
 
+		// Roborev review combiner
+		{
+			"RoborevCombiner",
+			"You are combining multiple code review outputs into a single GitHub PR comment.\nRules:\n- Deduplicate findings reported by multiple agents",
+			true,
+		},
+
+		// Claude Code title generator (note leading "-\n" wrapper)
+		{
+			"ClaudeCodeTitleGenerator",
+			"-\nYou are a conversation title generator. Given the conversation below, create a short title (3-5 words) that describes the session's main topic.",
+			true,
+		},
+
+		// Claude Code warmup (exact match)
+		{
+			"ClaudeCodeWarmup",
+			"Warmup",
+			true,
+		},
+		{
+			"ClaudeCodeWarmupTrailingNewline",
+			"Warmup\n",
+			true,
+		},
+
 		// Negative cases
 		{
 			"SimilarButNotReview",
@@ -132,6 +158,18 @@ func TestIsAutomatedSession(t *testing.T) {
 		{
 			"AnalysisInBody",
 			"Please do an ## Analysis Request of this code",
+			false,
+		},
+		// Negative: "Warmup" must not match as substring or prefix
+		{
+			"WarmupAsPrefix",
+			"Warmup fans for the show",
+			false,
+		},
+		// Negative: title-generator phrase appearing in normal user prose
+		{
+			"TitleGeneratorPhraseInProse",
+			"I need to generate a conversation about titles for my book.",
 			false,
 		},
 	}
