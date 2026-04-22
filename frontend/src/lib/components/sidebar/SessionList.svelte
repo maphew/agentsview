@@ -482,7 +482,7 @@
               class="toggle-check"
               class:on={isIncludeAutomatedOn}
             ></span>
-            Include automated reviews
+            Include automated sessions
           </button>
         </div>
         <div class="filter-section">
