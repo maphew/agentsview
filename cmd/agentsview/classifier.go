@@ -113,7 +113,14 @@ func runClassifierRebuild(
 	}
 	if pgCfg.URL != "" {
 		if err := clearPGClassifierHash(ctx, cfg, pgCfg); err != nil {
-			return fmt.Errorf("clearing PG hash: %w", err)
+			return fmt.Errorf(
+				"clearing PG hash: %w (SQLite was cleared "+
+					"successfully; once PG is reachable, retry "+
+					"'agentsview classifier rebuild', or run "+
+					"'agentsview pg push --full' to repopulate "+
+					"PG from the corrected SQLite side)",
+				err,
+			)
 		}
 	}
 

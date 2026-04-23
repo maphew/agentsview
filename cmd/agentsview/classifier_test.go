@@ -204,6 +204,16 @@ func TestClassifierRebuildHardFailsOnPGUnreachable(t *testing.T) {
 		!strings.Contains(err.Error(), "pg") {
 		t.Errorf("error should mention PG, got: %v", err)
 	}
+	// Lock the spec contract: the error must surface the
+	// 'pg push --full' remediation hint so a future refactor
+	// can't silently drop it.
+	if !strings.Contains(err.Error(), "pg push --full") {
+		t.Errorf(
+			"error should mention 'pg push --full' "+
+				"remediation, got: %v",
+			err,
+		)
+	}
 }
 
 // TestClassifierRebuildSkipsPGWhenNotConfigured verifies the
