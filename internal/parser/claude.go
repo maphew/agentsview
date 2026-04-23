@@ -517,26 +517,14 @@ func parseLinear(
 	endedAt = laterTime(globalEnd, endedAt)
 	annotateSubagentSessions(messages, subagentMap)
 
-	userCount := 0
-	firstMsg := ""
-	for _, m := range messages {
-		if m.IsSystem {
-			// Promoted system messages (continuation/resume/
-			// interrupted/task_notification/stop_hook) carry
-			// Role=user so role-keyed analytics ignore them,
-			// but they are not real user turns — skip them
-			// when computing user_message_count / first_message.
-			continue
-		}
-		if m.Role == RoleUser && m.Content != "" {
-			userCount++
-			if firstMsg == "" {
-				firstMsg = truncate(
-					strings.ReplaceAll(m.Content, "\n", " "), 300,
-				)
-			}
-		}
-	}
+	// Promoted system messages (continuation/resume/interrupted/
+	// task_notification/stop_hook) carry Role=user so role-keyed
+	// analytics ignore them, but they are not real user turns;
+	// firstMessageAndUserCount skips them when computing
+	// user_message_count / first_message. It also skips leading
+	// /clear and /effort command envelopes so the sidebar shows
+	// the next real message instead of the command.
+	firstMsg, userCount := firstMessageAndUserCount(messages)
 
 	sess := ParsedSession{
 		ID:               sessionID,
@@ -690,21 +678,7 @@ func parseDAG(
 		}
 		annotateSubagentSessions(messages, subagentMap)
 
-		userCount := 0
-		firstMsg := ""
-		for _, m := range messages {
-			if m.IsSystem {
-				continue
-			}
-			if m.Role == RoleUser && m.Content != "" {
-				userCount++
-				if firstMsg == "" {
-					firstMsg = truncate(
-						strings.ReplaceAll(m.Content, "\n", " "), 300,
-					)
-				}
-			}
-		}
+		firstMsg, userCount := firstMessageAndUserCount(messages)
 
 		sid := sessionID
 		pSID := b.parentID
@@ -1187,6 +1161,35 @@ func isSkippablePreviewCommand(content string) bool {
 		}
 	}
 	return false
+}
+
+// firstMessageAndUserCount returns the preview string and the
+// total number of real (non-system) user turns. The preview skips
+// known Claude Code command envelopes like /clear and /effort so
+// sessions that begin with a command still show a meaningful
+// preview; the user count always reflects every non-system user
+// turn, including skipped commands.
+func firstMessageAndUserCount(
+	messages []ParsedMessage,
+) (string, int) {
+	firstMsg := ""
+	userCount := 0
+	for _, m := range messages {
+		if m.IsSystem {
+			continue
+		}
+		if m.Role != RoleUser || m.Content == "" {
+			continue
+		}
+		userCount++
+		if firstMsg == "" &&
+			!isSkippablePreviewCommand(m.Content) {
+			firstMsg = truncate(
+				strings.ReplaceAll(m.Content, "\n", " "), 300,
+			)
+		}
+	}
+	return firstMsg, userCount
 }
 
 // fileEndsWithNewline returns true when the byte at size-1

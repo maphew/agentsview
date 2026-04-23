@@ -1068,3 +1068,67 @@ func TestIsSkippablePreviewCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestParseClaudeSession_SkipClearEffortFirstMessage(t *testing.T) {
+	t.Run("single /clear followed by real message", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.ClaudeUserJSON(
+				"<command-name>/clear</command-name>",
+				tsZero,
+			),
+			testjsonl.ClaudeUserJSON("Fix the login bug", tsZeroS1),
+			testjsonl.ClaudeAssistantJSON([]map[string]any{
+				{"type": "text", "text": "ok"},
+			}, tsZeroS2),
+		)
+		sess, _ := runClaudeParserTest(t, "test.jsonl", content)
+		assert.Equal(t, "Fix the login bug", sess.FirstMessage)
+		assert.Equal(t, 2, sess.UserMessageCount,
+			"skipped commands still count as user turns")
+	})
+
+	t.Run("cascade /effort then /clear then real", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.ClaudeUserJSON(
+				"<command-name>/effort</command-name>\n<command-args>max</command-args>",
+				tsZero,
+			),
+			testjsonl.ClaudeUserJSON(
+				"<command-name>/clear</command-name>",
+				tsZeroS1,
+			),
+			testjsonl.ClaudeUserJSON("Real question", tsZeroS2),
+		)
+		sess, _ := runClaudeParserTest(t, "test.jsonl", content)
+		assert.Equal(t, "Real question", sess.FirstMessage)
+		assert.Equal(t, 3, sess.UserMessageCount)
+	})
+
+	t.Run("all messages are skipped commands", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.ClaudeUserJSON(
+				"<command-name>/clear</command-name>",
+				tsZero,
+			),
+			testjsonl.ClaudeUserJSON(
+				"<command-name>/effort</command-name>",
+				tsZeroS1,
+			),
+		)
+		sess, _ := runClaudeParserTest(t, "test.jsonl", content)
+		assert.Equal(t, "", sess.FirstMessage)
+		assert.Equal(t, 2, sess.UserMessageCount)
+	})
+
+	t.Run("non-skipped command still becomes first_message", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.ClaudeUserJSON(
+				"<command-message>roborev-fix</command-message>\n<command-name>/roborev-fix</command-name>\n<command-args>450</command-args>",
+				tsZero,
+			),
+			testjsonl.ClaudeUserJSON("follow-up", tsZeroS1),
+		)
+		sess, _ := runClaudeParserTest(t, "test.jsonl", content)
+		assert.Equal(t, "/roborev-fix 450", sess.FirstMessage)
+	})
+}
