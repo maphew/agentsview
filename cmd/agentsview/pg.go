@@ -78,6 +78,7 @@ func runPGPush(cfg PGPushConfig) {
 			"are mutually exclusive")
 	}
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)
@@ -157,6 +158,7 @@ func runPGStatus() {
 	}
 	setupLogFile(appCfg.DataDir)
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)
@@ -233,6 +235,7 @@ func runPGServe(appCfg config.Config, basePath string) {
 		fatal("pg serve: url not configured")
 	}
 
+	applyClassifierConfig(appCfg)
 	store, err := postgres.NewStore(
 		pgCfg.URL, pgCfg.Schema, pgCfg.AllowInsecure,
 	)

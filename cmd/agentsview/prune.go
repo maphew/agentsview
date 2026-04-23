@@ -246,6 +246,7 @@ func runPrune(cfg PruneConfig) {
 		log.Fatalf("loading config: %v", err)
 	}
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		log.Fatalf("opening database: %v", err)

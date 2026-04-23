@@ -137,6 +137,7 @@ func openStatsService(
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
+	applyClassifierConfig(cfg)
 	d, err := db.Open(cfg.DBPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening db: %w", err)

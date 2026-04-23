@@ -89,6 +89,7 @@ func syncService(
 		return service.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly),
 			func() {}, nil
 	}
+	applyClassifierConfig(cfg)
 	d, err := db.Open(cfg.DBPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening db: %w", err)

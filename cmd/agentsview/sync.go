@@ -36,6 +36,7 @@ func runSync(cfg SyncConfig) {
 
 	setupLogFile(appCfg.DataDir)
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)

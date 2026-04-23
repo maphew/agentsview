@@ -228,6 +228,7 @@ func tokenUse(sessionID string) (int, error) {
 		}
 	}
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		return tokenUseExitErr,

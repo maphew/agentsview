@@ -77,8 +77,13 @@ func runServe(cfg config.Config) {
 	server.WriteStartupLock(cfg.DataDir)
 	defer server.RemoveStartupLock(cfg.DataDir)
 
+	applyClassifierConfig(cfg)
 	database := mustOpenDB(cfg)
 	defer database.Close()
+
+	if n := len(db.UserAutomationPrefixes()); n > 0 {
+		log.Printf("loaded %d user automation prefix(es) from config", n)
+	}
 
 	for _, def := range parser.Registry {
 		if !cfg.IsUserConfigured(def.Type) {

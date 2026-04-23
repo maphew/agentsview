@@ -151,6 +151,7 @@ func openUsageDB() (*db.DB, config.Config) {
 		os.Exit(1)
 	}
 
+	applyClassifierConfig(cfg)
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,

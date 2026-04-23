@@ -24,6 +24,7 @@ func runImport(cfg ImportConfig) {
 		log.Fatalf("loading config: %v", err)
 	}
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)

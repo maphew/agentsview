@@ -17,6 +17,7 @@ func runProjects(jsonOutput bool) {
 		log.Fatalf("loading config: %v", err)
 	}
 
+	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)

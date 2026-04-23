@@ -109,6 +109,7 @@ func newService(
 		return service.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly),
 			func() {}, nil
 	default:
+		applyClassifierConfig(cfg)
 		d, err := db.Open(cfg.DBPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf(
