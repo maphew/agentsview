@@ -26,7 +26,11 @@ func newSessionToolCallsCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			list, err := svc.ToolCalls(cmd.Context(), args[0])
+			id, err := resolveServiceSessionID(cmd.Context(), svc, args[0])
+			if err != nil {
+				return err
+			}
+			list, err := svc.ToolCalls(cmd.Context(), id)
 			if err != nil {
 				return err
 			}

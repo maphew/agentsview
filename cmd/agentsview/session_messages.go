@@ -44,7 +44,11 @@ func newSessionMessagesCommand() *cobra.Command {
 				filter.From = &from
 			}
 
-			list, err := svc.Messages(cmd.Context(), args[0], filter)
+			id, err := resolveServiceSessionID(cmd.Context(), svc, args[0])
+			if err != nil {
+				return err
+			}
+			list, err := svc.Messages(cmd.Context(), id, filter)
 			if err != nil {
 				return err
 			}

@@ -21,7 +21,11 @@ func newSessionWatchCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			ch, err := svc.Watch(cmd.Context(), args[0])
+			id, err := resolveServiceSessionID(cmd.Context(), svc, args[0])
+			if err != nil {
+				return err
+			}
+			ch, err := svc.Watch(cmd.Context(), id)
 			if err != nil {
 				return err
 			}

@@ -30,7 +30,6 @@ func newSessionExportCommand() *cobra.Command {
 					"session export: streams raw bytes; --format not supported",
 				)
 			}
-			id := args[0]
 			cfg, err := config.LoadPFlags(cmd.Flags())
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
@@ -42,21 +41,17 @@ func newSessionExportCommand() *cobra.Command {
 			}
 			defer d.Close()
 
+			id, err := resolveSessionID(cmd.Context(), d, args[0])
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return fmt.Errorf(
+					"session not in local archive: %s", args[0],
+				)
+			}
 			path := d.GetSessionFilePath(id)
 			if path == "" {
-				// Distinguish "not in archive" from "in archive but
-				// file_path was NULL": check session existence.
-				s, err := d.GetSession(cmd.Context(), id)
-				if err != nil {
-					return fmt.Errorf(
-						"looking up session %s: %w", id, err,
-					)
-				}
-				if s == nil {
-					return fmt.Errorf(
-						"session not in local archive: %s", id,
-					)
-				}
 				return fmt.Errorf(
 					"source file not found for session %s", id,
 				)
