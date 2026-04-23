@@ -558,8 +558,6 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-const classifierHashMetadataKey = "is_automated_classifier_hash"
-
 // backfillIsAutomatedPG recomputes is_automated for all PG
 // sessions, correcting both false negatives (new patterns) and
 // stale false positives (patterns tightened since last run).
@@ -573,7 +571,7 @@ func backfillIsAutomatedPG(
 	var stored string
 	err := pg.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = $1`,
-		classifierHashMetadataKey,
+		db.ClassifierHashKey,
 	).Scan(&stored)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf(
@@ -644,7 +642,7 @@ func backfillIsAutomatedPG(
 		 VALUES ($1, $2)
 		 ON CONFLICT (key) DO UPDATE
 		 SET value = EXCLUDED.value`,
-		classifierHashMetadataKey, current,
+		db.ClassifierHashKey, current,
 	); err != nil {
 		return fmt.Errorf(
 			"storing PG classifier hash: %w", err,

@@ -18,8 +18,6 @@ import (
 	"github.com/wesm/agentsview/internal/postgres"
 )
 
-const classifierHashKey = "is_automated_classifier_hash"
-
 func newClassifierCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "classifier",
@@ -145,7 +143,7 @@ func clearSQLiteClassifierHash(dbPath string) error {
 	defer conn.Close()
 	_, err = conn.Exec(
 		`DELETE FROM stats WHERE key = ?`,
-		classifierHashKey,
+		db.ClassifierHashKey,
 	)
 	return err
 }
@@ -168,7 +166,7 @@ func clearPGClassifierHash(
 	defer pg.Close()
 	_, err = pg.ExecContext(ctx,
 		`DELETE FROM sync_metadata WHERE key = $1`,
-		classifierHashKey,
+		db.ClassifierHashKey,
 	)
 	return err
 }

@@ -70,7 +70,7 @@ func readStoredHash(t *testing.T, dbPath string) string {
 	var v string
 	err = conn.QueryRow(
 		`SELECT value FROM stats WHERE key = ?`,
-		"is_automated_classifier_hash",
+		db.ClassifierHashKey,
 	).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ""

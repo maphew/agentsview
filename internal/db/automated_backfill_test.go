@@ -39,7 +39,7 @@ func TestBackfillIsAutomatedBidirectional(t *testing.T) {
 	// Clear the marker so the backfill will run.
 	_, err = d.getWriter().Exec(
 		"DELETE FROM stats WHERE key = ?",
-		classifierHashStatsKey,
+		ClassifierHashKey,
 	)
 	requireNoError(t, err, "clear marker")
 
@@ -80,7 +80,7 @@ func TestBackfillIsAutomatedMarkerIdempotent(t *testing.T) {
 	// Clear the marker and run backfill.
 	_, err := d.getWriter().Exec(
 		"DELETE FROM stats WHERE key = ?",
-		classifierHashStatsKey,
+		ClassifierHashKey,
 	)
 	requireNoError(t, err, "clear marker")
 
@@ -238,7 +238,7 @@ func TestBackfillIsAutomatedBumpsLocalModifiedAt(t *testing.T) {
 	// Clear the marker so the backfill runs.
 	_, err = d.getWriter().Exec(
 		"DELETE FROM stats WHERE key = ?",
-		classifierHashStatsKey,
+		ClassifierHashKey,
 	)
 	requireNoError(t, err, "clear marker")
 

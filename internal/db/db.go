@@ -37,7 +37,11 @@ const dataVersion = 16
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 
-const classifierHashStatsKey = "is_automated_classifier_hash"
+// ClassifierHashKey is the shared SQLite stats / PG sync_metadata key
+// under which the current is_automated classifier hash is stored.
+// Exported so the postgres package and the classifier rebuild CLI
+// reference one definition instead of repeating the literal.
+const ClassifierHashKey = "is_automated_classifier_hash"
 
 //go:embed schema.sql
 var schemaSQL string
@@ -581,7 +585,7 @@ func (db *DB) backfillIsAutomatedLocked(w *sql.DB) error {
 	var stored string
 	err := w.QueryRow(
 		`SELECT value FROM stats WHERE key = ?`,
-		classifierHashStatsKey,
+		ClassifierHashKey,
 	).Scan(&stored)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf(
@@ -653,7 +657,7 @@ func (db *DB) backfillIsAutomatedLocked(w *sql.DB) error {
 	if _, err := w.Exec(
 		`INSERT INTO stats (key, value) VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		classifierHashStatsKey, current,
+		ClassifierHashKey, current,
 	); err != nil {
 		return fmt.Errorf(
 			"storing classifier hash: %w", err,
