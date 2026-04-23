@@ -312,9 +312,30 @@ need no change.
 
 Add `cmd/agentsview/classifier_wiring_test.go` that statically scans the
 `cmd/agentsview` package: parse every `.go` file (excluding `_test.go`) with
-`go/parser`; for each function that contains a call to `db.Open` (or
-`postgres.Open`), require an earlier call to `applyClassifierConfig` in the same
-function body. Fail with the offending function name and file:line on miss.
+`go/parser`. For each function or function literal that contains a call to any
+of the trigger functions below, require an earlier call to
+`applyClassifierConfig` in the same enclosing body. Fail with the offending
+function name (or "anonymous func at file:line" for closures) on miss.
+
+**Trigger functions** (every `cmd/agentsview/` site that opens or initializes a
+store must be preceded by `applyClassifierConfig`):
+
+| Trigger                 | Why it counts                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `db.Open`               | Opens SQLite; runs `backfillIsAutomatedLocked` → reads classifier singleton    |
+| `postgres.Open`         | Opens PG connection directly                                                   |
+| `postgres.NewStore`     | Constructs a read-only PG `Store` (calls `postgres.Open` internally)           |
+| `postgres.New`          | Constructs a `*postgres.Sync` for `pg push` (calls `postgres.Open` internally) |
+| `postgres.EnsureSchema` | Runs `backfillIsAutomatedPG` on schema apply → reads classifier singleton      |
+
+**Function literals must be descended into.** Most cobra commands declare their
+implementation as a `RunE: func(...) error { ... }` literal. The scan must
+recurse into `*ast.FuncLit` bodies and treat each one as its own enclosing scope
+for the "earlier call to `applyClassifierConfig`" check. A trigger inside a
+`RunE` closure does *not* satisfy the guard via a helper call in the surrounding
+builder function — the singleton write must happen on every code path that
+reaches the trigger, which in practice means inside the closure itself (or in a
+helper that the closure calls before the trigger).
 
 The test is reflection-free static analysis, so it doesn't actually execute any
 command. It runs in unit-test time and prevents new commands from regressing
@@ -398,18 +419,45 @@ iterating on `[automated]` config locally.
 
 1. Loads config (so `Automated.Prefixes` is parsed and normalized; surfaces
    config errors before touching the DB).
-1. Refuses to run if a daemon is already serving from the same DB. Detection
-   reuses `detectTransport(cfg.DataDir, 0)` from `cmd/agentsview/transport.go`.
-   If `tr.Mode == transportHTTP`, print an error directing the user to stop the
-   daemon and exit non-zero.
+
+1. Refuses to run if any local daemon owns the DB. Detection reuses
+   `detectTransport(cfg.DataDir, 0)` from `cmd/agentsview/transport.go`. Reject
+   when **either**:
+
+   - `tr.Mode == transportHTTP` (a daemon is reachable on the local port), or
+   - `tr.Mode == transportDirect && tr.DirectReadOnly` (a daemon is detected by
+     state file but its TCP probe failed — likely starting up, hung, or bound to
+     a different interface).
+
+   Both conditions mean the SQLite write lock is owned by someone else;
+   competing for it would either fail or corrupt the running process's view.
+   Print the same kind of "stop the daemon first" error already used by
+   `agentsview session sync` (see `cmd/agentsview/session_sync.go:39-58`) and
+   exit non-zero.
+
 1. Opens the SQLite DB directly (writable mode), deletes the
    `is_automated_classifier_hash` row from `stats`, closes.
-1. If `[pg]` is configured, attempts to delete the equivalent row from PG's
-   `sync_metadata`. PG step is best-effort: log a warning and continue if PG is
-   unreachable (the next `pg push` from a running daemon will trigger PG's own
-   hash check anyway).
+
+1. PG handling depends on configuration and reachability:
+
+   - **PG not configured** (no `[pg]` block, or empty `pg.url`): skip silently.
+     There is no PG state to repair.
+   - **PG configured and reachable**: deletion of `is_automated_classifier_hash`
+     from PG's `sync_metadata` is required. If the delete fails (network blip,
+     permission error, etc.), exit non-zero with a clear error so the user
+     retries.
+   - **PG configured but unreachable**: exit non-zero with a message telling the
+     user to retry when PG is reachable, **or** to run
+     `agentsview pg push --full` afterward to repopulate PG from the
+     (already-corrected) SQLite side. Note that `pg push` *without* `--full`
+     will not repair PG: the watermark in `pg_sync_state` only re-pushes rows
+     whose `local_modified_at` advanced (see incremental selector in
+     `internal/postgres/push.go:133`), so PG-side drift relative to SQLite stays
+     invisible to the push selector.
+
 1. The next `db.Open` (e.g. when the user starts the daemon again) sees the
-   missing hash, runs the full backfill, and stores the new hash.
+   missing hash, runs the full backfill, and stores the new hash. The next
+   `pg push` triggered by that running daemon does the same on the PG side.
 
 ### Hot-reload boundary
 
@@ -476,12 +524,15 @@ SQLite tests use `testDB(t)` from `internal/db/db_test.go`.
 
 ## Risks and mitigations
 
-| Risk                                                                                       | Mitigation                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Singleton state leaks across `go test` runs                                                | Reset helper in test; tests using user prefixes use it                                                                                                                        |
-| User accidentally adds a pattern that matches a common user prompt and clobbers their feed | Built-in patterns aren't override-able; user prefixes are additive only. Worst case: user-defined false positive, fixable by editing config + `classifier rebuild` + restart. |
-| Hash collision (two different pattern sets → same hash)                                    | SHA-256 + length-prefixed encoding makes this cryptographically negligible                                                                                                    |
-| New command added that opens a store without calling the helper                            | Static guardrail test in `cmd/agentsview/classifier_wiring_test.go` fails the build                                                                                           |
-| Downgrade-then-upgrade leaves stale `is_automated=0` for user-pattern matches              | Documented; recovery via `agentsview classifier rebuild`                                                                                                                      |
-| User runs `classifier rebuild` while daemon is serving                                     | Rebuild refuses with a clear error directing the user to stop the daemon first                                                                                                |
-| Forgetting to bump `classifierAlgorithmVersion` on a logic change                          | Constant lives next to `ClassifierHash`; reviewers see both together                                                                                                          |
+| Risk                                                                                               | Mitigation                                                                                                                                                                    |
+| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Singleton state leaks across `go test` runs                                                        | Reset helper in test; tests using user prefixes use it                                                                                                                        |
+| User accidentally adds a pattern that matches a common user prompt and clobbers their feed         | Built-in patterns aren't override-able; user prefixes are additive only. Worst case: user-defined false positive, fixable by editing config + `classifier rebuild` + restart. |
+| Hash collision (two different pattern sets → same hash)                                            | SHA-256 + length-prefixed encoding makes this cryptographically negligible                                                                                                    |
+| New command added that opens a store without calling the helper                                    | Static guardrail test in `cmd/agentsview/classifier_wiring_test.go` fails the build                                                                                           |
+| Downgrade-then-upgrade leaves stale `is_automated=0` for user-pattern matches                      | Documented; recovery via `agentsview classifier rebuild`                                                                                                                      |
+| User runs `classifier rebuild` while daemon is serving (reachable HTTP)                            | Rebuild refuses with a clear error directing the user to stop the daemon first                                                                                                |
+| User runs `classifier rebuild` while daemon is starting up (state file present, TCP probe failing) | Rebuild also refuses in `transportDirect && DirectReadOnly` state, mirroring the existing `agentsview session sync` guard                                                     |
+| `classifier rebuild` clears SQLite hash but PG delete fails silently → drift                       | Rebuild treats PG delete failure as a hard error when PG is configured; user retries with PG reachable, or runs `pg push --full` to repopulate from corrected SQLite          |
+| Cobra `RunE` closure adds a new `db.Open` / `postgres.NewStore` site                               | Static guardrail recurses into `*ast.FuncLit`; closures are checked the same as named functions                                                                               |
+| Forgetting to bump `classifierAlgorithmVersion` on a logic change                                  | Constant lives next to `ClassifierHash`; reviewers see both together                                                                                                          |
