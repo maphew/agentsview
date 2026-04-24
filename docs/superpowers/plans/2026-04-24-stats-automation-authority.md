@@ -48,7 +48,7 @@ tests):
 
 ```go
 func Test_insertSessionFixture_isAutomated_patch(t *testing.T) {
-	d := newTestDB(t)
+	d := testDB(t)
 	insertSessionFixture(t, d, sessionFixture{
 		id: "auto-1", userMsgs: 5, startedAt: hoursAgo(1),
 		isAutomated: true,
@@ -148,7 +148,7 @@ ______________________________________________________________________
 
 ```go
 func Test_loadSessionsInWindow_isAutomated(t *testing.T) {
-	d := newTestDB(t)
+	d := testDB(t)
 	insertSessionFixture(t, d, sessionFixture{
 		id: "auto", userMsgs: 5, startedAt: hoursAgo(1),
 		isAutomated: true,
@@ -275,7 +275,7 @@ ______________________________________________________________________
 
 ```go
 func Test_computeTotalsAndArchetypes_flagAuthority(t *testing.T) {
-	d := newTestDB(t)
+	d := testDB(t)
 	// Short non-automated session — must count as human, bucket as "quick".
 	insertSessionFixture(t, d, sessionFixture{
 		id: "short-human", userMsgs: 1, startedAt: hoursAgo(1),
@@ -430,7 +430,7 @@ and `auto-long` is 30 min.
 
 ```go
 func Test_computeDistributions_scopeHuman_flag(t *testing.T) {
-	d := newTestDB(t)
+	d := testDB(t)
 	// Short non-automated: must count in scope_human.
 	insertSessionFixture(t, d, sessionFixture{
 		id: "short-human", userMsgs: 1, durationMin: 3,
@@ -521,7 +521,7 @@ ______________________________________________________________________
 
 ```go
 func Test_computeAgentPortfolio_humanScoped(t *testing.T) {
-	d := newTestDB(t)
+	d := testDB(t)
 	insertSessionFixture(t, d, sessionFixture{
 		id: "claude-human", agent: "claude", userMsgs: 3,
 		startedAt: hoursAgo(1), totalOutputTok: 100,
