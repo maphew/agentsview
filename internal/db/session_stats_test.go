@@ -323,13 +323,16 @@ func seedModelMessages(
 	}
 }
 
-func TestArchetypeLabel(t *testing.T) {
+func TestSessionShapeLabel(t *testing.T) {
+	// Automation is decided upstream via sessions.is_automated; this
+	// helper classifies only non-automated sessions, so the lower band
+	// starts at 0 and includes userMsgs=1.
 	cases := []struct {
 		userMsgs int
 		want     string
 	}{
-		{0, "automation"},
-		{1, "automation"},
+		{0, "quick"},
+		{1, "quick"},
 		{2, "quick"},
 		{5, "quick"},
 		{6, "standard"},
@@ -340,10 +343,10 @@ func TestArchetypeLabel(t *testing.T) {
 		{1000, "marathon"},
 	}
 	for _, c := range cases {
-		got := archetypeLabel(c.userMsgs)
+		got := sessionShapeLabel(c.userMsgs)
 		if got != c.want {
 			t.Errorf(
-				"archetypeLabel(%d): got %q, want %q",
+				"sessionShapeLabel(%d): got %q, want %q",
 				c.userMsgs, got, c.want,
 			)
 		}
@@ -379,12 +382,15 @@ func TestGetSessionStats_TotalsAndArchetypes(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
 
-	// 5 sessions: 2 automation (userMsgs 0,1),
+	// 5 sessions: 2 automation (is_automated=true),
 	//             2 deep (userMsgs 20, 40),
 	//             1 marathon (userMsgs 100).
+	// Automation is now authoritative via sessions.is_automated; the
+	// two short rows carry the flag so they flow through the automation
+	// branch regardless of user_message_count.
 	fixtures := []sessionFixture{
-		{id: "s1", userMsgs: 0, startedAt: hoursAgo(5)},
-		{id: "s2", userMsgs: 1, startedAt: hoursAgo(5)},
+		{id: "s1", userMsgs: 0, startedAt: hoursAgo(5), isAutomated: true},
+		{id: "s2", userMsgs: 1, startedAt: hoursAgo(5), isAutomated: true},
 		{id: "s3", userMsgs: 20, startedAt: hoursAgo(5)},
 		{id: "s4", userMsgs: 40, startedAt: hoursAgo(5)},
 		{id: "s5", userMsgs: 100, startedAt: hoursAgo(5)},
@@ -487,6 +493,40 @@ func TestGetSessionStats_TotalsAndArchetypes(t *testing.T) {
 
 	if stats.GeneratedAt == "" {
 		t.Errorf("generated_at empty")
+	}
+}
+
+func Test_computeTotalsAndArchetypes_flagAuthority(t *testing.T) {
+	d := testDB(t)
+	// Short non-automated session — must count as human, bucket as "quick".
+	insertSessionFixture(t, d, sessionFixture{
+		id: "short-human", userMsgs: 1, startedAt: hoursAgo(1),
+		isAutomated: false,
+	})
+	// Automated session (userMsgs doesn't matter) — must count as
+	// automation, bucket as "automation".
+	insertSessionFixture(t, d, sessionFixture{
+		id: "auto", userMsgs: 3, startedAt: hoursAgo(1),
+		isAutomated: true,
+	})
+
+	got, err := d.GetSessionStats(t.Context(), StatsFilter{Since: "1d"})
+	if err != nil {
+		t.Fatalf("GetSessionStats: %v", err)
+	}
+	if got.Totals.SessionsHuman != 1 {
+		t.Fatalf("SessionsHuman = %d, want 1", got.Totals.SessionsHuman)
+	}
+	if got.Totals.SessionsAutomation != 1 {
+		t.Fatalf("SessionsAutomation = %d, want 1",
+			got.Totals.SessionsAutomation)
+	}
+	if got.Archetypes.Quick != 1 {
+		t.Fatalf("Archetypes.Quick = %d, want 1 (short non-automated)",
+			got.Archetypes.Quick)
+	}
+	if got.Archetypes.Automation != 1 {
+		t.Fatalf("Archetypes.Automation = %d, want 1", got.Archetypes.Automation)
 	}
 }
 

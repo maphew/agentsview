@@ -525,13 +525,13 @@ func parseTimestamp(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
-// archetypeLabel classifies a session by its user_message_count per
-// the session-analytics v1 spec. Boundaries are inclusive on both
-// sides of each band.
-func archetypeLabel(userMsgs int) string {
+// sessionShapeLabel classifies a *non-automated* session by its
+// user_message_count. Automated sessions are handled upstream (the
+// caller assigns "automation" based on sessions.is_automated) and
+// never pass through this helper, so the lower band starts at 0
+// rather than 1. Boundaries are inclusive on both sides of each band.
+func sessionShapeLabel(userMsgs int) string {
 	switch {
-	case userMsgs <= 1:
-		return "automation"
 	case userMsgs <= 5:
 		return "quick"
 	case userMsgs <= 15:
@@ -555,26 +555,24 @@ func computeTotalsAndArchetypes(
 		s.Totals.MessagesTotal += r.messageCount
 		s.Totals.UserMessagesTotal += r.userMessageCount
 
-		label := archetypeLabel(r.userMessageCount)
-		switch label {
-		case "automation":
+		var label string
+		if r.isAutomated {
+			label = "automation"
 			s.Archetypes.Automation++
 			s.Totals.SessionsAutomation++
-		case "quick":
-			s.Archetypes.Quick++
+		} else {
+			label = sessionShapeLabel(r.userMessageCount)
 			s.Totals.SessionsHuman++
-			humanMax[label]++
-		case "standard":
-			s.Archetypes.Standard++
-			s.Totals.SessionsHuman++
-			humanMax[label]++
-		case "deep":
-			s.Archetypes.Deep++
-			s.Totals.SessionsHuman++
-			humanMax[label]++
-		case "marathon":
-			s.Archetypes.Marathon++
-			s.Totals.SessionsHuman++
+			switch label {
+			case "quick":
+				s.Archetypes.Quick++
+			case "standard":
+				s.Archetypes.Standard++
+			case "deep":
+				s.Archetypes.Deep++
+			case "marathon":
+				s.Archetypes.Marathon++
+			}
 			humanMax[label]++
 		}
 		archMax[label]++
