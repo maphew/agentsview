@@ -664,6 +664,12 @@ func (a *scopedAccumulator) finalize() ScopedDistribution {
 //     session has no meaningful turn rate and would otherwise bias
 //     bucket 0 toward the zero ratio.
 //
+// Per-metric filters excluded from scope_human only:
+//
+//   - UserMessages: rows with userMessageCount < 2 are excluded from
+//     the human mean and buckets because the v1 human bucket shape
+//     starts at 2. ScopeAll keeps the [0,2) bucket for short sessions.
+//
 // PeakContextTokens is Claude-only: rows from other agents and rows
 // without hasPeakContext data are excluded from every bucket; the
 // Claude-specific null rows are tallied separately in NullCount.
@@ -696,7 +702,7 @@ func computeDistributions(s *SessionStats, rows []sessionStatsRow) {
 		}
 		umv := float64(r.userMessageCount)
 		umAll.add(umv)
-		if human {
+		if human && r.userMessageCount >= 2 {
 			umHuman.add(umv)
 		}
 		if r.agent == "claude" {

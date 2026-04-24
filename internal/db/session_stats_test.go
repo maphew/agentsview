@@ -857,6 +857,20 @@ func Test_computeDistributions_scopeHuman_flag(t *testing.T) {
 		t.Fatalf("scope_human duration mean = %.2f, want ~3 (short-human only)",
 			humanMean)
 	}
+
+	humanUserMessages := got.Distributions.UserMessages.ScopeHuman
+	if humanUserMessages.Mean != 0 {
+		t.Fatalf("scope_human user_messages mean = %.2f, want 0 (<2 filtered)",
+			humanUserMessages.Mean)
+	}
+	bucketedHumanMessages := 0
+	for _, bucket := range humanUserMessages.Buckets {
+		bucketedHumanMessages += bucket.Count
+	}
+	if bucketedHumanMessages != 0 {
+		t.Fatalf("scope_human user_messages bucket total = %d, want 0 (<2 filtered)",
+			bucketedHumanMessages)
+	}
 }
 
 func TestGetSessionStats_Distributions_NullPeakContext(t *testing.T) {

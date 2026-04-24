@@ -8,8 +8,10 @@ import "math"
 // Half-open intervals [lo, hi). The last bucket has hi = +Inf.
 var durationMinutesEdges = []float64{0, 1, 5, 20, 60, 120, math.Inf(1)}
 
-// user_messages scope_all: [0,1), [1,2), [2,5], [6,15], [16,30], [31,50], [51,inf)
-// user_messages scope_human: [2,5], [6,15], [16,30], [31,50], [51,inf) -- no automation buckets
+// user_messages scope_all: [0,2), [2,5], [6,15], [16,30], [31,50], [51,inf)
+// user_messages scope_human: [2,5], [6,15], [16,30], [31,50], [51,inf)
+// Values below 2 are filtered before accumulating scope_human, preserving
+// the v1 bucket shape while keeping human mean and bucket counts consistent.
 // Represented as two separate edge lists for clarity.
 var userMessagesEdgesAll = []float64{0, 2, 6, 16, 31, 51, math.Inf(1)}
 var userMessagesEdgesHuman = []float64{2, 6, 16, 31, 51, math.Inf(1)}
