@@ -41,6 +41,13 @@ const (
 	// Keep query parameter counts conservative so large sessions
 	// do not exceed SQLite variable limits when hydrating tool calls.
 	attachToolCallBatchSize = 500
+
+	// Keep multi-row INSERT statements below SQLite's historic
+	// 999-variable limit so binaries built against older SQLite
+	// versions still work.
+	messageInsertRowsPerStmt         = 39 // 25 params per row
+	toolCallInsertRowsPerStmt        = 90 // 10 params per row
+	toolResultEventInsertRowsPerStmt = 80 // 12 params per row
 )
 
 // ToolCall represents a single tool invocation stored in
@@ -195,42 +202,141 @@ func (db *DB) GetAllMessages(
 func insertMessagesTx(
 	tx *sql.Tx, msgs []Message,
 ) ([]int64, error) {
-	stmt, err := tx.Prepare(fmt.Sprintf(`
-		INSERT INTO messages (%s)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, insertMessageCols))
-	if err != nil {
-		return nil, fmt.Errorf("preparing insert: %w", err)
-	}
-	defer stmt.Close()
-
 	ids := make([]int64, len(msgs))
-	for i, m := range msgs {
-		res, err := stmt.Exec(
-			m.SessionID, m.Ordinal, m.Role, m.Content,
-			m.ThinkingText,
-			m.Timestamp, m.HasThinking, m.HasToolUse,
-			m.ContentLength, m.IsSystem,
-			m.Model, string(m.TokenUsage),
-			m.ContextTokens, m.OutputTokens,
-			m.HasContextTokens, m.HasOutputTokens,
-			m.ClaudeMessageID, m.ClaudeRequestID,
-			m.SourceType, m.SourceSubtype, m.SourceUUID,
-			m.SourceParentUUID, m.IsSidechain, m.IsCompactBoundary,
+	nextID, err := nextMessageIDTx(tx)
+	if err != nil {
+		return nil, err
+	}
+
+	for start := 0; start < len(msgs); start += messageInsertRowsPerStmt {
+		end := min(start+messageInsertRowsPerStmt, len(msgs))
+		batch := msgs[start:end]
+		args := make([]any, 0, len(batch)*25)
+		for i, m := range batch {
+			id := nextID + int64(start+i)
+			ids[start+i] = id
+			args = append(args,
+				id,
+				m.SessionID, m.Ordinal, m.Role, m.Content,
+				m.ThinkingText,
+				m.Timestamp, m.HasThinking, m.HasToolUse,
+				m.ContentLength, m.IsSystem,
+				m.Model, string(m.TokenUsage),
+				m.ContextTokens, m.OutputTokens,
+				m.HasContextTokens, m.HasOutputTokens,
+				m.ClaudeMessageID, m.ClaudeRequestID,
+				m.SourceType, m.SourceSubtype, m.SourceUUID,
+				m.SourceParentUUID, m.IsSidechain, m.IsCompactBoundary,
+			)
+		}
+		query := fmt.Sprintf(
+			"INSERT INTO messages (id, %s) VALUES %s",
+			insertMessageCols,
+			multiRowPlaceholders(len(batch), 25),
 		)
-		if err != nil {
+		if _, err := tx.Exec(query, args...); err != nil {
+			first := batch[0].Ordinal
+			last := batch[len(batch)-1].Ordinal
 			return nil, fmt.Errorf(
-				"inserting message ord=%d: %w", m.Ordinal, err,
+				"inserting messages ord=%d..%d: %w",
+				first, last, err,
 			)
 		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf(
-				"last insert id ord=%d: %w", m.Ordinal, err,
-			)
-		}
-		ids[i] = id
 	}
 	return ids, nil
+}
+
+func nextMessageIDTx(tx *sql.Tx) (int64, error) {
+	var n sql.NullInt64
+	if err := tx.QueryRow("SELECT MAX(id) FROM messages").Scan(&n); err != nil {
+		return 0, fmt.Errorf("reading next message id: %w", err)
+	}
+	if !n.Valid {
+		return 1, nil
+	}
+	return n.Int64 + 1, nil
+}
+
+func multiRowPlaceholders(rows, cols int) string {
+	var b strings.Builder
+	for i := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('(')
+		for j := range cols {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('?')
+		}
+		b.WriteByte(')')
+	}
+	return b.String()
+}
+
+func insertToolCallsChunkTx(
+	tx *sql.Tx, calls []ToolCall,
+) error {
+	args := make([]any, 0, len(calls)*10)
+	for _, tc := range calls {
+		args = append(args,
+			tc.MessageID, tc.SessionID,
+			tc.ToolName, tc.Category,
+			nilIfEmpty(tc.ToolUseID),
+			nilIfEmpty(tc.InputJSON),
+			nilIfEmpty(tc.SkillName),
+			nilIfZero(tc.ResultContentLength),
+			nilIfEmpty(tc.ResultContent),
+			nilIfEmpty(tc.SubagentSessionID),
+		)
+	}
+	query := `
+		INSERT INTO tool_calls
+			(message_id, session_id, tool_name, category,
+			 tool_use_id, input_json, skill_name,
+			 result_content_length, result_content, subagent_session_id)
+		VALUES ` + multiRowPlaceholders(len(calls), 10)
+	if _, err := tx.Exec(query, args...); err != nil {
+		return fmt.Errorf(
+			"inserting tool_calls batch (%d rows): %w",
+			len(calls), err,
+		)
+	}
+	return nil
+}
+
+func insertToolResultEventsChunkTx(
+	tx *sql.Tx, rows []toolResultEventRow,
+) error {
+	args := make([]any, 0, len(rows)*12)
+	for _, r := range rows {
+		args = append(args,
+			r.SessionID, r.MessageOrdinal, r.CallIndex,
+			nilIfEmpty(r.Event.ToolUseID),
+			nilIfEmpty(r.Event.AgentID),
+			nilIfEmpty(r.Event.SubagentSessionID),
+			r.Event.Source, r.Event.Status,
+			r.Event.Content,
+			r.Event.ContentLength,
+			nilIfEmpty(r.Event.Timestamp),
+			r.Event.EventIndex,
+		)
+	}
+	query := `
+		INSERT INTO tool_result_events
+			(session_id, tool_call_message_ordinal, call_index,
+			 tool_use_id, agent_id, subagent_session_id,
+			 source, status, content, content_length,
+			 timestamp, event_index)
+		VALUES ` + multiRowPlaceholders(len(rows), 12)
+	if _, err := tx.Exec(query, args...); err != nil {
+		return fmt.Errorf(
+			"inserting tool_result_events batch (%d rows): %w",
+			len(rows), err,
+		)
+	}
+	return nil
 }
 
 func nilIfEmpty(s string) any {
@@ -252,34 +358,10 @@ func nilIfZero(n int) any {
 func insertToolCallsTx(
 	tx *sql.Tx, calls []ToolCall,
 ) error {
-	if len(calls) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare(`
-		INSERT INTO tool_calls
-			(message_id, session_id, tool_name, category,
-			 tool_use_id, input_json, skill_name,
-			 result_content_length, result_content, subagent_session_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("preparing tool_calls insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, tc := range calls {
-		if _, err := stmt.Exec(
-			tc.MessageID, tc.SessionID,
-			tc.ToolName, tc.Category,
-			nilIfEmpty(tc.ToolUseID),
-			nilIfEmpty(tc.InputJSON),
-			nilIfEmpty(tc.SkillName),
-			nilIfZero(tc.ResultContentLength),
-			nilIfEmpty(tc.ResultContent),
-			nilIfEmpty(tc.SubagentSessionID),
-		); err != nil {
-			return fmt.Errorf(
-				"inserting tool_call %q: %w", tc.ToolName, err,
-			)
+	for start := 0; start < len(calls); start += toolCallInsertRowsPerStmt {
+		end := min(start+toolCallInsertRowsPerStmt, len(calls))
+		if err := insertToolCallsChunkTx(tx, calls[start:end]); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -288,37 +370,10 @@ func insertToolCallsTx(
 func insertToolResultEventsTx(
 	tx *sql.Tx, rows []toolResultEventRow,
 ) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare(`
-		INSERT INTO tool_result_events
-			(session_id, tool_call_message_ordinal, call_index,
-			 tool_use_id, agent_id, subagent_session_id,
-			 source, status, content, content_length,
-			 timestamp, event_index)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("preparing tool_result_events insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, r := range rows {
-		if _, err := stmt.Exec(
-			r.SessionID, r.MessageOrdinal, r.CallIndex,
-			nilIfEmpty(r.Event.ToolUseID),
-			nilIfEmpty(r.Event.AgentID),
-			nilIfEmpty(r.Event.SubagentSessionID),
-			r.Event.Source, r.Event.Status,
-			r.Event.Content,
-			r.Event.ContentLength,
-			nilIfEmpty(r.Event.Timestamp),
-			r.Event.EventIndex,
-		); err != nil {
-			return fmt.Errorf(
-				"inserting tool_result_event %q/%q: %w",
-				r.Event.Source, r.Event.Status, err,
-			)
+	for start := 0; start < len(rows); start += toolResultEventInsertRowsPerStmt {
+		end := min(start+toolResultEventInsertRowsPerStmt, len(rows))
+		if err := insertToolResultEventsChunkTx(tx, rows[start:end]); err != nil {
+			return err
 		}
 	}
 	return nil
