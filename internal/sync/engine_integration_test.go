@@ -3724,6 +3724,108 @@ func TestResyncAllReplacesMessageContent(t *testing.T) {
 	}
 }
 
+// TestResyncAllSurfacesQueuedCommands locks in that bumping
+// dataVersion (which forces a full resync) recovers Claude
+// queued_command attachments dropped by older parser versions.
+// Old DBs synced before the parser fix have no row for the
+// mid-flight user message; ResyncAll must replay the file and
+// reinstate it.
+func TestResyncAllSurfacesQueuedCommands(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("first", tsEarly),
+		testjsonl.ClaudeAssistantJSON([]map[string]any{
+			{"type": "text", "text": "starting"},
+		}, tsEarlyS1),
+		testjsonl.ClaudeQueuedCommandJSON(
+			"also do X", "2024-01-01T10:00:02Z",
+		),
+		testjsonl.ClaudeAssistantJSON([]map[string]any{
+			{"type": "text", "text": "done"},
+		}, tsEarlyS5),
+	)
+
+	env.writeClaudeSession(
+		t, "test-proj", "queued-resync.jsonl", content,
+	)
+
+	// Initial sync uses the current parser, which surfaces the
+	// queued_command as message ordinal 2.
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1,
+	})
+
+	const sessionID = "queued-resync"
+	msgs := fetchMessages(t, env.db, sessionID)
+	if len(msgs) != 4 {
+		t.Fatalf("initial sync: got %d messages, want 4", len(msgs))
+	}
+
+	// Simulate an old-parser DB by removing the queued_command
+	// row directly. Older versions of the parser would never
+	// have stored it.
+	err := env.db.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			"DELETE FROM messages WHERE session_id = ?"+
+				" AND source_subtype = 'queued_command'",
+			sessionID,
+		)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("delete queued_command row: %v", err)
+	}
+	msgs = fetchMessages(t, env.db, sessionID)
+	if len(msgs) != 3 {
+		t.Fatalf("after stale simulation: got %d, want 3",
+			len(msgs))
+	}
+
+	// SyncAll must NOT recover the dropped row: the source
+	// file is unchanged on disk, so the engine skips it.
+	stats := env.engine.SyncAll(context.Background(), nil)
+	if stats.Skipped != 1 {
+		t.Fatalf("SyncAll: expected Skipped=1, got %d",
+			stats.Skipped)
+	}
+	msgs = fetchMessages(t, env.db, sessionID)
+	if len(msgs) != 3 {
+		t.Fatalf("after SyncAll: got %d, want 3", len(msgs))
+	}
+
+	// ResyncAll re-parses every session from scratch and the
+	// queued_command reappears.
+	env.engine.ResyncAll(context.Background(), nil)
+
+	msgs = fetchMessages(t, env.db, sessionID)
+	if len(msgs) != 4 {
+		t.Fatalf("after ResyncAll: got %d, want 4", len(msgs))
+	}
+
+	var queued *db.Message
+	for i := range msgs {
+		if msgs[i].SourceSubtype == "queued_command" {
+			queued = &msgs[i]
+			break
+		}
+	}
+	if queued == nil {
+		t.Fatal("ResyncAll did not restore queued_command row")
+	}
+	if queued.Content != "also do X" {
+		t.Errorf("queued_command content = %q, want %q",
+			queued.Content, "also do X")
+	}
+	if queued.Role != "user" {
+		t.Errorf("queued_command role = %q, want user",
+			queued.Role)
+	}
+	if queued.IsSystem {
+		t.Error("queued_command should not be is_system=true")
+	}
+}
+
 func TestResyncAllPreservesInsights(t *testing.T) {
 	env := setupTestEnv(t)
 
