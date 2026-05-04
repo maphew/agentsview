@@ -142,9 +142,6 @@ func runServe(cfg config.Config) {
 			return
 		}
 
-		stopWatcher, unwatchedDirs := startFileWatcher(cfg, engine)
-		defer stopWatcher()
-
 		// Backfill runs in the background. On a large DB (e.g.
 		// after copying tens of thousands of orphaned sessions
 		// during a resync), walking every row to recompute
@@ -164,9 +161,6 @@ func runServe(cfg config.Config) {
 		}()
 
 		go startPeriodicSync(engine, database)
-		if len(unwatchedDirs) > 0 {
-			go startUnwatchedPoll(engine)
-		}
 	}
 
 	// Seed model_pricing after any resync swap so the new DB
@@ -191,6 +185,16 @@ func runServe(cfg config.Config) {
 		Mode:          "serve",
 		RequestedPort: cfg.Port,
 	}
+	var stopWatcher func()
+	if engine != nil {
+		rtOpts.PostListen = func() {
+			var unwatchedDirs []string
+			stopWatcher, unwatchedDirs = startFileWatcher(cfg, engine)
+			if len(unwatchedDirs) > 0 {
+				go startUnwatchedPoll(engine)
+			}
+		}
+	}
 	preparedCfg, prepErr := prepareServeRuntimeConfig(cfg, rtOpts)
 	if prepErr != nil {
 		fatal("%v", prepErr)
@@ -210,10 +214,16 @@ func runServe(cfg config.Config) {
 
 	rt, err := startServerWithOptionalCaddy(ctx, cfg, srv, rtOpts)
 	if err != nil {
+		if stopWatcher != nil {
+			stopWatcher()
+		}
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		fatal("%v", err)
+	}
+	if stopWatcher != nil {
+		defer stopWatcher()
 	}
 
 	// Server is ready — write the definitive state file with the

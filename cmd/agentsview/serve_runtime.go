@@ -14,6 +14,7 @@ import (
 type serveRuntimeOptions struct {
 	Mode          string
 	RequestedPort int
+	PostListen    func()
 }
 
 type serveRuntime struct {
@@ -85,6 +86,9 @@ func startServerWithOptionalCaddy(
 			return nil, err
 		}
 		return nil, fmt.Errorf("server failed to start: %w", err)
+	}
+	if opts.PostListen != nil {
+		opts.PostListen()
 	}
 
 	var caddy *managedCaddy
