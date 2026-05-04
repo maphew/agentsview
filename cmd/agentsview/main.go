@@ -508,14 +508,18 @@ func startFileWatcher(
 			}
 			continue
 		}
-		watched, uw, _ := watcher.WatchRecursive(r.root)
-		totalWatched += watched
-		if uw > 0 {
+		result := watcher.WatchRecursiveBudgeted(r.root)
+		totalWatched += result.Watched
+		if result.Unwatched > 0 || result.BudgetExhausted ||
+			result.ResourceExhausted || result.Err != nil {
 			unwatchedDirs = append(unwatchedDirs, r.dir)
 			log.Printf(
 				"Couldn't watch %d directories under %s, will poll every %s",
-				uw, r.dir, unwatchedPollInterval,
+				result.Unwatched, r.dir, unwatchedPollInterval,
 			)
+			if result.Err != nil {
+				log.Printf("watching %s: %v", r.dir, result.Err)
+			}
 		}
 	}
 
@@ -528,6 +532,12 @@ func startFileWatcher(
 		fmt.Printf(
 			"Watching %d directories for changes (%s)\n",
 			totalWatched, time.Since(t).Round(time.Millisecond),
+		)
+	}
+	if len(unwatchedDirs) > 0 {
+		fmt.Printf(
+			"Polling %d roots every %s for changes\n",
+			len(unwatchedDirs), unwatchedPollInterval,
 		)
 	}
 	watcher.Start()
