@@ -452,4 +452,124 @@ describe("ToolBlock collapsed preview", () => {
     const preview = document.querySelector(".tool-header .tool-preview");
     expect(preview!.textContent).toBe("$ from content");
   });
+
+  it("shows in-progress todo content for TodoWrite", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TodoWrite",
+      input_json: JSON.stringify({
+        todos: [
+          { content: "first done task", status: "completed" },
+          { content: "current work", status: "in_progress" },
+          { content: "future task", status: "pending" },
+        ],
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "TodoWrite", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview).not.toBeNull();
+    expect(preview!.textContent).toBe("→ current work");
+  });
+
+  it("falls back to last todo when none are in-progress", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TodoWrite",
+      input_json: JSON.stringify({
+        todos: [
+          { content: "task one", status: "completed" },
+          { content: "task two", status: "completed" },
+        ],
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "TodoWrite", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("→ task two");
+  });
+
+  it("prefers TodoWrite synthesis over content first line", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TodoWrite",
+      input_json: JSON.stringify({
+        todos: [{ content: "do thing", status: "in_progress" }],
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: {
+        content: "[Todo List]\n  → do thing",
+        label: "TodoWrite",
+        toolCall,
+      },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("→ do thing");
+  });
+
+  it("shows subject for TaskCreate", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TaskCreate",
+      input_json: JSON.stringify({
+        subject: "Rebuild Companies list table columns",
+        description: "long description here",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "TaskCreate", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("Rebuild Companies list table columns");
+  });
+
+  it("shows task id, status, and subject for TaskUpdate", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TaskUpdate",
+      input_json: JSON.stringify({
+        taskId: 29,
+        status: "in_progress",
+        subject: "Rebuild Companies list table columns",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "TaskUpdate", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe(
+      "#29 · in_progress · Rebuild Companies list table columns",
+    );
+  });
+
+  it("shows just task id and status for TaskUpdate without subject", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "TaskUpdate",
+      input_json: JSON.stringify({
+        taskId: 29,
+        status: "completed",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "TaskUpdate", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("#29 · completed");
+  });
 });
