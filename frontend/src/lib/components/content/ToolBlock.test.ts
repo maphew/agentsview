@@ -572,4 +572,122 @@ describe("ToolBlock collapsed preview", () => {
     const preview = document.querySelector(".tool-header .tool-preview");
     expect(preview!.textContent).toBe("#29 · completed");
   });
+
+  it("shows skill name for Skill tool", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "Skill",
+      input_json: JSON.stringify({ skill: "roborev-review-branch" }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "Skill", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("roborev-review-branch");
+  });
+
+  it("shows skill name from name field for lowercase skill tool", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "skill",
+      input_json: JSON.stringify({ name: "my-skill" }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "skill", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("my-skill");
+  });
+
+  it("shows query for ToolSearch", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "ToolSearch",
+      input_json: JSON.stringify({
+        query: "select:TaskOutput,TaskGet",
+        max_results: 2,
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "ToolSearch", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("select:TaskOutput,TaskGet");
+  });
+
+  it("shows description for Task tool", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "Task",
+      input_json: JSON.stringify({
+        subagent_type: "Explore",
+        description: "Explore agentsview project",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "Task", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("Explore agentsview project");
+  });
+
+  it("falls back to prompt when description is missing for Task", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "Task",
+      input_json: JSON.stringify({
+        subagent_type: "Explore",
+        prompt: "Find the foo function\nand return its location",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "Task", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("Find the foo function");
+  });
+
+  it("uses Task preview for Agent tool", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "Agent",
+      input_json: JSON.stringify({
+        description: "Audit ship readiness",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "Agent", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("Audit ship readiness");
+  });
+
+  it("uses Task preview for subagent-style tool names", async () => {
+    const toolCall: ToolCall = {
+      tool_name: "Zencoder_subagent__ZencoderSubagent",
+      input_json: JSON.stringify({
+        description: "Run subagent task",
+      }),
+    };
+    component = mount(ToolBlock, {
+      target: document.body,
+      props: { content: "", label: "subagent", toolCall },
+    });
+    await tick();
+
+    const preview = document.querySelector(".tool-header .tool-preview");
+    expect(preview!.textContent).toBe("Run subagent task");
+  });
 });

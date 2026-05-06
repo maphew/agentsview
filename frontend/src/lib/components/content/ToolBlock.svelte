@@ -142,6 +142,26 @@
       if (inputParams?.status) parts.push(String(inputParams.status));
       if (inputParams?.subject) parts.push(String(inputParams.subject));
       if (parts.length) return parts.join(" · ").slice(0, 100);
+    } else if (toolName === "Skill" || toolName === "skill") {
+      const skill = inputParams?.skill ?? inputParams?.name;
+      if (skill) return String(skill).slice(0, 100);
+    } else if (toolName === "ToolSearch") {
+      const query = inputParams?.query;
+      if (query) {
+        const firstLine = String(query).split("\n")[0] ?? "";
+        return firstLine.slice(0, 100);
+      }
+    } else if (
+      toolName === "Task" ||
+      toolName === "Agent" ||
+      toolCall?.category === "Task" ||
+      (toolName?.includes("subagent") ?? false)
+    ) {
+      const desc = inputParams?.description ?? inputParams?.prompt;
+      if (desc) {
+        const firstLine = String(desc).split("\n")[0] ?? "";
+        return firstLine.slice(0, 100);
+      }
     }
 
     const line = content.split("\n")[0]?.slice(0, 100) ?? "";
