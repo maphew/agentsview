@@ -499,6 +499,15 @@ func TestSyncEngineProgressEmitsPhaseDoneOnce(t *testing.T) {
 	if last.SessionsDone != last.SessionsTotal || last.SessionsTotal != 2 {
 		t.Fatalf("final progress = %d/%d, want 2/2", last.SessionsDone, last.SessionsTotal)
 	}
+	var peakMessages int
+	for _, e := range events {
+		if e.MessagesIndexed > peakMessages {
+			peakMessages = e.MessagesIndexed
+		}
+	}
+	if last.MessagesIndexed < peakMessages {
+		t.Fatalf("final MessagesIndexed = %d regressed from peak %d", last.MessagesIndexed, peakMessages)
+	}
 }
 
 func TestSyncEngineProgressDoneCatchesResyncDBBackedWork(t *testing.T) {

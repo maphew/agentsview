@@ -209,6 +209,22 @@ func TestSyncSingleSessionPiebaldFork(t *testing.T) {
 	}
 }
 
+func TestSyncSingleSessionPiebaldUnknownFork(t *testing.T) {
+	env := setupTestEnv(t)
+	piebald := createPiebaldDB(t, env.piebaldDir)
+	piebald.addChatWithFork(t, 42)
+
+	if err := env.engine.SyncSingleSession("piebald:42-999"); err == nil {
+		t.Fatal("SyncSingleSession(piebald:42-999) returned nil; want not-found error")
+	}
+	if src := env.engine.FindSourceFile("piebald:42-999"); src != "" {
+		t.Fatalf("FindSourceFile(piebald:42-999) = %q, want empty", src)
+	}
+	if mtime := env.engine.SourceMtime("piebald:42-999"); mtime != 0 {
+		t.Fatalf("SourceMtime(piebald:42-999) = %d, want 0", mtime)
+	}
+}
+
 func TestSyncEnginePiebaldBulkSync(t *testing.T) {
 	env := setupTestEnv(t)
 	piebald := createPiebaldDB(t, env.piebaldDir)

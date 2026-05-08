@@ -1498,6 +1498,7 @@ func (e *Engine) syncAllLocked(
 		for _, pw := range pending {
 			dbProgress.MessagesIndexed += len(pw.msgs)
 		}
+		stats.messagesIndexed = dbProgress.MessagesIndexed
 		onProgress(dbProgress)
 	}
 
@@ -4253,7 +4254,8 @@ func (e *Engine) FindSourceFile(sessionID string) string {
 				if dbPath == "" {
 					continue
 				}
-				if _, _, err := parser.ParsePiebaldSession(dbPath, chatID, e.machine); err == nil {
+				results, err := parser.ParsePiebaldSessionResults(dbPath, chatID, e.machine)
+				if err == nil && piebaldResultsContain(results, sessionID) {
 					return dbPath
 				}
 			}
@@ -4341,10 +4343,24 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 				if err != nil {
 					continue
 				}
+				var mtime int64
 				for _, meta := range metas {
 					if meta.SessionID == chatID {
-						return meta.FileMtime
+						mtime = meta.FileMtime
+						break
 					}
+				}
+				if mtime == 0 {
+					continue
+				}
+				// Base chat IDs are confirmed by meta. Fork IDs
+				// need a parse to verify the requested fork exists.
+				if chatID == rawSessionID {
+					return mtime
+				}
+				results, err := parser.ParsePiebaldSessionResults(dbPath, chatID, e.machine)
+				if err == nil && piebaldResultsContain(results, sessionID) {
+					return mtime
 				}
 			}
 		}
@@ -4982,7 +4998,7 @@ func (e *Engine) syncSinglePiebald(
 			lastErr = err
 			continue
 		}
-		if len(results) == 0 {
+		if !piebaldResultsContain(results, sessionID) {
 			continue
 		}
 		for _, result := range results {
@@ -5005,6 +5021,18 @@ func (e *Engine) syncSinglePiebald(
 		return fmt.Errorf("piebald session %s: %w", sessionID, lastErr)
 	}
 	return fmt.Errorf("piebald session %s not found", sessionID)
+}
+
+// piebaldResultsContain reports whether any parsed result has the given
+// session ID. Used to verify a requested fork session was actually
+// produced by the parser before treating a base-chat lookup as a hit.
+func piebaldResultsContain(results []parser.ParseResult, sessionID string) bool {
+	for _, r := range results {
+		if r.Session.ID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 func strPtr(s string) *string {
