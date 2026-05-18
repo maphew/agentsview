@@ -5,7 +5,9 @@ package dbtest
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/wesm/agentsview/internal/db"
 )
@@ -32,11 +34,43 @@ func WriteTestFile(
 	}
 }
 
+// MkdirTempWithCleanup creates a temporary directory and registers
+// a cleanup that retries os.RemoveAll on Windows where SQLite WAL
+// and mmap'd database files can remain briefly locked after the
+// owning *sql.DB has been closed. A runtime.GC() runs first so
+// any finalizer-driven stmt cleanup in mattn/go-sqlite3 releases
+// its file handles before the directory removal is attempted.
+func MkdirTempWithCleanup(t *testing.T, pattern string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		t.Fatalf("creating temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		runtime.GC()
+		var removeErr error
+		sleep := 25 * time.Millisecond
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			removeErr = os.RemoveAll(dir)
+			if removeErr == nil {
+				return
+			}
+			time.Sleep(sleep)
+			if sleep < 500*time.Millisecond {
+				sleep *= 2
+			}
+		}
+		t.Errorf("removing temp dir %s: %v", dir, removeErr)
+	})
+	return dir
+}
+
 // OpenTestDB creates a temporary SQLite database for testing.
 // The database is automatically closed when the test completes.
 func OpenTestDB(t *testing.T) *db.DB {
 	t.Helper()
-	dir := t.TempDir()
+	dir := MkdirTempWithCleanup(t, "agentsview-dbtest-*")
 	path := filepath.Join(dir, "test.db")
 	d, err := db.Open(path)
 	if err != nil {

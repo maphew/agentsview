@@ -231,22 +231,7 @@ func setupPGMode(t *testing.T) *testEnv {
 
 func tempDirWithRetryCleanup(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "agentsview-server-test-*")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	t.Cleanup(func() {
-		var removeErr error
-		for range 20 {
-			removeErr = os.RemoveAll(dir)
-			if removeErr == nil {
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		t.Errorf("removing temp dir %s: %v", dir, removeErr)
-	})
-	return dir
+	return dbtest.MkdirTempWithCleanup(t, "agentsview-server-test-*")
 }
 
 func (te *testEnv) writeProjectFile(
