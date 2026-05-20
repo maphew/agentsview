@@ -15,9 +15,10 @@ import (
 
 // geminiTokens holds token usage counts from a Gemini message.
 type geminiTokens struct {
-	Input  int
-	Output int
-	Cached int
+	Input    int
+	Output   int
+	Cached   int
+	Thoughts int
 }
 
 // extractGeminiTokens reads the tokens object from a Gemini
@@ -28,10 +29,28 @@ func extractGeminiTokens(msg gjson.Result) geminiTokens {
 		return geminiTokens{}
 	}
 	return geminiTokens{
-		Input:  int(tok.Get("input").Int()),
-		Output: int(tok.Get("output").Int()),
-		Cached: int(tok.Get("cached").Int()),
+		Input:    int(tok.Get("input").Int()),
+		Output:   int(tok.Get("output").Int()),
+		Cached:   int(tok.Get("cached").Int()),
+		Thoughts: int(tok.Get("thoughts").Int()),
 	}
+}
+
+// normalizedGeminiTokenUsage maps Gemini's token counts onto the
+// Anthropic-style shape used by usage and cost queries. Thoughts
+// tokens are billed at the output rate, so they fold into
+// output_tokens here.
+func normalizedGeminiTokenUsage(tok geminiTokens) json.RawMessage {
+	payload := map[string]int{
+		"input_tokens":            tok.Input,
+		"output_tokens":           tok.Output + tok.Thoughts,
+		"cache_read_input_tokens": tok.Cached,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // ParseGeminiSession parses a Gemini CLI session JSON file.
@@ -233,7 +252,7 @@ func parseGeminiMessage(
 	var tokenUsage json.RawMessage
 	tokResult := msg.Get("tokens")
 	if tokResult.Exists() {
-		tokenUsage = json.RawMessage(tokResult.Raw)
+		tokenUsage = normalizedGeminiTokenUsage(tok)
 	}
 	return ParsedMessage{
 		Ordinal:       ordinal,
@@ -248,10 +267,11 @@ func parseGeminiMessage(
 		Model:         msg.Get("model").String(),
 		TokenUsage:    tokenUsage,
 		ContextTokens: tok.Input + tok.Cached,
-		OutputTokens:  tok.Output,
+		OutputTokens:  tok.Output + tok.Thoughts,
 		HasContextTokens: tokResult.Get("input").Exists() ||
 			tokResult.Get("cached").Exists(),
-		HasOutputTokens:    tokResult.Get("output").Exists(),
+		HasOutputTokens: tokResult.Get("output").Exists() ||
+			tokResult.Get("thoughts").Exists(),
 		tokenPresenceKnown: true,
 	}, true
 }
