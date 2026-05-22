@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wesm/agentsview/internal/importer"
+	"go.kenn.io/agentsview/internal/importer"
 )
 
 // wantsSSE checks if the client opted into streaming via

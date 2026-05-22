@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestWorktreeMappingsAPIUsesCurrentMachine(t *testing.T) {

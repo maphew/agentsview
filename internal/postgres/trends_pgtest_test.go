@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestStoreGetTrendsTerms(t *testing.T) {

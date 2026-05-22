@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // buildTarCommand generates the remote tar command for the given

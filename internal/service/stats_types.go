@@ -1,7 +1,7 @@
 // internal/service/stats_types.go
 package service
 
-import "github.com/wesm/agentsview/internal/db"
+import "go.kenn.io/agentsview/internal/db"
 
 // StatsFilter mirrors the session-stats CLI flag set.
 type StatsFilter struct {

@@ -3,7 +3,7 @@ package postgres
 import (
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestRankTopSessions_DurationSort(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
-	"github.com/wesm/agentsview/internal/testjsonl"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 func TestGetProjectName(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // Stats holds database-wide statistics.

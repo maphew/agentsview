@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesm/agentsview/internal/importer"
+	"go.kenn.io/agentsview/internal/importer"
 )
 
 func TestHandleImportClaudeAI(t *testing.T) {

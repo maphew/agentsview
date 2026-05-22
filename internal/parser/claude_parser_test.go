@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-	"github.com/wesm/agentsview/internal/testjsonl"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 func runClaudeParserTest(t *testing.T, fileName, content string) (ParsedSession, []ParsedMessage) {

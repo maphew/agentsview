@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // pinSessionMessage pins the first message of a session via the DB

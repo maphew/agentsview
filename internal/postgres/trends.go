@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func (s *Store) GetTrendsTerms(

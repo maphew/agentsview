@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 type sessionSpec struct {

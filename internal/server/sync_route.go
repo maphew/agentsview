@@ -8,8 +8,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 func (s *Server) handleSyncSession(

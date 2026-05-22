@@ -8,7 +8,7 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
-	"github.com/wesm/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 func newSessionMessagesCommand() *cobra.Command {

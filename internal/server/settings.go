@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // settingsResponse is the JSON shape returned by GET /api/v1/settings.

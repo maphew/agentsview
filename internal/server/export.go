@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // getSessionWithMessages fetches a session and its messages by ID,

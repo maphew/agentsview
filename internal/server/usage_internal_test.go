@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // approxEqual returns true if a and b are within eps (for

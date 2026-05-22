@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/sync"
 )
 
 const (

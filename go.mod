@@ -1,4 +1,4 @@
-module github.com/wesm/agentsview
+module go.kenn.io/agentsview
 
 go 1.26.2
 

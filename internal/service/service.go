@@ -7,7 +7,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // SessionService is the canonical per-session operation interface.

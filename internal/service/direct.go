@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/sessionwatch"
-	"github.com/wesm/agentsview/internal/signals"
-	"github.com/wesm/agentsview/internal/sync"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/sessionwatch"
+	"go.kenn.io/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 // directBackend implements SessionService by wrapping a db.Store

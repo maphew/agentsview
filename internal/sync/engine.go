@@ -10,14 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	gosync "sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
-	"github.com/wesm/agentsview/internal/signals"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 const (
@@ -3995,8 +3996,8 @@ func (e *Engine) processIflow(
 // from the end of the tool call list.
 func computeFinalStreak(calls []signals.ToolCallRow) int {
 	streak := 0
-	for i := len(calls) - 1; i >= 0; i-- {
-		if signals.IsFailure(calls[i]) {
+	for _, v := range slices.Backward(calls) {
+		if signals.IsFailure(v) {
 			streak++
 		} else {
 			break

@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestHandleSearchSession(t *testing.T) {

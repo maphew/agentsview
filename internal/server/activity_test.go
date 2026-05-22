@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestGetSessionActivity(t *testing.T) {

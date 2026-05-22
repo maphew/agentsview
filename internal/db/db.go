@@ -16,8 +16,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // dataVersion tracks parser changes that require a full

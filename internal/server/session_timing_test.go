@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 )
 
 func TestHandleSessionTiming_OK(t *testing.T) {
@@ -57,8 +57,8 @@ func seedTimingFixture(t *testing.T, d *db.DB, sessionID string) {
 		func(s *db.Session) {
 			s.MessageCount = 3
 			s.UserMessageCount = 2
-			s.StartedAt = dbtest.Ptr(startedAt)
-			s.EndedAt = dbtest.Ptr(endedAt)
+			s.StartedAt = new(string(startedAt))
+			s.EndedAt = new(string(endedAt))
 		})
 
 	msgs := []db.Message{

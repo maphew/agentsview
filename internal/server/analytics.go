@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 // defaultDateRange returns (from, to) defaulting to the last

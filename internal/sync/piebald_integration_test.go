@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/sync"
 )
 
 type piebaldTestDB struct {

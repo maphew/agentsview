@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func canonicalTestDir(path string) string {

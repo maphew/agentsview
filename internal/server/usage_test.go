@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/server"
 )
 
 // tokenUsageJSON is a valid token_usage blob for test messages.

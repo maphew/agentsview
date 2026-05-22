@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/config"
 )
 
 func TestGetDailyUsageEmpty(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // errHTTPNotFound is returned by getJSON for 404 responses so callers

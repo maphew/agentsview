@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func (s *Server) handleTrendsTerms(

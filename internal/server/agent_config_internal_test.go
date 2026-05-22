@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/config"
 )
 
 func TestInsightAgentConfigMapsBinaryOverrides(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/server"
 )
 
 // freeTCPListener binds to a free loopback port and returns the

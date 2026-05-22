@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/wesm/agentsview/internal/sessionwatch"
-	syncpkg "github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/sessionwatch"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
 )
 
 // sessionMonitor returns a channel that ticks whenever the

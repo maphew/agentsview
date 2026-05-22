@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
-	"github.com/wesm/agentsview/internal/testjsonl"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 func openTestDB(t *testing.T) *db.DB {

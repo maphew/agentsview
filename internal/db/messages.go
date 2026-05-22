@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 const (

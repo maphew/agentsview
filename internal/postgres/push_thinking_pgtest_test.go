@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // TestPushThinkingText_SanitizesNullAndInvalidUTF8 verifies that

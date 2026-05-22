@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // PruneConfig holds parsed CLI options for the prune command.

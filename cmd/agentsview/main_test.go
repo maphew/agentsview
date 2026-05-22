@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/sync"
 )
 
 func TestMustLoadConfig(t *testing.T) {

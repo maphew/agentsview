@@ -4,7 +4,7 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/dbtest"
 )
 
 func TestRemoteSkippedFiles_InitiallyEmpty(t *testing.T) {

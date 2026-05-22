@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/server"
-	"github.com/wesm/agentsview/internal/testjsonl"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 type uploadCommitFailStore struct {

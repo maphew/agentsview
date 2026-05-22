@@ -7,7 +7,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/config"
 )
 
 // TestLoadPricingMapAppliesCustomWhenTableMissing covers the fresh-PG

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 const testSchema = "agentsview_store_test"

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 const attachToolCallBatchSize = 500

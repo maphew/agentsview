@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/signals"
 )
 
 func TestExtractToolCallRows(t *testing.T) {

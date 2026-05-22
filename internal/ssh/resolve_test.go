@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 func TestBuildResolveScript(t *testing.T) {

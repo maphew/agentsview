@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // isUndefinedTable returns true when the error indicates the

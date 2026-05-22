@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/server"
-	"github.com/wesm/agentsview/internal/update"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/update"
 )
 
 func stubChecker(

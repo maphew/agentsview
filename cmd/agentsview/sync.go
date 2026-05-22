@@ -9,11 +9,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
-	"github.com/wesm/agentsview/internal/ssh"
-	"github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/ssh"
+	"go.kenn.io/agentsview/internal/sync"
 )
 
 // SyncConfig holds parsed CLI options for the sync command.

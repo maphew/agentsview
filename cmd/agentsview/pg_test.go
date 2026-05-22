@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/config"
 )
 
 func loadPGServeConfigForTest(t *testing.T, args ...string) (config.Config, string, error) {

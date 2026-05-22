@@ -1,10 +1,11 @@
 package sync
 
 import (
+	"slices"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/signals"
 )
 
 // computeSignalsFromMessages produces a SessionSignalUpdate from
@@ -220,9 +221,9 @@ func extractLastMessageRole(
 	if msgs == nil {
 		return "", ""
 	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if !msgs[i].IsSystem {
-			return msgs[i].Role, msgs[i].Content
+	for _, v := range slices.Backward(msgs) {
+		if !v.IsSystem {
+			return v.Role, v.Content
 		}
 	}
 	return "", ""

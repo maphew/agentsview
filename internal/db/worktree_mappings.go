@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/mattn/go-sqlite3"
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 var ErrWorktreeMappingDuplicate = errors.New("worktree mapping already exists")

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func testSSHHost(t *testing.T) string {

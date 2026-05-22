@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	dbpkg "github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/service"
+	dbpkg "go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 func (s *Server) handleGetMessages(

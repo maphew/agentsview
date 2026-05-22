@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/insight"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/insight"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 var validInsightTypes = map[string]bool{

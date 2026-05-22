@@ -3,8 +3,8 @@
 package main
 
 import (
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // applyClassifierConfig installs user-defined classifier

@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestCustomPricingOverridesPricingMap(t *testing.T) {

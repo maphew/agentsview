@@ -14,8 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/server"
 )
 
 func TestSessionHelp_ShowsSubcommands(t *testing.T) {

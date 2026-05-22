@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // testSession returns a *db.Session with sensible defaults.

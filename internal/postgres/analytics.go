@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // maxPGVars is the maximum bind variables per IN clause.

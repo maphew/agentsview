@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/wesm/agentsview/internal/update"
+	"go.kenn.io/agentsview/internal/update"
 )
 
 // UpdateCheckFunc is the signature for functions that check for

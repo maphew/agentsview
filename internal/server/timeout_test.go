@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesm/agentsview/internal/testjsonl"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 // TestServerTimeouts starts a real HTTP server and verifies that

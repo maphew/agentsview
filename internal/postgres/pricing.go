@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/pricing"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/pricing"
 )
 
 type modelRates struct {

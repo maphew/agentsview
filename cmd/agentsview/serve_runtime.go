@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/server"
 )
 
 type serveRuntimeOptions struct {

@@ -18,7 +18,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | i
 ```
 
 Or download the **desktop app** (macOS / Windows) from
-[GitHub Releases](https://github.com/wesm/agentsview/releases) or via homebrew: `brew install --cask agentsview`
+[GitHub Releases](https://github.com/wesm/agentsview/releases) or via homebrew:
+`brew install --cask agentsview`
 
 Or run the published Docker image:
 
@@ -55,10 +56,10 @@ docker compose -f docker-compose.prod.yaml up -d
 ```
 
 The included compose file persists the agentsview data directory in a named
-volume and mounts Claude, Codex, Forge, and OpenCode session roots read-only. The
-container runs as root, so prefer a named volume for `/data` over a host bind
-mount; if you do bind-mount, pre-create the directory with the desired ownership
-to avoid root-owned files in your home directory.
+volume and mounts Claude, Codex, Forge, and OpenCode session roots read-only.
+The container runs as root, so prefer a named volume for `/data` over a host
+bind mount; if you do bind-mount, pre-create the directory with the desired
+ownership to avoid root-owned files in your home directory.
 
 The examples publish the UI on loopback only (`127.0.0.1`). If you need to
 expose it beyond localhost, enable `--require-auth` and publish the port
@@ -181,7 +182,7 @@ agentsview auto-discovers sessions from all of these:
 | Qwen Code          | `~/.qwen/projects/`                                    |
 | OpenClaw           | `~/.openclaw/agents/`                                  |
 | Kimi               | `~/.kimi/sessions/`                                    |
-| Kiro CLI           | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`     |
+| Kiro CLI           | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`    |
 | Kiro IDE           | `~/Library/Application Support/Kiro/` (macOS)          |
 | Cortex Code        | `~/.snowflake/cortex/conversations/`                   |
 | Hermes Agent       | `~/.hermes/sessions/`                                  |
@@ -220,7 +221,7 @@ Full docs at **[agentsview.io](https://agentsview.io)**:
 [Configuration](https://agentsview.io/configuration/) --
 [Architecture](https://agentsview.io/architecture/)
 
----
+______________________________________________________________________
 
 ## Development
 
