@@ -358,6 +358,26 @@ func upsertPricing(
 	return database.UpsertModelPricing(dbPrices)
 }
 
+// insertMissingPricing inserts fallback rows for models not already
+// priced, without overwriting existing rows. Used by the direct
+// usage path so a CLI-only data dir still prices fallback-catalog
+// models, while never clobbering richer LiteLLM rows.
+func insertMissingPricing(
+	database *db.DB, prices []pricing.ModelPricing,
+) error {
+	dbPrices := make([]db.ModelPricing, len(prices))
+	for i, p := range prices {
+		dbPrices[i] = db.ModelPricing{
+			ModelPattern:         p.ModelPattern,
+			InputPerMTok:         p.InputPerMTok,
+			OutputPerMTok:        p.OutputPerMTok,
+			CacheCreationPerMTok: p.CacheCreationPerMTok,
+			CacheReadPerMTok:     p.CacheReadPerMTok,
+		}
+	}
+	return database.InsertMissingModelPricing(dbPrices)
+}
+
 func printDailyTable(
 	result db.DailyUsageResult, breakdown bool,
 ) {
