@@ -206,6 +206,123 @@ func TestAcceptsRealisticPEMBodies(t *testing.T) {
 	}
 }
 
+// TestAcceptsPKCS8Ed25519PEM pins the lower minBody threshold: a real
+// PKCS#8 Ed25519 private key has a 64-byte base64 body (`openssl
+// genpkey -algorithm ED25519` output), well below the 150-byte floor
+// the gate originally enforced. The body-length floor must be small
+// enough to let this shape through while still rejecting the trivial
+// "MIIBjunk"-style placeholders.
+func TestAcceptsPKCS8Ed25519PEM(t *testing.T) {
+	// Body is the literal 64-char base64 output of openssl on a real
+	// Ed25519 key; the value itself is not sensitive (regenerated).
+	text := "-----BEGIN PRIVATE KEY-----\n" +
+		"MC4CAQAwBQYDK2VwBCIEIHNhJUCu8VvJCV4O++0jHhjsfn4SwMjf3+3zctpGdZMe\n" +
+		"-----END PRIVATE KEY-----"
+	found := false
+	for _, m := range Scan(text) {
+		if m.Rule == "private-key-block" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("private-key-block did not match PKCS#8 Ed25519 PEM (64-byte body)")
+	}
+}
+
+// TestAcceptsEncryptedPEMWithHeaders pins the header-skipping behavior:
+// a legacy encrypted PEM private key carries a "Proc-Type"/"DEK-Info"
+// header block before the body. Those lines contain non-base64
+// characters (":", ",", "-") that would tank the purity ratio if
+// measured; the gate must skip them and measure purity only on the
+// base64 payload.
+func TestAcceptsEncryptedPEMWithHeaders(t *testing.T) {
+	body := strings.Repeat(
+		"MIIBSECRETKEYMATERIAL0123456789ABCDEFGHIJKLMNOPQRSTUV\n", 3)
+	text := "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"Proc-Type: 4,ENCRYPTED\n" +
+		"DEK-Info: AES-128-CBC,A1B2C3D4E5F60718293A4B5C6D7E8F90\n" +
+		"\n" +
+		body +
+		"-----END RSA PRIVATE KEY-----"
+	found := false
+	for _, m := range Scan(text) {
+		if m.Rule == "private-key-block" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("private-key-block did not match encrypted PEM with " +
+			"Proc-Type/DEK-Info headers")
+	}
+}
+
+// TestAcceptsAWSKeysWithRepeatedChars pins the entropy-skip on short
+// bodies: a random 16-char base32 body can plausibly have ≤10 distinct
+// characters by birthday luck and fall under 3.5 bits of Shannon
+// entropy. Applying entropy unconditionally would drop format-valid
+// AWS keys; the gate must rely only on structural checks at this
+// length.
+func TestAcceptsAWSKeysWithRepeatedChars(t *testing.T) {
+	// Each fixture is AKIA + 16 body chars with at most 8 distinct
+	// characters (Shannon entropy ≈ 3.0 bits, below the 3.5 gate) but
+	// no dominant byte, no repeating short block, and no monotone
+	// alphabet/digit run.
+	repeatedCharKeys := []string{
+		"AKIAQQHHKKBB22NN77XX",
+		"AKIAMMKKJJRRPPNN22FF",
+		"ASIAFFHHKKBB22NN77XX",
+	}
+	for _, key := range repeatedCharKeys {
+		t.Run(key, func(t *testing.T) {
+			found := false
+			for _, m := range Scan("key=" + key + " end") {
+				if m.Rule == "aws-access-key" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("aws-access-key did not match low-entropy real-looking key %q", key)
+			}
+		})
+	}
+}
+
+// TestRejectsPEMDocsPlaceholders pins the tighter base64-purity gate
+// (≥99%) against the agentsview-docs leaks: an illustrative body with
+// "...", "(2-3 lines of base64)", or string-concat operators inside
+// the BEGIN/END markers is not a real key and must not be reported.
+// These appeared as definite findings on the docs sessions until the
+// 90% → 99% tightening.
+func TestRejectsPEMDocsPlaceholders(t *testing.T) {
+	cases := []string{
+		"-----BEGIN PRIVATE KEY-----\n" +
+			"MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg...\n" +
+			"(2-3 lines of base64)\n" +
+			"-----END PRIVATE KEY-----",
+		"-----BEGIN RSA PRIVATE KEY-----\n" +
+			"MIIEowIBAAKCAQEAthisisaverylongkeyblockwithlotsofbase64data\" +" + "\n" +
+			"\t\t\"" +
+			"-----END RSA PRIVATE KEY-----",
+	}
+	for i, p := range cases {
+		t.Run(p[:40]+"#"+itoa(i), func(t *testing.T) {
+			for _, m := range Scan(p) {
+				if m.Rule == "private-key-block" {
+					t.Errorf("private-key-block matched docs placeholder: %q", m.Redacted)
+				}
+			}
+		})
+	}
+}
+
+// itoa renders a small int for subtest names.
+func itoa(n int) string {
+	if n < 10 {
+		return string(rune('0' + n))
+	}
+	return ""
+}
+
 // TestRejectsPEMInMarkdownDiff pins the PEM base64-purity gate: a markdown
 // diff containing the literal text "-----BEGIN PRIVATE KEY-----" and
 // "-----END PRIVATE KEY-----" with prose, tables, and pipe characters

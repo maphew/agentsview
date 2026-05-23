@@ -91,11 +91,10 @@ func TestSecretFindingsSchema(t *testing.T) {
 		}
 	}
 
-	// Verify sessions has secret_leak_count.
-	// PG omits secrets_rules_version (scan-side only);
-	// per-finding rules_version is in secret_findings instead.
+	// Verify sessions has both secret-scan state columns.
 	requiredSessionCols := []string{
 		"secret_leak_count",
+		"secrets_rules_version",
 	}
 	for _, col := range requiredSessionCols {
 		var exists bool

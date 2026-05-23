@@ -209,6 +209,20 @@ func TestSearchContentEmptyToolUseIDNotSuppressed(t *testing.T) {
 	if err := d.ReplaceSessionMessages("empti", msgs); err != nil {
 		t.Fatalf("ReplaceSessionMessages: %v", err)
 	}
+	// ReplaceSessionMessages routes empty ToolUseID through nilIfEmpty so
+	// it lands as NULL. NULL = NULL is false in SQL, so the dedup bug we
+	// want to pin (an empty string matching another empty string) only
+	// triggers when the column actually holds ''. Force both rows to the
+	// literal empty-string form here so the test fails on the old buggy
+	// query.
+	for _, sql := range []string{
+		"UPDATE tool_calls SET tool_use_id = '' WHERE session_id = 'empti'",
+		"UPDATE tool_result_events SET tool_use_id = '' WHERE session_id = 'empti'",
+	} {
+		if _, err := d.getWriter().Exec(sql); err != nil {
+			t.Fatalf("force empty tool_use_id: %v", err)
+		}
+	}
 	for _, mode := range []string{"substring", "regex"} {
 		got, err := d.SearchContent(context.Background(), ContentSearchFilter{
 			Pattern: "FINDA", Mode: mode,

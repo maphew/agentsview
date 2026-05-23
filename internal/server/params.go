@@ -28,6 +28,27 @@ func parseIntParam(
 	return v, true
 }
 
+// parseNonNegativeIntParam reads an integer query parameter that must
+// be non-negative (e.g. cursor / OFFSET values). Returns (value, true)
+// on success, writes a 400 and returns (0, false) on a non-integer or
+// negative value. Negative values flow through to SQL OFFSET on
+// PostgreSQL as an error (SQLite tolerates them); rejecting at the
+// handler turns the silent 500 into a clean 400.
+func parseNonNegativeIntParam(
+	w http.ResponseWriter, r *http.Request, name string,
+) (int, bool) {
+	v, ok := parseIntParam(w, r, name)
+	if !ok {
+		return 0, false
+	}
+	if v < 0 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("%s must not be negative", name))
+		return 0, false
+	}
+	return v, true
+}
+
 // validateDateFilters validates the shared date query params: date, date_from,
 // and date_to must be YYYY-MM-DD; date_from must not be after date_to; and
 // active_since must be an RFC3339 timestamp. On the first invalid value it

@@ -76,6 +76,70 @@ func TestParseIntParam(t *testing.T) {
 	}
 }
 
+// TestParseNonNegativeIntParam pins the cursor-validation contract:
+// negative integers, which would flow through to SQL OFFSET and 500
+// on PostgreSQL, must be rejected with a 400 at the handler.
+func TestParseNonNegativeIntParam(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantVal    int
+		wantOK     bool
+		wantStatus int
+	}{
+		{
+			name:       "absent",
+			query:      "",
+			wantVal:    0,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "zero",
+			query:      "cursor=0",
+			wantVal:    0,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "positive",
+			query:      "cursor=50",
+			wantVal:    50,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "negative rejected",
+			query:      "cursor=-1",
+			wantVal:    0,
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "non-numeric rejected",
+			query:      "cursor=abc",
+			wantVal:    0,
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, r := newTestRequest(t, tt.query)
+			val, ok := parseNonNegativeIntParam(w, r, "cursor")
+			if ok != tt.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if val != tt.wantVal {
+				t.Errorf("val = %d, want %d", val, tt.wantVal)
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestClampLimit(t *testing.T) {
 	const max = 1000
 	const defaultLimit = 100

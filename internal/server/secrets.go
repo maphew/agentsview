@@ -19,7 +19,7 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cursor, ok := parseIntParam(w, r, "cursor")
+	cursor, ok := parseNonNegativeIntParam(w, r, "cursor")
 	if !ok {
 		return
 	}

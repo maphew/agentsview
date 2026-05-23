@@ -43,7 +43,7 @@ func (s *Server) handleSearchContent(
 	if !ok {
 		return
 	}
-	cursor, ok := parseIntParam(w, r, "cursor")
+	cursor, ok := parseNonNegativeIntParam(w, r, "cursor")
 	if !ok {
 		return
 	}

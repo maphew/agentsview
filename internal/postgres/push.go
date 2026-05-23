@@ -686,6 +686,7 @@ func sessionPushFingerprint(
 		fmt.Sprintf("%t", sess.IsTruncated),
 		stringValue(sess.TerminationStatus),
 		fmt.Sprintf("%d", sess.SecretLeakCount),
+		sess.SecretsRulesVersion,
 		usageEventFingerprint,
 	}
 	var b strings.Builder
@@ -782,7 +783,7 @@ func (s *Sync) pushSession(
 			context_pressure_max,
 			health_score, health_grade,
 			has_tool_calls, has_context_data,
-			secret_leak_count,
+			secret_leak_count, secrets_rules_version,
 			updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
@@ -797,7 +798,7 @@ func (s *Sync) pushSession(
 			$37, $38,
 			$39,
 			$40, $41, $42, $43,
-			$44,
+			$44, $45,
 			NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -844,6 +845,7 @@ func (s *Sync) pushSession(
 			has_tool_calls = EXCLUDED.has_tool_calls,
 			has_context_data = EXCLUDED.has_context_data,
 			secret_leak_count = EXCLUDED.secret_leak_count,
+			secrets_rules_version = EXCLUDED.secrets_rules_version,
 			updated_at = NOW()
 		WHERE sessions.machine IS DISTINCT FROM EXCLUDED.machine
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
@@ -887,7 +889,8 @@ func (s *Sync) pushSession(
 			OR sessions.health_grade IS DISTINCT FROM EXCLUDED.health_grade
 			OR sessions.has_tool_calls IS DISTINCT FROM EXCLUDED.has_tool_calls
 			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data
-			OR sessions.secret_leak_count IS DISTINCT FROM EXCLUDED.secret_leak_count`,
+			OR sessions.secret_leak_count IS DISTINCT FROM EXCLUDED.secret_leak_count
+			OR sessions.secrets_rules_version IS DISTINCT FROM EXCLUDED.secrets_rules_version`,
 		sess.ID, s.machine,
 		sanitizePG(sess.Project),
 		sess.Agent,
@@ -915,7 +918,7 @@ func (s *Sync) pushSession(
 		sess.ContextPressureMax,
 		sess.HealthScore, nilStr(sess.HealthGrade),
 		sess.HasToolCalls, sess.HasContextData,
-		sess.SecretLeakCount,
+		sess.SecretLeakCount, sess.SecretsRulesVersion,
 	)
 	return err
 }
@@ -1560,9 +1563,10 @@ func bulkInsertToolResultEvents(
 // the current local set. It reports whether it changed any rows
 // (deleted existing or inserted new) so the caller can bump
 // sessions.updated_at for secret-only changes that pushSession and
-// pushMessages would otherwise miss. PG omits
-// sessions.secrets_rules_version (scan-side only); per-finding
-// rules_version is pushed via this table.
+// pushMessages would otherwise miss. Per-finding rules_version is
+// pushed via this table; the session-level
+// sessions.secrets_rules_version is pushed by pushSession alongside
+// the rest of the session columns.
 func (s *Sync) pushSecretFindings(
 	ctx context.Context, tx *sql.Tx, sessionID string,
 ) (bool, error) {

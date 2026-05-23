@@ -236,8 +236,15 @@ func hasMonotoneRun(s string, minRun int) bool {
 // strings that fail any one. Each rule's validator strips the
 // well-known vendor prefix (e.g. "AKIA", "ghp_") before calling so the
 // fixed prefix doesn't drag entropy down or hide a body-level pattern.
+//
+// Shannon entropy is only applied when the body is at least 24 bytes.
+// A random 16-char base32 body (AWS access key shape) can plausibly
+// have ≤10 distinct characters by birthday luck and fall below 3.5
+// bits — applying the gate there would reject real keys. For shorter
+// bodies, the structural checks (which scale to any length) are the
+// only filter.
 func bodyLooksRandom(s string) bool {
-	if shannonEntropy(s) < 3.5 {
+	if len(s) >= 24 && shannonEntropy(s) < 3.5 {
 		return false
 	}
 	if hasRepeatingBlock(s) {
@@ -341,16 +348,27 @@ func notTrailingRunRepeat(s string, n int) bool {
 	return false
 }
 
-// notTrivialPEMBody rejects PEM blocks whose body is too short or too
-// far from base64 to plausibly hold a real private key. Real key
-// material is ≥256 base64 characters of A-Za-z0-9+/= with optional
-// newlines; this gate requires 150 non-whitespace bytes AND ≥90% of
-// them to be valid base64 alphabet. The byte-length gate catches the
-// "BEGIN ... key bytes here ... END" examples agents emit; the base64
-// purity gate catches markdown diffs that quote the BEGIN/END markers
-// with prose, tables, and pipe characters between them.
+// notTrivialPEMBody rejects PEM blocks whose payload is too short or
+// too far from base64 to plausibly hold a real private key. The
+// shortest real key material is PKCS#8 Ed25519, whose body is a
+// single 64-character base64 line; the gate requires 48 non-whitespace
+// payload bytes (leaving margin) AND ≥99% of them to be valid base64
+// alphabet. The byte-length gate catches the "BEGIN ... key bytes
+// here ... END" examples agents emit; the base64 purity gate catches
+// docs/diffs that quote the BEGIN/END markers around prose or
+// hand-written placeholders (".../(2-3 lines of base64)", "+" string
+// concatenation, etc.). A real PEM body after header stripping is
+// pure base64, so the threshold is set just below 100% to leave
+// margin for whitespace handling edge cases without admitting any
+// stray punctuation.
+//
+// Legacy encrypted PEM keys carry a "Proc-Type"/"DEK-Info" header
+// block before the body; those lines contain ":", ",", and "-" which
+// would tank the purity ratio if they were measured. The gate skips
+// the header block (everything up to the first blank line) when one
+// is present so it's measured only over the actual base64 payload.
 func notTrivialPEMBody(s string) bool {
-	const minBody = 150
+	const minBody = 48
 	const beginMarker = "-----"
 	first := strings.Index(s, beginMarker)
 	if first < 0 {
@@ -365,8 +383,9 @@ func notTrivialPEMBody(s string) bool {
 	if endIdx <= bodyStart {
 		return true
 	}
+	payload := stripPEMHeaders(s[bodyStart:endIdx])
 	nonWS, b64 := 0, 0
-	for _, c := range s[bodyStart:endIdx] {
+	for _, c := range payload {
 		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
 			continue
 		}
@@ -379,7 +398,51 @@ func notTrivialPEMBody(s string) bool {
 	if nonWS < minBody {
 		return false
 	}
-	return b64*10 >= nonWS*9
+	return b64*100 >= nonWS*99
+}
+
+// stripPEMHeaders removes the legacy encrypted-PEM header block
+// ("Proc-Type: 4,ENCRYPTED" / "DEK-Info: AES-128-CBC,...") from the
+// start of body, returning the base64 payload. The header block is a
+// sequence of "Name: Value" lines terminated by a blank line; modern
+// PKCS#8 encrypted keys have no headers, so the function is a no-op
+// in that case. A markdown diff that happens to wrap BEGIN/END
+// markers around prose does not start with a "Name: Value" line, so
+// stripPEMHeaders leaves it alone (its purity is measured over the
+// full content and fails the 90% gate on its own).
+func stripPEMHeaders(body string) string {
+	body = strings.TrimLeft(body, " \t\r\n")
+	if !looksLikePEMHeaderStart(body) {
+		return body
+	}
+	if _, after, ok := strings.Cut(body, "\n\n"); ok {
+		return after
+	}
+	if _, after, ok := strings.Cut(body, "\r\n\r\n"); ok {
+		return after
+	}
+	return body
+}
+
+// looksLikePEMHeaderStart reports whether body begins with a "Name:"
+// header line in the form RFC 1421 allows: letters and hyphens before
+// the colon, on the first line of the body.
+func looksLikePEMHeaderStart(body string) bool {
+	eol := strings.IndexAny(body, "\r\n")
+	if eol < 0 {
+		eol = len(body)
+	}
+	colon := strings.Index(body[:eol], ":")
+	if colon <= 0 {
+		return false
+	}
+	for i := range colon {
+		c := body[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // rulesAlgorithmVersion bumps when matching *logic* changes (e.g. a new
@@ -394,8 +457,12 @@ func notTrivialPEMBody(s string) bool {
 // blocks + sequential ASCII runs) and wired it into every definite
 // rule, including github-pat, stripe-secret, and google-api-key which
 // previously had no validator. Also tightened the PEM gate to require
-// base64-purity of the body, dropping markdown diffs that quote the
-// BEGIN/END markers around prose.
+// base64-purity of the body and lowered minBody to 48 so PKCS#8
+// Ed25519 (64-char body) is still detected; the gate skips legacy
+// "Proc-Type"/"DEK-Info" header lines before measuring purity. Shannon
+// entropy is only applied when the body is ≥24 bytes so short
+// base32-shaped bodies (AWS access keys, 16 chars) don't trip the gate
+// by birthday-paradox luck.
 const rulesAlgorithmVersion = 3
 
 // Verify reports whether the named rule still produces a finding at exactly

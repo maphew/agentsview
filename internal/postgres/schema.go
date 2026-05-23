@@ -486,13 +486,15 @@ func EnsureSchema(
 			`termination_status TEXT`,
 			"adding sessions.termination_status",
 		},
-		// PG intentionally omits sessions.secrets_rules_version
-		// (scan-side bookkeeping only). Per-finding rules_version
-		// is pushed via the secret_findings table instead.
 		{
 			"sessions", "secret_leak_count",
 			`secret_leak_count INTEGER NOT NULL DEFAULT 0`,
 			"adding sessions.secret_leak_count",
+		},
+		{
+			"sessions", "secrets_rules_version",
+			`secrets_rules_version TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.secrets_rules_version",
 		},
 	}
 	step = time.Now()
