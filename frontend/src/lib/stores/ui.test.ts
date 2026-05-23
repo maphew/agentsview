@@ -140,6 +140,16 @@ describe("UIStore", () => {
       expect(ui.followLatestRequest).toBe(first + 1);
     });
 
+    it("toggles follow latest mode", () => {
+      ui.toggleFollowLatest();
+      expect(ui.followLatest).toBe(true);
+      expect(ui.followLatestRequest).toBe(1);
+
+      ui.toggleFollowLatest();
+      expect(ui.followLatest).toBe(false);
+      expect(ui.followLatestRequest).toBe(1);
+    });
+
     it("is disabled when jumping to a specific ordinal", () => {
       ui.setFollowLatest(true);
       ui.scrollToOrdinal(10);

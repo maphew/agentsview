@@ -200,7 +200,7 @@ test.describe("Message loading", () => {
       .toBeLessThanOrEqual(8);
   });
 
-  test("follow latest button re-jumps when already active but stale", async ({
+  test("follow latest stays enabled through non-user scroll drift", async ({
     page,
   }) => {
     const sp = new SessionsPage(page);
@@ -211,24 +211,26 @@ test.describe("Message loading", () => {
     await follow.click();
     await expect(follow).toHaveAttribute("aria-pressed", "true");
 
+    await page.waitForTimeout(1100);
     await sp.scroller.evaluate((el) => {
       el.scrollTop = 0;
       el.dispatchEvent(new Event("scroll"));
     });
+
+    await expect(follow).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("follow latest button toggles off", async ({ page }) => {
+    const sp = new SessionsPage(page);
+    await sp.goto();
+    await sp.selectFirstSession();
+
+    const follow = page.getByLabel("Follow latest messages");
+    await expect(follow).toHaveAttribute("aria-pressed", "false");
+    await follow.click();
     await expect(follow).toHaveAttribute("aria-pressed", "true");
 
     await follow.click();
-
-    await expect(follow).toHaveAttribute("aria-pressed", "true");
-    await expect
-      .poll(
-        () =>
-          sp.scroller.evaluate(
-            (el) =>
-              el.scrollHeight - el.clientHeight - el.scrollTop,
-          ),
-        { timeout: 2_000 },
-      )
-      .toBeLessThanOrEqual(8);
+    await expect(follow).toHaveAttribute("aria-pressed", "false");
   });
 });

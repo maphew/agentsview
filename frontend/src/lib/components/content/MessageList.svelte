@@ -25,7 +25,6 @@
   import {
     getAlignedOffsetScrollAlign,
     getLatestDisplayIndex,
-    isAtLatestEdge,
     type ScrollAlign,
   } from "./message-scroll.js";
 
@@ -33,7 +32,6 @@
   let scrollRaf: number | null = null;
   let lastScrollRequest = 0;
   let followingScrollRaf: number | null = null;
-  let ignoreFollowScrollUntil = 0;
 
   let baseMessages: Message[] = $derived.by(() =>
     messages.messages.filter((m) => !isSystemMessage(m)),
@@ -203,13 +201,6 @@
         publishVisibleTimestamp();
       }
 
-      if (
-        ui.followLatest &&
-        performance.now() >= ignoreFollowScrollUntil &&
-        !isAtLatestEdge(containerRef, ui.sortNewestFirst)
-      ) {
-        ui.setFollowLatest(false);
-      }
     });
   }
 
@@ -367,7 +358,6 @@
       ui.sortNewestFirst,
     );
     if (idx < 0) return;
-    ignoreFollowScrollUntil = performance.now() + 1000;
     scrollToDisplayIndex(
       idx,
       0,
@@ -387,14 +377,28 @@
     });
   }
 
+  function latestDisplaySignature(): string {
+    const item = displayItemsAsc[displayItemsAsc.length - 1];
+    if (!item) return "";
+    if (item.kind === "tool-group") {
+      return item.messages
+        .map((m) => `${m.ordinal}:${m.content_length}:${m.timestamp}`)
+        .join("|");
+    }
+    const m = item.message;
+    return `${m.ordinal}:${m.content_length}:${m.timestamp}`;
+  }
+
   $effect(() => {
     const follow = ui.followLatest;
     const request = ui.followLatestRequest;
     const count = displayItemsAsc.length;
+    const latest = latestDisplaySignature();
     const newestFirst = ui.sortNewestFirst;
     const sessionId = messages.sessionId;
     if (!follow || count === 0 || !sessionId) return;
     void request;
+    void latest;
     void newestFirst;
     queueFollowLatestScroll();
   });

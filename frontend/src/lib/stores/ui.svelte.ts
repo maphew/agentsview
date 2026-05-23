@@ -425,6 +425,10 @@ class UIStore {
     }
   }
 
+  toggleFollowLatest() {
+    this.setFollowLatest(!this.followLatest);
+  }
+
   zoomIn() {
     const idx = ZOOM_STEPS.indexOf(this.zoomLevel);
     if (idx < ZOOM_STEPS.length - 1) {

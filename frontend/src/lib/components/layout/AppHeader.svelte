@@ -384,7 +384,7 @@
       <button
         class="header-btn"
         class:active={ui.followLatest}
-        onclick={() => ui.setFollowLatest(true)}
+        onclick={() => ui.toggleFollowLatest()}
         title="Follow latest messages"
         aria-label="Follow latest messages"
         aria-pressed={ui.followLatest}

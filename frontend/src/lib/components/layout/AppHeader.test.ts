@@ -92,5 +92,11 @@ describe("AppHeader export actions", () => {
 
     expect(ui.followLatest).toBe(true);
     expect(followButton!.classList.contains("active")).toBe(true);
+
+    followButton!.click();
+    await tick();
+
+    expect(ui.followLatest).toBe(false);
+    expect(followButton!.classList.contains("active")).toBe(false);
   });
 });
