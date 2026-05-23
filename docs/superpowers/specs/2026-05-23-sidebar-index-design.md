@@ -62,8 +62,16 @@ Query parameters mirror the current sidebar-facing subset of
 - `include_one_shot`
 - `include_automated`
 
+These match `Filters` in `frontend/src/lib/stores/sessions.svelte.ts`.
+`health_grade`, `outcome`, and `min_tool_failures` are intentionally excluded
+because the sidebar does not currently filter by them. The starred-only filter
+also stays client-side: `SessionList.svelte` layers it on top of grouped sidebar
+output.
+
 The endpoint returns no cursor. It returns every filtered row that the sidebar
-grouper can walk.
+grouper can walk. `total` is the filtered skinny-row count, not the visible
+sidebar group count; the sidebar header still derives its displayed count from
+the grouped client output. `total` exists for monitoring and debugging.
 
 Response shape:
 
@@ -77,6 +85,7 @@ Response shape:
       "project": "agentsview",
       "machine": "local",
       "agent": "codex",
+      "display_name": "Review sidebar loading fix",
       "started_at": "2026-05-23T18:13:58.627Z",
       "ended_at": "2026-05-23T18:16:18.309Z",
       "created_at": "2026-05-23T18:16:18.934Z",
@@ -101,10 +110,25 @@ format such as binary or columnar encoding, not SQL pagination.
 The endpoint uses the same filter semantics as `ListSessions`, but projects to a
 new skinny row type instead of `db.Session`.
 
-`is_teammate` is computed in the index query for slice 1:
+Both read backends must implement the endpoint:
+
+- SQLite in `internal/db/`.
+- PostgreSQL in `internal/postgres/sessions.go`, for `pg serve` deployments that
+  read through the PG store directly.
+
+The implementations should reuse the existing filter helper logic in each
+backend so sidebar-index filters stay aligned with current session-list filters.
+
+`is_teammate` is computed in the index query for slice 1. SQLite uses:
 
 ```sql
 INSTR(first_message, '<teammate-message') > 0
+```
+
+PostgreSQL uses:
+
+```sql
+position('<teammate-message' in first_message) > 0
 ```
 
 This avoids a schema migration until the signal has another consumer. If other
@@ -132,6 +156,7 @@ only the fields the grouper reads:
 - message counts
 - automation flag
 - teammate flag
+- display name
 
 The current teammate check:
 
@@ -151,29 +176,44 @@ optional helper that computes `is_teammate` from `first_message`.
 ## Visible Row Hydration
 
 The sidebar title still comes from `display_name` or a first-message preview.
-The index intentionally does not carry full `first_message`, so visible rows
-must hydrate before being displayed as final row content.
+The index carries `display_name` because renamed sessions already have stable
+user-authored titles and should not show placeholders while hydration is in
+flight. The index intentionally does not carry full `first_message`, so visible
+rows without `display_name` must hydrate before being displayed as final row
+content.
 
 Slice 1 uses existing endpoints:
 
-- `GET /api/v1/sessions/{id}` for visible primary rows.
+- `GET /api/v1/sessions/{id}` for visible primary rows that need preview text or
+  full detail.
 - Existing child-session loading for expanded groups where needed.
 
 The virtualized sidebar should compute the initial visible item IDs immediately
-after grouping the index, start parallel hydration for those IDs, and gate the
-first visible paint on that initial hydration batch. This prevents a reload from
-showing empty placeholder titles in the normal viewport.
+after grouping the index. The initial hydration target is:
+
+```ts
+Math.ceil(viewportHeight / ITEM_HEIGHT) + OVERSCAN
+```
+
+using the existing constants from `session-list-utils.ts`. It then starts
+parallel hydration for those IDs and gates the first visible paint on that
+initial hydration batch. This prevents a reload from showing empty placeholder
+titles in the normal viewport.
 
 After first paint, hydration is demand-driven:
 
 - Hydrate newly visible rows as the virtual window changes.
 - Keep a `Map<sessionID, Session>` cache in the store.
+- Key the hydration cache by the current sidebar index version. If filters
+  change while hydration is in flight, drop stale-version hydration results
+  instead of merging them into the new index.
 - Merge hydrated rows into display items without changing the index ordering.
 - Use bounded parallelism so fast scrolling does not create unbounded request
   fanout.
 
-A future slice can add `POST /api/v1/sessions/hydrate` for batch detail loading
-if measured fanout warrants it.
+Delete and restore keep their current local behavior in the new model: delete
+removes the row locally and invalidates metadata; restore clears the undo entry
+and refetches the sidebar index.
 
 ## Live Refresh
 
@@ -187,6 +227,7 @@ Slice 1 ships a deliberately conservative refresh policy:
   session, but do not immediately refetch the full index.
 - Sync-complete or coalesced bulk-change events trigger an index refresh.
 - Manual filter changes trigger an immediate index refresh.
+- Restore triggers an immediate index refresh.
 - A safety-net interval may refresh the index, but no more often than every five
   minutes.
 
@@ -226,6 +267,8 @@ Backend:
 - Sidebar index preserves single-turn behavior for `include_one_shot`.
 - Sidebar index returns subagent/fork/continuation rows needed by root walking.
 - Sidebar index computes `is_teammate` from `first_message`.
+- SQLite and PostgreSQL sidebar-index endpoints return matching row shapes and
+  filter behavior.
 
 Frontend:
 
@@ -233,9 +276,12 @@ Frontend:
 - Status-tier ordering remains unchanged.
 - Freshness rollup uses all group members.
 - Teammate orphan adoption works when using `is_teammate`.
+- Starred-only filtering still applies client-side after grouping.
 - Store fetches the sidebar index once per filter state instead of paginating
   the full list.
 - Initial viewport hydrates before final sidebar rows are shown.
+- Stale-version hydration responses are dropped after filter changes.
+- Restore refetches the sidebar index.
 - Per-session live events do not trigger full index reloads.
 - Sync-complete or bulk-change events do trigger one debounced index reload.
 
@@ -246,10 +292,15 @@ Manual verification:
   index load.
 - Large archives do not cause dozens or hundreds of full-session list requests.
 
-## Deferred Work
+## Conditional Follow-ups
 
-- Batch hydration endpoint.
-- Binary or columnar index transport.
-- Persisted `is_teammate` column.
-- Per-session index patch events for upsert/delete.
-- Moving grouping/sorting server-side.
+- Add `POST /api/v1/sessions/hydrate` only if slice 1 shows measured pain from
+  visible-row `GET /sessions/{id}` fanout.
+- Use binary or columnar index transport only if the skinny JSON index becomes a
+  measured wire-size or parse-time bottleneck.
+- Persist an `is_teammate` column only if teammate classification gets another
+  backend consumer or the ad-hoc query becomes a measured bottleneck.
+- Add per-session index patch events for upsert/delete when event volume makes
+  full debounced index refreshes visibly expensive.
+- Move grouping/sorting server-side only if the client-side index model stops
+  meeting correctness or performance goals.
