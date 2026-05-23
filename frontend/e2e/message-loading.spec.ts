@@ -131,6 +131,52 @@ test.describe("Message loading", () => {
     await expect(follow).toHaveAttribute("aria-pressed", "false");
   });
 
+  test("follow latest exits on pointer touch and keyboard scroll intent", async ({
+    page,
+  }) => {
+    const sp = new SessionsPage(page);
+    await sp.goto();
+    await sp.selectFirstSession();
+
+    const follow = page.getByLabel("Follow latest messages");
+    const cases = ["pointerdown", "touchmove", "keydown"];
+
+    for (const item of cases) {
+      await follow.click();
+      await expect(follow, item).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+
+      await sp.scroller.evaluate((el, dispatchName) => {
+        if (dispatchName === "pointerdown") {
+          el.dispatchEvent(
+            new PointerEvent("pointerdown", {
+              bubbles: true,
+              pointerType: "mouse",
+            }),
+          );
+        } else if (dispatchName === "touchmove") {
+          el.dispatchEvent(
+            new Event("touchmove", { bubbles: true }),
+          );
+        } else {
+          el.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              bubbles: true,
+              key: "PageUp",
+            }),
+          );
+        }
+      }, item);
+
+      await expect(follow, item).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    }
+  });
+
   test("follow latest settles after a tall final message is measured", async ({
     page,
   }) => {
@@ -312,5 +358,105 @@ test.describe("Message loading", () => {
 
     await follow.click();
     await expect(follow).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("follow latest toggle-off cancels queued scroll work", async ({
+    page,
+  }) => {
+    const sp = new SessionsPage(page);
+    await sp.goto();
+    await sp.selectFirstSession();
+
+    const follow = page.getByLabel("Follow latest messages");
+    await sp.scroller.evaluate((el) => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event("scroll"));
+    });
+    await expect
+      .poll(() => sp.scroller.evaluate((el) => el.scrollTop), {
+        timeout: 2_000,
+      })
+      .toBeLessThanOrEqual(8);
+
+    await page.evaluate(() => {
+      type HeldRaf = {
+        pending: () => number;
+        flush: () => void;
+        restore: () => void;
+      };
+      const win = window as Window & {
+        __followRaf?: HeldRaf;
+      };
+      const originalRequest =
+        window.requestAnimationFrame.bind(window);
+      const originalCancel =
+        window.cancelAnimationFrame.bind(window);
+      let nextId = 1;
+      const callbacks = new Map<number, FrameRequestCallback>();
+
+      win.__followRaf = {
+        pending: () => callbacks.size,
+        flush: () => {
+          const pending = [...callbacks.values()];
+          callbacks.clear();
+          for (const cb of pending) {
+            cb(performance.now());
+          }
+        },
+        restore: () => {
+          window.requestAnimationFrame = originalRequest;
+          window.cancelAnimationFrame = originalCancel;
+        },
+      };
+      window.requestAnimationFrame = (
+        cb: FrameRequestCallback,
+      ) => {
+        const id = nextId;
+        nextId += 1;
+        callbacks.set(id, cb);
+        return id;
+      };
+      window.cancelAnimationFrame = (id: number) => {
+        callbacks.delete(id);
+      };
+    });
+
+    await follow.click();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (
+                window as Window & {
+                  __followRaf: { pending: () => number };
+                }
+              ).__followRaf.pending(),
+          ),
+        { timeout: 2_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await follow.click();
+    await expect(follow).toHaveAttribute("aria-pressed", "false");
+
+    await page.evaluate(() => {
+      (
+        window as Window & {
+          __followRaf: { flush: () => void; restore: () => void };
+        }
+      ).__followRaf.flush();
+      (
+        window as Window & {
+          __followRaf: { flush: () => void; restore: () => void };
+        }
+      ).__followRaf.restore();
+    });
+
+    await expect
+      .poll(() => sp.scroller.evaluate((el) => el.scrollTop), {
+        timeout: 2_000,
+      })
+      .toBeLessThanOrEqual(8);
   });
 });

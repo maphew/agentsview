@@ -376,40 +376,48 @@ describe('MessagesStore', () => {
     );
   });
 
-  it('should refresh the loaded tail when reload count is unchanged', async () => {
+  it('should refresh the loaded window when reload count is unchanged', async () => {
     vi.mocked(api.getSession).mockResolvedValue(
-      makeSession('s1', 2),
+      makeSession('s1', 3),
     );
     vi.mocked(api.getMessages).mockResolvedValueOnce(
-      makeMessagesResponse([makeMessage(0), makeMessage(1)]),
+      makeMessagesResponse([
+        makeMessage(0),
+        makeMessage(1),
+        makeMessage(2),
+      ]),
     );
 
     await messages.loadSession('s1');
-    expect(messages.messages[1]!.content).toBe('msg 1');
+    expect(messages.messages[0]!.content).toBe('msg 0');
 
     const updated = {
-      ...makeMessage(1),
-      content: 'msg 1 streamed content',
-      content_length: 'msg 1 streamed content'.length,
+      ...makeMessage(0),
+      content: 'msg 0 rewritten content',
+      content_length: 'msg 0 rewritten content'.length,
     };
     vi.mocked(api.getSession).mockResolvedValueOnce(
-      makeSession('s1', 2),
+      makeSession('s1', 3),
     );
     vi.mocked(api.getMessages).mockResolvedValueOnce(
-      makeMessagesResponse([updated]),
+      makeMessagesResponse([
+        updated,
+        makeMessage(1),
+        makeMessage(2),
+      ]),
     );
 
     await messages.reload();
 
-    expect(messages.messageCount).toBe(2);
-    expect(messages.messages).toHaveLength(2);
-    expect(messages.messages[1]!.content).toBe(
-      'msg 1 streamed content',
+    expect(messages.messageCount).toBe(3);
+    expect(messages.messages).toHaveLength(3);
+    expect(messages.messages[0]!.content).toBe(
+      'msg 0 rewritten content',
     );
     expect(vi.mocked(api.getMessages)).toHaveBeenLastCalledWith(
       's1',
       expect.objectContaining({
-        from: 1,
+        from: 0,
         limit: 1000,
         direction: 'asc',
       }),

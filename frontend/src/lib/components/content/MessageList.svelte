@@ -209,20 +209,55 @@
 
   function handleManualScrollIntent() {
     if (ui.followLatest) {
+      cancelFollowLatestWork();
       ui.setFollowLatest(false);
     }
   }
 
   function manualScrollIntent(node: HTMLElement) {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target === node) {
+        handleManualScrollIntent();
+      }
+    };
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (
+        [
+          "ArrowDown",
+          "ArrowUp",
+          "End",
+          "Home",
+          "PageDown",
+          "PageUp",
+          " ",
+        ].includes(event.key)
+      ) {
+        handleManualScrollIntent();
+      }
+    };
     node.addEventListener("wheel", handleManualScrollIntent, {
       passive: true,
     });
+    node.addEventListener("pointerdown", handlePointerDown);
+    node.addEventListener("touchmove", handleManualScrollIntent, {
+      passive: true,
+    });
+    node.addEventListener("keydown", handleKeydown);
     return {
       destroy() {
         node.removeEventListener(
           "wheel",
           handleManualScrollIntent,
         );
+        node.removeEventListener(
+          "pointerdown",
+          handlePointerDown,
+        );
+        node.removeEventListener(
+          "touchmove",
+          handleManualScrollIntent,
+        );
+        node.removeEventListener("keydown", handleKeydown);
       },
     };
   }
@@ -241,6 +276,18 @@
       followSettleTimer = null;
     }
   });
+
+  function cancelFollowLatestWork() {
+    lastScrollRequest += 1;
+    if (followingScrollRaf !== null) {
+      cancelAnimationFrame(followingScrollRaf);
+      followingScrollRaf = null;
+    }
+    if (followSettleTimer !== null) {
+      clearTimeout(followSettleTimer);
+      followSettleTimer = null;
+    }
+  }
 
   function scrollToDisplayIndex(
     index: number,
@@ -406,11 +453,13 @@
   }
 
   function queueFollowLatestScroll() {
+    if (!ui.followLatest) return;
     if (followingScrollRaf !== null) {
       cancelAnimationFrame(followingScrollRaf);
     }
     followingScrollRaf = requestAnimationFrame(() => {
       followingScrollRaf = null;
+      if (!ui.followLatest) return;
       scrollToLatestInternal();
     });
   }
@@ -426,6 +475,13 @@
     const m = item.message;
     return `${m.ordinal}:${m.content_length}:${m.timestamp}`;
   }
+
+  $effect(() => {
+    const follow = ui.followLatest;
+    if (!follow) {
+      cancelFollowLatestWork();
+    }
+  });
 
   $effect(() => {
     const follow = ui.followLatest;

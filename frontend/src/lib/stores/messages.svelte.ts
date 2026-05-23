@@ -409,7 +409,7 @@ class MessagesStore {
       const newCount = sess.message_count ?? 0;
       const oldCount = this.messageCount;
       if (newCount === oldCount) {
-        await this.refreshLoadedTail(id, signal);
+        await this.refreshLoadedWindow(id, signal);
         return;
       }
 
@@ -437,28 +437,32 @@ class MessagesStore {
     }
   }
 
-  private async refreshLoadedTail(
+  private async refreshLoadedWindow(
     id: string,
     signal: AbortSignal,
   ) {
+    const oldest = this.messages[0];
     const newest = this.messages[this.messages.length - 1];
-    if (!newest) return;
+    if (!oldest || !newest) return;
 
-    const res = await api.getMessages(
-      id,
-      {
-        from: newest.ordinal,
-        limit: MESSAGE_PAGE_SIZE,
-        direction: "asc",
-      },
-      { signal },
-    );
-    if (this.sessionId !== id || res.messages.length === 0) {
+    const refreshed = await this.fetchPages(id, {
+      from: oldest.ordinal,
+      limit: MESSAGE_PAGE_SIZE,
+      direction: "asc",
+      signal,
+    });
+    if (this.sessionId !== id || refreshed.length === 0) {
       return;
     }
 
     const updates = new Map(
-      res.messages.map((m) => [m.ordinal, m]),
+      refreshed
+        .filter(
+          (m) =>
+            m.ordinal >= oldest.ordinal &&
+            m.ordinal <= newest.ordinal,
+        )
+        .map((m) => [m.ordinal, m]),
     );
     this.messages = this.messages.map(
       (m) => updates.get(m.ordinal) ?? m,
