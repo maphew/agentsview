@@ -2354,3 +2354,190 @@ func TestGetDailyUsage_PricingPrecedence(t *testing.T) {
 		})
 	}
 }
+
+func seedOpusPricing(t *testing.T, d *DB) {
+	t.Helper()
+	if err := d.UpsertModelPricing([]ModelPricing{{
+		ModelPattern: "claude-opus-4-6",
+		InputPerMTok: 5.0, OutputPerMTok: 25.0,
+		CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.5,
+	}}); err != nil {
+		t.Fatalf("UpsertModelPricing: %v", err)
+	}
+}
+
+func TestGetSessionUsage_PricedModel(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+
+	insertSession(t, d, "claude:s1", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+		s.TotalOutputTokens = 500
+		s.PeakContextTokens = 1200
+		s.HasTotalOutputTokens = true
+		s.HasPeakContextTokens = true
+	})
+	insertMessages(t, d, Message{
+		SessionID: "claude:s1", Ordinal: 0, Role: "assistant",
+		Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+		TokenUsage: json.RawMessage(
+			`{"input_tokens":1000,"output_tokens":500}`),
+	})
+
+	u, err := d.GetSessionUsage(ctx, "claude:s1")
+	requireNoError(t, err, "GetSessionUsage")
+	if u == nil {
+		t.Fatal("usage is nil")
+	}
+	if !u.HasCost {
+		t.Fatal("HasCost = false, want true")
+	}
+	if math.Abs(u.CostUSD-0.0175) > 1e-9 {
+		t.Errorf("CostUSD = %v, want 0.0175", u.CostUSD)
+	}
+	if u.TotalOutputTokens != 500 || u.PeakContextTokens != 1200 {
+		t.Errorf("token fields = %d/%d, want 500/1200",
+			u.TotalOutputTokens, u.PeakContextTokens)
+	}
+	if len(u.Models) != 1 || u.Models[0] != "claude-opus-4-6" {
+		t.Errorf("Models = %v, want [claude-opus-4-6]", u.Models)
+	}
+	if len(u.UnpricedModels) != 0 {
+		t.Errorf("UnpricedModels = %v, want empty", u.UnpricedModels)
+	}
+}
+
+func TestGetSessionUsage_UnpricedModel(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	insertSession(t, d, "claude:s2", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+		s.TotalOutputTokens = 500
+		s.HasTotalOutputTokens = true
+	})
+	insertMessages(t, d, Message{
+		SessionID: "claude:s2", Ordinal: 0, Role: "assistant",
+		Timestamp: "2026-05-20T10:30:00Z", Model: "local-llama-99",
+		TokenUsage: json.RawMessage(
+			`{"input_tokens":1000,"output_tokens":500}`),
+	})
+
+	u, err := d.GetSessionUsage(ctx, "claude:s2")
+	requireNoError(t, err, "GetSessionUsage")
+	if u.HasCost {
+		t.Error("HasCost = true, want false (unpriced)")
+	}
+	if u.CostUSD != 0 {
+		t.Errorf("CostUSD = %v, want 0 (partial suppressed)", u.CostUSD)
+	}
+	if len(u.UnpricedModels) != 1 || u.UnpricedModels[0] != "local-llama-99" {
+		t.Errorf("UnpricedModels = %v, want [local-llama-99]", u.UnpricedModels)
+	}
+}
+
+func TestGetSessionUsage_MixedPricedUnpriced(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "claude:s3", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "claude:s3", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+			TokenUsage: json.RawMessage(
+				`{"input_tokens":1000,"output_tokens":500}`),
+		},
+		Message{
+			SessionID: "claude:s3", Ordinal: 1, Role: "assistant",
+			Timestamp: "2026-05-20T10:31:00Z", Model: "local-llama-99",
+			TokenUsage: json.RawMessage(
+				`{"input_tokens":1000,"output_tokens":500}`),
+		},
+	)
+
+	u, err := d.GetSessionUsage(ctx, "claude:s3")
+	requireNoError(t, err, "GetSessionUsage")
+	if u.HasCost {
+		t.Error("HasCost = true, want false (mixed)")
+	}
+	if u.CostUSD != 0 {
+		t.Errorf("CostUSD = %v, want 0 (partial suppressed)", u.CostUSD)
+	}
+	if len(u.UnpricedModels) != 1 || u.UnpricedModels[0] != "local-llama-99" {
+		t.Errorf("UnpricedModels = %v, want [local-llama-99]", u.UnpricedModels)
+	}
+}
+
+func TestGetSessionUsage_ExplicitCostOnly(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	insertSession(t, d, "hermes:s4", "proj", func(s *Session) {
+		s.Agent = "hermes"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	cost := 0.02
+	if err := d.ReplaceSessionUsageEvents("hermes:s4", []UsageEvent{{
+		SessionID: "hermes:s4", Source: "session", Model: "gpt-5.4",
+		InputTokens: 100, OutputTokens: 50,
+		CostUSD: &cost, CostStatus: "estimated", CostSource: "hermes",
+		OccurredAt: "2026-05-20T10:05:00Z", DedupKey: "session:hermes:s4",
+	}}); err != nil {
+		t.Fatalf("ReplaceSessionUsageEvents: %v", err)
+	}
+
+	u, err := d.GetSessionUsage(ctx, "hermes:s4")
+	requireNoError(t, err, "GetSessionUsage")
+	if !u.HasCost {
+		t.Error("HasCost = false, want true (explicit cost)")
+	}
+	if math.Abs(u.CostUSD-0.02) > 1e-9 {
+		t.Errorf("CostUSD = %v, want 0.02", u.CostUSD)
+	}
+}
+
+func TestGetSessionUsage_NoTokenRowsKeepsMetadata(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	insertSession(t, d, "claude:s5", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+		s.TotalOutputTokens = 700
+		s.PeakContextTokens = 3000
+		s.HasTotalOutputTokens = true
+		s.HasPeakContextTokens = true
+	})
+
+	u, err := d.GetSessionUsage(ctx, "claude:s5")
+	requireNoError(t, err, "GetSessionUsage")
+	if u == nil {
+		t.Fatal("usage is nil")
+	}
+	if u.TotalOutputTokens != 700 || u.PeakContextTokens != 3000 {
+		t.Errorf("tokens = %d/%d, want 700/3000",
+			u.TotalOutputTokens, u.PeakContextTokens)
+	}
+	if !u.HasTokenData {
+		t.Error("HasTokenData = false, want true")
+	}
+	if u.HasCost {
+		t.Error("HasCost = true, want false (no cost rows)")
+	}
+	if u.Models == nil {
+		t.Error("Models = nil, want non-nil empty slice")
+	}
+}
+
+func TestGetSessionUsage_NotFound(t *testing.T) {
+	d := testDB(t)
+	u, err := d.GetSessionUsage(context.Background(), "nope:x")
+	requireNoError(t, err, "GetSessionUsage")
+	if u != nil {
+		t.Errorf("usage = %v, want nil", u)
+	}
+}
