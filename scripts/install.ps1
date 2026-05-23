@@ -1,9 +1,9 @@
 # agentsview installer for Windows
-# Usage: powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wesm/agentsview/main/scripts/install.ps1 | iex"
+# Usage: powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/kenn-io/agentsview/main/scripts/install.ps1 | iex"
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'wesm/agentsview'
+$repo = 'kenn-io/agentsview'
 $binaryName = 'agentsview.exe'
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Green }

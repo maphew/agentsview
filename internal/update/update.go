@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	githubAPIURL     = "https://api.github.com/repos/wesm/agentsview/releases/latest"
+	githubAPIURL     = "https://api.github.com/repos/kenn-io/agentsview/releases/latest"
 	cacheFileName    = "update_check.json"
 	cacheDuration    = 1 * time.Hour
 	devCacheDuration = 15 * time.Minute

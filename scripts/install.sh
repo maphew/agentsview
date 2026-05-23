@@ -1,10 +1,10 @@
 #!/bin/bash
 # agentsview installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/wesm/agentsview/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/kenn-io/agentsview/main/scripts/install.sh | bash
 
 set -euo pipefail
 
-REPO="wesm/agentsview"
+REPO="kenn-io/agentsview"
 BINARY_NAME="agentsview"
 
 RED='\033[0;31m'

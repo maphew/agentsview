@@ -252,7 +252,7 @@ directly:
   "updater": {
     "pubkey": "<paste contents of agentsview.key.pub here>",
     "endpoints": [
-      "https://github.com/wesm/agentsview/releases/latest/download/latest.json"
+      "https://github.com/kenn-io/agentsview/releases/latest/download/latest.json"
     ]
   }
 }

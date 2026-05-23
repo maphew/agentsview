@@ -18,8 +18,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | i
 ```
 
 Or download the **desktop app** (macOS / Windows) from
-[GitHub Releases](https://github.com/wesm/agentsview/releases) or via homebrew:
-`brew install --cask agentsview`
+[GitHub Releases](https://github.com/kenn-io/agentsview/releases) or via
+homebrew: `brew install --cask agentsview`
 
 Or run the published Docker image:
 
@@ -30,7 +30,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$HOME/.forge:/agents/forge:ro" \
   -e CLAUDE_PROJECTS_DIR=/agents/claude \
   -e FORGE_DIR=/agents/forge \
-  ghcr.io/wesm/agentsview:latest
+  ghcr.io/kenn-io/agentsview:latest
 ```
 
 ## Quick Start
@@ -76,7 +76,7 @@ Example PostgreSQL-backed startup:
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e PG_SERVE=1 \
   -e AGENTSVIEW_PG_URL='postgres://user:password@postgres.example.com:5432/agentsview?sslmode=require' \
-  ghcr.io/wesm/agentsview:latest
+  ghcr.io/kenn-io/agentsview:latest
 ```
 
 ## Token Usage and Cost Tracking

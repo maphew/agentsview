@@ -550,7 +550,7 @@ footer a:hover { text-decoration: underline; }
 <div class="message {{.RoleClass}}{{.ExtraClass}}{{if .FocusedHidden}} focused-hidden{{end}}" data-ordinal="{{.Ordinal}}"><div class="message-header"><span class="message-role">{{.Role}}</span><span class="message-time">{{.Timestamp}}</span></div><div class="message-content">{{.ContentHTML}}</div></div>
 {{- end}}
 </div></main>
-<footer>Exported from <a href="https://github.com/wesm/agentsview">agentsview</a></footer>
+<footer>Exported from <a href="https://github.com/kenn-io/agentsview">agentsview</a></footer>
 </body></html>`
 
 func generateExportHTML(

@@ -1,6 +1,6 @@
 services:
   agentsview:
-    image: ghcr.io/wesm/agentsview:latest
+    image: ghcr.io/kenn-io/agentsview:latest
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
