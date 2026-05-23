@@ -1044,6 +1044,172 @@ func (db *DB) GetTopSessionsByCost(
 	return result, nil
 }
 
+// SessionUsage is the per-session token + cost summary returned by
+// the `session usage` command. Cost is an estimate from the
+// model_pricing catalog unless an agent reported cost directly
+// (usage_events.cost_usd). CostUSD is non-zero only when HasCost is
+// true; a partial total (some models unpriced) is never emitted.
+type SessionUsage struct {
+	SessionID         string   `json:"session_id"`
+	Agent             string   `json:"agent"`
+	Project           string   `json:"project"`
+	TotalOutputTokens int      `json:"total_output_tokens"`
+	PeakContextTokens int      `json:"peak_context_tokens"`
+	HasTokenData      bool     `json:"has_token_data"`
+	CostUSD           float64  `json:"cost_usd"`
+	HasCost           bool     `json:"has_cost"`
+	Models            []string `json:"models"`
+	UnpricedModels    []string `json:"unpriced_models,omitempty"`
+}
+
+// sessionRowCost computes one usage row's cost and reports whether
+// it was priced and whether it contributes to the estimate. A row
+// contributes when it carries an explicit cost or any tokens.
+// Unlike usageAmounts (which zero-fills missing pricing), this does
+// an explicit map lookup so callers can distinguish "unpriced" from
+// "$0".
+func sessionRowCost(
+	r usageScanRow, pricing map[string]modelRates,
+) (cost float64, priced, contributes bool) {
+	var inTok, outTok, crTok, rdTok int
+	if r.usageSource == "message" {
+		usage := gjson.Parse(r.tokenJSON)
+		inTok = int(usage.Get("input_tokens").Int())
+		outTok = int(usage.Get("output_tokens").Int())
+		crTok = int(usage.Get("cache_creation_input_tokens").Int())
+		rdTok = int(usage.Get("cache_read_input_tokens").Int())
+	} else {
+		inTok = r.inputTokens
+		outTok = r.outputTokens
+		crTok = r.cacheCreationInputTokens
+		rdTok = r.cacheReadInputTokens
+	}
+
+	if r.costUSD.Valid {
+		return r.costUSD.Float64, true, true
+	}
+	if inTok == 0 && outTok == 0 && crTok == 0 && rdTok == 0 {
+		return 0, true, false
+	}
+	rates, ok := pricing[r.model]
+	if !ok {
+		return 0, false, true
+	}
+	cost = (float64(inTok)*rates.input +
+		float64(outTok)*rates.output +
+		float64(crTok)*rates.cacheCreation +
+		float64(rdTok)*rates.cacheRead) / 1_000_000
+	return cost, true, true
+}
+
+// GetSessionUsage returns one session's token totals and cost
+// estimate. It starts from GetSession (so metadata and session-level
+// token aggregates are reported even when there are no per-message
+// usage rows), then aggregates cost over the session's own usage
+// rows. Dedup is intra-session only; this reports the session's own
+// usage, which can diverge from the dashboard's cross-session
+// credited total for fork/subagent sessions. Returns (nil, nil) when
+// the session does not exist.
+func (db *DB) GetSessionUsage(
+	ctx context.Context, sessionID string,
+) (*SessionUsage, error) {
+	sess, err := db.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, nil
+	}
+
+	pricing, err := db.loadPricingMap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loading pricing: %w", err)
+	}
+
+	query := usageRowSelect() + ` AND u.session_id = ?
+		ORDER BY u.ts ASC, u.session_id ASC,
+		COALESCE(u.message_ordinal, -1) ASC`
+	rows, err := db.getReader().QueryContext(ctx, query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("querying session usage: %w", err)
+	}
+	defer rows.Close()
+
+	var cost float64
+	contributing := false
+	allPriced := true
+	modelsSet := make(map[string]struct{})
+	unpricedSet := make(map[string]struct{})
+
+	type dedupKey struct{ msgID, reqID string }
+	seen := make(map[dedupKey]struct{})
+
+	for rows.Next() {
+		r, scanErr := scanUsageRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scanning session usage row: %w", scanErr)
+		}
+		if r.claudeMessageID != "" && r.claudeRequestID != "" {
+			key := dedupKey{r.claudeMessageID, r.claudeRequestID}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		} else if r.usageDedupKey != "" {
+			key := dedupKey{"usage", r.usageDedupKey}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+
+		c, priced, contributes := sessionRowCost(r, pricing)
+		if !contributes {
+			continue
+		}
+		contributing = true
+		modelsSet[r.model] = struct{}{}
+		if priced {
+			cost += c
+		} else {
+			allPriced = false
+			unpricedSet[r.model] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session usage rows: %w", err)
+	}
+
+	out := &SessionUsage{
+		SessionID:         sess.ID,
+		Agent:             sess.Agent,
+		Project:           sess.Project,
+		TotalOutputTokens: sess.TotalOutputTokens,
+		PeakContextTokens: sess.PeakContextTokens,
+		HasTokenData:      sess.HasTotalOutputTokens || sess.HasPeakContextTokens,
+		Models:            sortedSetKeys(modelsSet),
+		HasCost:           contributing && allPriced,
+	}
+	if out.HasCost {
+		out.CostUSD = cost
+	}
+	if len(unpricedSet) > 0 {
+		out.UnpricedModels = sortedSetKeys(unpricedSet)
+	}
+	return out, nil
+}
+
+// sortedSetKeys returns the map keys sorted; never nil so JSON
+// renders "[]" rather than "null".
+func sortedSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // UsageSessionCounts holds distinct session counts grouped by
 // project and agent over a filter range.
 type UsageSessionCounts struct {

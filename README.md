@@ -112,6 +112,26 @@ Features:
 - Timezone-aware date bucketing (`--timezone`)
 - Works standalone -- no server required, just run the command
 
+## Per-Session Details
+
+`agentsview session usage <id>` prints per-session token statistics plus a cost
+estimate for a single session. The output reports the session's total output
+tokens and peak context tokens, plus a cost estimate in USD (`cost_usd`) when
+pricing is available for the session's model(s) (`has_cost`). Cost is computed
+from input/output and cache tokens internally, but only the output-token and
+peak-context totals are reported alongside the cost.
+
+```bash
+# Print token usage and cost for a specific session
+agentsview session usage <id>
+
+# JSON output for scripting
+agentsview session usage <id> --format json
+```
+
+The deprecated alias `agentsview token-use <id>` remains available for
+compatibility and now also reports cost estimates.
+
 ## Session Stats
 
 `agentsview stats` emits window-scoped analytics over recorded sessions: totals,

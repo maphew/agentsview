@@ -30,7 +30,7 @@ func TestSessionHelp_ShowsSubcommands(t *testing.T) {
 	}
 	help := buf.String()
 	for _, name := range []string{
-		"get", "list", "messages", "tool-calls",
+		"get", "usage", "list", "messages", "tool-calls",
 		"export", "sync", "watch",
 	} {
 		assert.Contains(t, help, name,
@@ -436,6 +436,23 @@ func TestSessionExport_RejectsFormatFlag(t *testing.T) {
 		"session", "export", "some-id", "--format", "json")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--format not supported")
+}
+
+// TestSessionUsage_RejectsServerFlag verifies that `session usage`
+// rejects the inherited --server flag instead of silently querying
+// the local SQLite archive. usage uses the direct token-use path
+// (not the SessionService layer), so a user explicitly targeting a
+// daemon must get the same "not yet implemented" error the other
+// session commands return — not stale or local-only data.
+func TestSessionUsage_RejectsServerFlag(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+
+	_, err := executeCommand(newRootCommand(),
+		"session", "usage", "some-id",
+		"--server", "http://localhost:9999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--server not yet implemented")
 }
 
 // TestSessionSync_UnknownID_ReportsNoFilePath verifies that the

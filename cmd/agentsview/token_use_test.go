@@ -363,38 +363,30 @@ func TestResolveSessionID_UnderscoreID_NoFalseMatch(t *testing.T) {
 	}
 }
 
-func TestTokenUseExitCode_Found(t *testing.T) {
-	sess := &db.Session{
-		ID:                   "codex:xxx",
-		HasTotalOutputTokens: true,
-		TotalOutputTokens:    100,
-	}
-	if got := tokenUseExitCode(sess); got != 0 {
-		t.Errorf("got %d, want 0", got)
+func TestUsageExitCode_TokenData(t *testing.T) {
+	u := &db.SessionUsage{HasTokenData: true}
+	if got := usageExitCode(u); got != tokenUseExitOK {
+		t.Errorf("got %d, want %d", got, tokenUseExitOK)
 	}
 }
 
-func TestTokenUseExitCode_NoData(t *testing.T) {
-	sess := &db.Session{ID: "codex:xxx"}
-	if got := tokenUseExitCode(sess); got != 3 {
-		t.Errorf("got %d, want 3", got)
+func TestUsageExitCode_CostOnly(t *testing.T) {
+	u := &db.SessionUsage{HasTokenData: false, HasCost: true}
+	if got := usageExitCode(u); got != tokenUseExitOK {
+		t.Errorf("got %d, want %d (cost-only must not be exit 3)",
+			got, tokenUseExitOK)
 	}
 }
 
-func TestTokenUseExitCode_NotFound(t *testing.T) {
-	if got := tokenUseExitCode(nil); got != 2 {
-		t.Errorf("got %d, want 2", got)
+func TestUsageExitCode_NoData(t *testing.T) {
+	u := &db.SessionUsage{}
+	if got := usageExitCode(u); got != tokenUseExitNoTokenData {
+		t.Errorf("got %d, want %d", got, tokenUseExitNoTokenData)
 	}
 }
 
-func TestTokenUseExitCode_PeakContextOnly(t *testing.T) {
-	// Having only peak_context token data is still "has data".
-	sess := &db.Session{
-		ID:                   "claude:xxx",
-		HasPeakContextTokens: true,
-		PeakContextTokens:    50000,
-	}
-	if got := tokenUseExitCode(sess); got != 0 {
-		t.Errorf("got %d, want 0", got)
+func TestUsageExitCode_NotFound(t *testing.T) {
+	if got := usageExitCode(nil); got != tokenUseExitNotFound {
+		t.Errorf("got %d, want %d", got, tokenUseExitNotFound)
 	}
 }
