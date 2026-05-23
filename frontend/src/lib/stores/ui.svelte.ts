@@ -181,6 +181,7 @@ class UIStore {
   followLatest: boolean = $state(
     readStoredBool(FOLLOW_LATEST_KEY, false),
   );
+  followLatestRequest: number = $state(0);
 
   /** Set of block types currently visible. */
   visibleBlocks: Set<BlockType> = $state(readBlockFilters());
@@ -417,6 +418,7 @@ class UIStore {
   setFollowLatest(enabled: boolean) {
     this.followLatest = enabled;
     if (enabled) {
+      this.followLatestRequest += 1;
       this.selectedOrdinal = null;
       this.pendingScrollOrdinal = null;
       this.pendingScrollSession = null;

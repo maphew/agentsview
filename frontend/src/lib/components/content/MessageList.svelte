@@ -389,10 +389,12 @@
 
   $effect(() => {
     const follow = ui.followLatest;
+    const request = ui.followLatestRequest;
     const count = displayItemsAsc.length;
     const newestFirst = ui.sortNewestFirst;
     const sessionId = messages.sessionId;
     if (!follow || count === 0 || !sessionId) return;
+    void request;
     void newestFirst;
     queueFollowLatestScroll();
   });

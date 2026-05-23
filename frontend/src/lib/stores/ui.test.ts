@@ -20,6 +20,7 @@ describe("UIStore", () => {
     ui.selectedOrdinal = null;
     ui.pendingScrollOrdinal = null;
     ui.followLatest = false;
+    ui.followLatestRequest = 0;
   });
 
   describe("activeModal", () => {
@@ -127,6 +128,16 @@ describe("UIStore", () => {
 
       ui.setFollowLatest(false);
       expect(ui.followLatest).toBe(false);
+    });
+
+    it("records a new request when already enabled", () => {
+      ui.setFollowLatest(true);
+      const first = ui.followLatestRequest;
+
+      ui.setFollowLatest(true);
+
+      expect(ui.followLatest).toBe(true);
+      expect(ui.followLatestRequest).toBe(first + 1);
     });
 
     it("is disabled when jumping to a specific ordinal", () => {
