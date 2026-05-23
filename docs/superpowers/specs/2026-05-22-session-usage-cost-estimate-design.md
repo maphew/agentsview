@@ -198,15 +198,31 @@ New `cmd/agentsview/session_usage.go`, registered on the `session` group in
 
 - **Pricing setup (required, per review).** The direct path opens SQLite via
   `db.Open`, which — unlike `openDB` — does not apply custom pricing or seed
-  `model_pricing`. Before calling `GetSessionUsage`, the shared path MUST
-  `applyCustomPricing(db, cfg)` and synchronously ensure fallback pricing.
-  Factor the `_fallback_version`-guarded fallback upsert out of `seedPricing`
-  into a reusable helper that does **no** LiteLLM network fetch — this keeps the
-  hot path offline-safe, adds no latency to roborev's 10s-budget call, and does
-  not clobber the richer LiteLLM rows a running server may have written (the
-  guard skips the upsert when the version already matches). Without this, a
-  fresh CLI-only data dir would report `has_cost:false` for models that are in
-  the fallback catalog.
+  `model_pricing`. Two distinct steps with different write semantics:
+
+  - `applyCustomPricing(db, cfg)` — **always** run. It only sets the handle's
+    in-memory `customPricing` map (`SetCustomPricing`), no DB write, so custom
+    rates apply to this handle's `loadPricingMap` whether or not a daemon is
+    running.
+  - Fallback presence — a DB write, so run it **only when no writable local
+    daemon / startup lock owns the DB** (the same `!serverActive` condition,
+    re-checked, under which `token-use` performs its on-demand
+    `SyncSingleSession`). When a daemon is active, rely on its startup
+    `seedPricing()` and read the DB as-is — never compete for the write lock.
+  - That write must be **non-destructive**: a new
+    `InsertMissingModelPricing(fallback)` using
+    `INSERT ... ON CONFLICT (model_pattern) DO NOTHING`, **not**
+    `UpsertModelPricing` (which does `ON CONFLICT DO UPDATE` and would overwrite
+    a fallback-listed model's fresher LiteLLM row — and `ensurePricing()` can
+    leave LiteLLM rows present with no `_fallback_version`, so a version guard
+    is not a safe substitute). Insert-missing is idempotent, needs no version
+    guard, does **no** LiteLLM fetch (offline-safe, no latency on roborev's 10s
+    budget), and never clobbers existing LiteLLM/custom/fallback rows.
+    Corrective fallback-rate updates (on a `FallbackVersion` bump) remain the
+    server `seedPricing()` path's job.
+
+  Without this, a fresh CLI-only data dir would report `has_cost:false` for
+  models that are in the fallback catalog.
 
 - `--format` is inherited from the `session` group (default `human`). roborev
   passes `--format json` explicitly.
@@ -336,10 +352,13 @@ agentsview:
     metadata + `total_output_tokens` / `peak_context_tokens` preserved,
     `HasCost false`.
   - session not found → `(nil, nil)`.
-- Pricing-seed test: on a `db.Open`-only handle with an empty `model_pricing`
-  table, the shared usage path seeds fallback and a fallback-catalog model (e.g.
-  `claude-opus-4-6`) prices to `HasCost true`; custom rates from
-  `cfg.CustomModelPricing` are applied.
+- Pricing-seed tests: on a `db.Open`-only handle with an empty `model_pricing`
+  table, the shared usage path inserts fallback and a fallback-catalog model
+  (e.g. `claude-opus-4-6`) prices to `HasCost true`; custom rates from
+  `cfg.CustomModelPricing` apply. `InsertMissingModelPricing` is
+  non-destructive: a pre-existing row (e.g. a distinct LiteLLM rate for a
+  fallback-listed model) is **not** overwritten. Fallback seeding is skipped
+  when a writable local daemon is active (no DB write).
 - `session usage` CLI test: JSON shape + human format; on-demand sync path; exit
   `0` (tokens or cost), `2` (not found), `3` (neither); cost-only session → exit
   `0` with `has_cost:true`; `token-use` still emits unchanged stdout JSON plus
@@ -371,9 +390,11 @@ roborev:
   (intra-session dedup only), intentionally diverging from the dashboard's
   cross-session credited total — well-defined for an all-time single-session
   lookup and matches roborev's usage. (Review finding 1.)
-- Pricing on the direct path: the shared usage path applies custom pricing and
-  synchronously seeds fallback (no network) before `GetSessionUsage`, so fresh
-  CLI-only data dirs still price fallback-catalog models. (Review finding 2.)
+- Pricing on the direct path: always apply custom pricing (in-memory); seed
+  fallback **only when no writable local daemon owns the DB**, via a
+  non-destructive `InsertMissingModelPricing` (`ON CONFLICT DO NOTHING`, no
+  network, never clobbers LiteLLM/custom rows). Corrective fallback updates stay
+  with the server `seedPricing()`. (Review findings 2 + follow-ups 1–2.)
 - Exit codes are cost-aware: `0` when token data **or** cost is present, so a
   cost-only session is never hidden behind exit `3`; roborev treats `2`/`3` as
   "unavailable" rather than errors (fixing an existing not-found bug). (Review
