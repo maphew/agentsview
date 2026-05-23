@@ -12,13 +12,18 @@ func TestDefiniteRules(t *testing.T) {
 		text string
 		want bool
 	}{
-		{"github classic", "github-pat", "tok ghp_" + rep("a", 36) + " x", true},
-		{"github fine-grained", "github-pat", "github_pat_" + rep("A1b2", 20), true},
-		{"slack bot", "slack-token", "xoxb-123456789012-abcdefABCDEFc8Jp", true},
-		{"stripe live", "stripe-secret", "sk_live_" + rep("a1B2", 8), true},
-		{"google api", "google-api-key", "AIza" + rep("aB3_x", 7), true},
+		{"github classic", "github-pat",
+			"tok ghp_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg x", true},
+		{"github fine-grained", "github-pat",
+			"github_pat_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4HgN_X2cWp9", true},
+		{"slack bot", "slack-token",
+			"xoxb-549271836401-fHk7Bm3Pz9Wt5Vx2Yq8Nc", true},
+		{"stripe live", "stripe-secret",
+			"sk_live_7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm", true},
+		{"google api", "google-api-key",
+			"AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4H", true},
 		{"google api ending dash", "google-api-key",
-			"key AIza" + rep("aB3_x", 6) + "aB3_-" + " end", true},
+			"key AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4- end", true},
 		{"pem block", "private-key-block",
 			"-----BEGIN RSA PRIVATE KEY-----\n" +
 				rep("MIIBSECRETKEYMATERIAL0123456789ABCDEF\n", 5) +
@@ -85,7 +90,7 @@ func TestCandidateRules(t *testing.T) {
 // (high-entropy assignments, JWTs, basic-auth URLs) entirely.
 func TestScanDefiniteReturnsOnlyDefinite(t *testing.T) {
 	// One definite AWS key and one candidate high-entropy assignment.
-	text := "aws AKIA1234567890ABCDEF and SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6"
+	text := "aws AKIA7QHWN2DKR4FYPLJM and SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6"
 	if full := Scan(text); len(full) != 2 {
 		t.Fatalf("precondition: Scan should report 2 matches (1 definite, 1 "+
 			"candidate), got %d: %+v", len(full), full)
@@ -108,7 +113,7 @@ func TestScanDefiniteReturnsOnlyDefinite(t *testing.T) {
 // same spans (rule, offsets, redaction) that Scan reports for definite rules,
 // so findings stored by the inline path and the full scan stay consistent.
 func TestScanDefiniteMatchesScanDefiniteSubset(t *testing.T) {
-	text := "key AKIA1234567890ABCDEF tok ghp_" + rep("a", 36) +
+	text := "key AKIA7QHWN2DKR4FYPLJM tok ghp_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg" +
 		" SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6"
 	var wantDef []Match
 	for _, m := range Scan(text) {
@@ -174,9 +179,9 @@ func TestRulesVersionStableAndHex(t *testing.T) {
 
 func TestVerify(t *testing.T) {
 	// Non-grouped rule: the stored span is the full regex match.
-	awsSrc := "export KEY=AKIA1234567890ABCDEF done"
+	awsSrc := "export KEY=AKIA7QHWN2DKR4FYPLJM done"
 	s := strings.Index(awsSrc, "AKIA")
-	e := s + len("AKIA1234567890ABCDEF")
+	e := s + len("AKIA7QHWN2DKR4FYPLJM")
 	if !Verify("aws-access-key", awsSrc, s, e) {
 		t.Error("Verify should accept a valid AWS key at its coordinates")
 	}
@@ -203,7 +208,7 @@ func TestVerify(t *testing.T) {
 // produces coordinates, Verify accepts them on the unchanged source, and
 // rejects them once the bytes at those coordinates are no longer the secret.
 func TestVerifyDetectsChangedSource(t *testing.T) {
-	source := "export AWS=AKIA1234567890ABCDEF"
+	source := "export AWS=AKIA7QHWN2DKR4FYPLJM"
 	// Seed from canonical Scan (what produces findings and what Verify uses).
 	matches := Scan(source)
 	if len(matches) == 0 {
@@ -254,4 +259,61 @@ func rep(s string, n int) string {
 		out.WriteString(s)
 	}
 	return out.String()
+}
+
+// TestHasRepeatingBlock pins the seed-pattern detector that catches
+// placeholders built by repeating a short string. Block size 1 is the
+// "ghp_aaaa…" shape; sizes 2..6 cover "A1b2A1b2…", "aB3_xaB3_x…", etc.
+func TestHasRepeatingBlock(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{"single byte dominating", strings.Repeat("a", 36), true},
+		{"block size 4 A1b2", strings.Repeat("A1b2", 20), true},
+		{"block size 4 a1B2", strings.Repeat("a1B2", 8), true},
+		{"block size 5 aB3_x", strings.Repeat("aB3_x", 7), true},
+		{"block size 2", strings.Repeat("xy", 10), true},
+		{"random body", "7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm", false},
+		{"random aws body", "7QHWN2DKR4FYPLJM", false},
+		{"random pat body", "8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg", false},
+		{"too short", "abcd", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasRepeatingBlock(c.s); got != c.want {
+				t.Errorf("hasRepeatingBlock(%q) = %v, want %v", c.s, got, c.want)
+			}
+		})
+	}
+}
+
+// TestHasMonotoneRun pins the alphabet/digit-run detector that catches
+// placeholders built from sequential ASCII ("abcdef", "1234567890",
+// "ZYXWVU"). The 6-char minimum is small enough to catch the dominant
+// noise shapes without flagging random secrets that happen to include a
+// short run by chance.
+func TestHasMonotoneRun(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{"abcdef", "abcdef", true},
+		{"1234567890", "1234567890", true},
+		{"ZYXWVU", "ZYXWVU", true},
+		{"fedcba", "fedcba", true},
+		{"abcde (only 5)", "abcde", false},
+		{"random", "7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm", false},
+		{"isolated +1 transitions", "549271836401", false},
+		{"embedded run", "Xabcdef9", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasMonotoneRun(c.s, 6); got != c.want {
+				t.Errorf("hasMonotoneRun(%q, 6) = %v, want %v", c.s, got, c.want)
+			}
+		})
+	}
 }

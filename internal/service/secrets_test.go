@@ -60,7 +60,7 @@ func TestDirectListSecretsConfidenceDefault(t *testing.T) {
 		s.UserMessageCount = 1
 	})
 	require.NoError(t, d.InsertMessages([]db.Message{
-		dbtest.UserMsg("x1", 0, "key AKIA1234567890ABCDEF tok=abc123def456ghi789jkl"),
+		dbtest.UserMsg("x1", 0, "key AKIA7QHWN2DKR4FYPLJM tok=abc123def456ghi789jkl"),
 	}))
 	require.NoError(t, d.ReplaceSessionSecretFindings("x1", []db.SecretFinding{
 		{SessionID: "x1", RuleName: "aws-access-key", Confidence: "definite",
@@ -114,7 +114,7 @@ func TestDirectScanSecretsReadOnly(t *testing.T) {
 func TestDirectListSecretsReveal(t *testing.T) {
 	t.Parallel()
 	d := dbtest.OpenTestDB(t)
-	const secret = "AKIA1234567890ABCDEF"
+	const secret = "AKIA7QHWN2DKR4FYPLJM"
 	content := "my key is " + secret + " ok"
 	start := strings.Index(content, secret)
 	dbtest.SeedSession(t, d, "x1", "proj", func(s *db.Session) {

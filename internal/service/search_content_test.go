@@ -37,7 +37,7 @@ func TestDirectSearchContentRedacts(t *testing.T) {
 	t.Parallel()
 	d := dbtest.OpenTestDB(t)
 	seedServiceSearchSession(t, d, "x1", "proj",
-		"my key is AKIA1234567890ABCDEF ok")
+		"my key is AKIA7QHWN2DKR4FYPLJM ok")
 	be := service.NewDirectBackend(d, nil)
 
 	// default: secret should be redacted
@@ -46,7 +46,7 @@ func TestDirectSearchContentRedacts(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, res.Matches, 1)
-	assert.False(t, strings.Contains(res.Matches[0].Snippet, "AKIA1234567890ABCDEF"),
+	assert.False(t, strings.Contains(res.Matches[0].Snippet, "AKIA7QHWN2DKR4FYPLJM"),
 		"default search leaked secret: %q", res.Matches[0].Snippet)
 
 	// reveal: full secret should be present
@@ -55,7 +55,7 @@ func TestDirectSearchContentRedacts(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, rev.Matches, 1)
-	assert.True(t, strings.Contains(rev.Matches[0].Snippet, "AKIA1234567890ABCDEF"),
+	assert.True(t, strings.Contains(rev.Matches[0].Snippet, "AKIA7QHWN2DKR4FYPLJM"),
 		"reveal should show full secret: %q", rev.Matches[0].Snippet)
 }
 

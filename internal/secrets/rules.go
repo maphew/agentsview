@@ -28,7 +28,7 @@ var rules = []rule{
 		confidence: ConfidenceDefinite,
 		prefilters: []string{"AKIA", "ASIA"},
 		re:         regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),
-		validate:   notAWSDocsPlaceholder,
+		validate:   notAWSPlaceholder,
 		mask:       func(s string) string { return maskKeepEnds(s, 4, 4) },
 	},
 	{
@@ -36,7 +36,7 @@ var rules = []rule{
 		confidence: ConfidenceDefinite,
 		prefilters: []string{"sk-ant-"},
 		re:         regexp.MustCompile(`\bsk-ant-[0-9A-Za-z][0-9A-Za-z_\-]{18,}`),
-		validate:   notLowEntropySuffix,
+		validate:   notAnthropicKeyPlaceholder,
 		mask:       func(s string) string { return maskKeepEnds(s, 7, 4) },
 	},
 	{
@@ -52,6 +52,7 @@ var rules = []rule{
 		confidence: ConfidenceDefinite,
 		prefilters: []string{"ghp_", "github_pat_"},
 		re:         regexp.MustCompile(`\b(?:ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,})\b`),
+		validate:   notGitHubPATPlaceholder,
 		mask:       func(s string) string { return maskKeepEnds(s, 4, 4) },
 	},
 	{
@@ -67,6 +68,7 @@ var rules = []rule{
 		confidence: ConfidenceDefinite,
 		prefilters: []string{"sk_live_", "rk_live_"},
 		re:         regexp.MustCompile(`\b[sr]k_live_[0-9A-Za-z]{16,}\b`),
+		validate:   notStripeSecretPlaceholder,
 		mask:       func(s string) string { return maskKeepEnds(s, 8, 4) },
 	},
 	{
@@ -76,9 +78,10 @@ var rules = []rule{
 		// Capture the key in group 1 and require a non-body terminator (or
 		// end of text) rather than a trailing \b, so keys ending in '-'
 		// still match instead of being silently skipped.
-		re:    regexp.MustCompile(`\b(AIza[0-9A-Za-z_\-]{35})(?:[^0-9A-Za-z_\-]|$)`),
-		group: 1,
-		mask:  func(s string) string { return maskKeepEnds(s, 4, 4) },
+		re:       regexp.MustCompile(`\b(AIza[0-9A-Za-z_\-]{35})(?:[^0-9A-Za-z_\-]|$)`),
+		group:    1,
+		validate: notGoogleAPIKeyPlaceholder,
+		mask:     func(s string) string { return maskKeepEnds(s, 4, 4) },
 	},
 	{
 		name:       "private-key-block",
@@ -153,31 +156,184 @@ func highEntropyValue(s string) bool {
 	return len(s) >= 20 && shannonEntropy(s) >= 3.5
 }
 
-// notAWSDocsPlaceholder rejects access key IDs that look like the canonical
-// AWS-documentation placeholders. AWS code samples consistently use the
-// synthetic body "IOSFODNN7EXAMPLE" (plus EXAMPL[0-9] variants in test
-// fixtures), and those values overwhelmingly leak into agent transcripts
-// when a developer asks an AI to discuss IAM, write a snippet, or scan
-// fixture files. Both markers are 6–8 characters long, so the chance of a
-// real 16-char body containing them is astronomical (≈3.5e-13 for IOSFODNN
-// in random uppercase alphanumerics) — well below the false-negative
-// threshold for a definite rule.
-func notAWSDocsPlaceholder(s string) bool {
-	return !strings.Contains(s, "EXAMPL") && !strings.Contains(s, "IOSFODNN")
+// hasRepeatingBlock reports whether s is dominated by a short repeating
+// seed pattern. This catches the dominant placeholder shapes that leak
+// from agent transcripts: a single byte repeating ("aaaa…"), a short
+// block repeating ("A1b2A1b2…", "aB3_xaB3_x…"). Real high-entropy
+// secrets don't have this structure.
+//
+// Block size 1 is checked by single-byte frequency: any byte that
+// covers ≥75% of s is a hit. Block sizes 2..6 try the leading block at
+// each phase alignment; placeholders are typically unsalted repeats of
+// the seed so phase 0 catches the well-known shapes. The 75% coverage
+// threshold tolerates a stray salt character (a single byte slipped in
+// or trimmed off) without losing detection.
+func hasRepeatingBlock(s string) bool {
+	n := len(s)
+	if n < 8 {
+		return false
+	}
+	var freq [256]int
+	for i := range n {
+		freq[s[i]]++
+	}
+	for _, f := range freq {
+		if f*4 >= n*3 {
+			return true
+		}
+	}
+	for blockSize := 2; blockSize <= 6 && blockSize*3 <= n; blockSize++ {
+		for phase := 0; phase < blockSize && phase+blockSize <= n; phase++ {
+			block := s[phase : phase+blockSize]
+			coverage := 0
+			for i := phase; i+blockSize <= n; i += blockSize {
+				if s[i:i+blockSize] == block {
+					coverage += blockSize
+				}
+			}
+			if coverage*4 >= n*3 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// notLowEntropySuffix rejects Anthropic API keys whose final four characters
-// are a single repeated rune (sk-ant-...AAAA, ...BBBB, ...0000). Real keys
-// are base62-ish random; a 4-rune repeat at the very end has roughly 1 / 62³
-// ≈ 4e-6 odds of occurring naturally, which is acceptable false-negative
-// loss for a rule that otherwise produces noise on every transcript that
-// quotes a doc placeholder.
-func notLowEntropySuffix(s string) bool {
-	if len(s) < 4 {
+// hasMonotoneRun reports whether s contains a run of >= minRun bytes
+// that step monotonically by +1 or -1 in ASCII codepoint. Placeholders
+// are typically built from alphabet/digit runs ("abcdef", "1234567890",
+// "ZYXWVU", "fedcba"); real secrets are random and don't produce these.
+func hasMonotoneRun(s string, minRun int) bool {
+	if len(s) < minRun {
+		return false
+	}
+	run := 1
+	var dir int
+	for i := 1; i < len(s); i++ {
+		d := int(s[i]) - int(s[i-1])
+		if d != 1 && d != -1 {
+			run = 1
+			dir = 0
+			continue
+		}
+		if dir == 0 || dir == d {
+			dir = d
+			run++
+			if run >= minRun {
+				return true
+			}
+		} else {
+			run = 2
+			dir = d
+		}
+	}
+	return false
+}
+
+// bodyLooksRandom reports whether s plausibly contains real key
+// material. It runs the cheap structural checks (Shannon entropy,
+// repeating short blocks, sequential alphabet/digit runs) and rejects
+// strings that fail any one. Each rule's validator strips the
+// well-known vendor prefix (e.g. "AKIA", "ghp_") before calling so the
+// fixed prefix doesn't drag entropy down or hide a body-level pattern.
+func bodyLooksRandom(s string) bool {
+	if shannonEntropy(s) < 3.5 {
+		return false
+	}
+	if hasRepeatingBlock(s) {
+		return false
+	}
+	if hasMonotoneRun(s, 6) {
+		return false
+	}
+	return true
+}
+
+// notAWSPlaceholder rejects AWS access key IDs that look like
+// placeholders. It first dismisses the canonical AWS-docs body
+// ("IOSFODNN7EXAMPLE" and EXAMPL[0-9] variants) by substring, then runs
+// the structural checks on the 16-char body that follows AKIA/ASIA.
+// The 6–8 char EXAMPL/IOSFODNN markers have a vanishing chance of
+// occurring in a real 16-char body (~3.5e-13 for IOSFODNN in random
+// uppercase), so the substring gate is safe for a definite rule.
+func notAWSPlaceholder(s string) bool {
+	if strings.Contains(s, "EXAMPL") || strings.Contains(s, "IOSFODNN") {
+		return false
+	}
+	body := strings.TrimPrefix(s, "AKIA")
+	body = strings.TrimPrefix(body, "ASIA")
+	return bodyLooksRandom(body)
+}
+
+// notAnthropicKeyPlaceholder rejects Anthropic API keys whose body
+// (after "sk-ant-") fails structural checks: a 4-rune trailing repeat
+// (sk-ant-...AAAA), a single byte dominating the body, a repeating
+// short block, or a long sequential ASCII run.
+func notAnthropicKeyPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	return bodyLooksRandom(strings.TrimPrefix(s, "sk-ant-"))
+}
+
+// notGitHubPATPlaceholder rejects GitHub PATs whose body (after "ghp_"
+// or "github_pat_") fails structural checks. Catches the noisy shapes
+// agents emit when illustrating PAT format: "ghp_aaaa…",
+// "github_pat_A1b2A1b2…".
+func notGitHubPATPlaceholder(s string) bool {
+	body := strings.TrimPrefix(s, "ghp_")
+	body = strings.TrimPrefix(body, "github_pat_")
+	return bodyLooksRandom(body)
+}
+
+// notStripeSecretPlaceholder rejects Stripe live secrets whose body
+// fails structural checks. Strips the "sk_live_" / "rk_live_" prefix
+// first so it doesn't anchor a coverage check on the fixed prefix.
+func notStripeSecretPlaceholder(s string) bool {
+	body := strings.TrimPrefix(s, "sk_live_")
+	body = strings.TrimPrefix(body, "rk_live_")
+	return bodyLooksRandom(body)
+}
+
+// notGoogleAPIKeyPlaceholder rejects Google API keys whose body (after
+// "AIza") fails structural checks. Catches the "AIza" + "aB3_xaB3_x…"
+// pattern agents emit when explaining the key format.
+func notGoogleAPIKeyPlaceholder(s string) bool {
+	return bodyLooksRandom(strings.TrimPrefix(s, "AIza"))
+}
+
+// notSlackTokenPlaceholder rejects Slack tokens that look like the
+// well-known placeholder forms. It dismisses the canonical "0123"
+// suffix (the Slack docs convention), then runs the structural checks
+// on the part after the "xox?-" prefix so the workspace ID and token
+// body are both subject to the repeating-block and sequential-run
+// detectors.
+func notSlackTokenPlaceholder(s string) bool {
+	if strings.HasSuffix(s, "0123") {
+		return false
+	}
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	body := s
+	if len(body) >= 5 && strings.HasPrefix(body, "xox") {
+		body = body[4:] // strip "xox?-"
+	}
+	return bodyLooksRandom(body)
+}
+
+// notTrailingRunRepeat rejects strings whose final n characters are a
+// single repeated byte (...AAAA, ...0000). A 4-byte tail repeat has
+// roughly (1/62)^3 ≈ 4e-6 odds of occurring naturally in a random
+// base62 secret — acceptable false-negative loss for a rule that
+// otherwise produces noise on every transcript quoting a doc
+// placeholder.
+func notTrailingRunRepeat(s string, n int) bool {
+	if len(s) < n {
 		return true
 	}
 	last := s[len(s)-1]
-	for i := len(s) - 2; i >= len(s)-4; i-- {
+	for i := len(s) - 2; i >= len(s)-n; i-- {
 		if s[i] != last {
 			return true
 		}
@@ -185,29 +341,16 @@ func notLowEntropySuffix(s string) bool {
 	return false
 }
 
-// notSlackTokenPlaceholder rejects Slack tokens that look like the
-// well-known placeholder forms used in the Slack docs and most public
-// secrets-scanner test corpora: anything ending in the literal "0123"
-// (the canonical fake suffix) or whose final four characters repeat. A
-// real token cannot end on "0123" or a 4-char repeat with meaningful
-// probability — base62 odds are roughly (1/62)^4 ≈ 7e-8 per real key.
-func notSlackTokenPlaceholder(s string) bool {
-	if strings.HasSuffix(s, "0123") {
-		return false
-	}
-	return notLowEntropySuffix(s)
-}
-
-// notTrivialPEMBody rejects PEM blocks whose body is too short to plausibly
-// hold a real private key. The shortest real key material (Ed25519,
-// PKCS#8-wrapped) is ~256 base64 characters; this gate requires 150
-// non-whitespace bytes between the BEGIN and END markers, which lets in
-// every real format while filtering placeholders like
-// "-----BEGIN PRIVATE KEY-----\nMIIBjunk\n-----END PRIVATE KEY-----" that
-// agents emit as illustrative examples.
+// notTrivialPEMBody rejects PEM blocks whose body is too short or too
+// far from base64 to plausibly hold a real private key. Real key
+// material is ≥256 base64 characters of A-Za-z0-9+/= with optional
+// newlines; this gate requires 150 non-whitespace bytes AND ≥90% of
+// them to be valid base64 alphabet. The byte-length gate catches the
+// "BEGIN ... key bytes here ... END" examples agents emit; the base64
+// purity gate catches markdown diffs that quote the BEGIN/END markers
+// with prose, tables, and pipe characters between them.
 func notTrivialPEMBody(s string) bool {
 	const minBody = 150
-	// Skip past the first "-----BEGIN ... -----" marker.
 	const beginMarker = "-----"
 	first := strings.Index(s, beginMarker)
 	if first < 0 {
@@ -222,16 +365,21 @@ func notTrivialPEMBody(s string) bool {
 	if endIdx <= bodyStart {
 		return true
 	}
-	n := 0
+	nonWS, b64 := 0, 0
 	for _, c := range s[bodyStart:endIdx] {
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			n++
-			if n >= minBody {
-				return true
-			}
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		nonWS++
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' {
+			b64++
 		}
 	}
-	return false
+	if nonWS < minBody {
+		return false
+	}
+	return b64*10 >= nonWS*9
 }
 
 // rulesAlgorithmVersion bumps when matching *logic* changes (e.g. a new
@@ -239,10 +387,16 @@ func notTrivialPEMBody(s string) bool {
 // regexes are folded into the hash; validate functions are not, so adding
 // a new gate must bump this constant by hand. Mirrors db.ClassifierHash.
 //
-// v2: added notAWSDocsPlaceholder, notLowEntropySuffix, notTrivialPEMBody,
-// and notSlackTokenPlaceholder validators to drop canonical doc-placeholder
-// findings (AKIA*EXAMPL*, sk-ant-…AAAA, trivial PEM bodies, xoxb-…0123).
-const rulesAlgorithmVersion = 2
+// v2: added doc-placeholder and trailing-run-repeat validators
+// (AKIA*EXAMPL*, sk-ant-…AAAA, trivial PEM bodies, xoxb-…0123).
+//
+// v3: added structural bodyLooksRandom check (entropy + repeating
+// blocks + sequential ASCII runs) and wired it into every definite
+// rule, including github-pat, stripe-secret, and google-api-key which
+// previously had no validator. Also tightened the PEM gate to require
+// base64-purity of the body, dropping markdown diffs that quote the
+// BEGIN/END markers around prose.
+const rulesAlgorithmVersion = 3
 
 // Verify reports whether the named rule still produces a finding at exactly
 // [start:end) within source. Used by --reveal to confirm a stored finding's

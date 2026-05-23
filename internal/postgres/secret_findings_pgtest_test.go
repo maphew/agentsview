@@ -377,7 +377,7 @@ func TestPGSecretFindingSource(t *testing.T) {
 		INSERT INTO messages
 			(session_id, ordinal, role, content, content_length)
 		VALUES ($1, 0, 'assistant',
-			'key AKIA1234567890ABCDEF here', 28)`,
+			'key AKIA7QHWN2DKR4FYPLJM here', 28)`,
 		sid,
 	); err != nil {
 		t.Fatalf("insert message: %v", err)
@@ -423,7 +423,7 @@ func TestPGSecretFindingSource(t *testing.T) {
 		{"message",
 			db.SecretFinding{SessionID: sid, LocationKind: "message",
 				MessageOrdinal: 0},
-			"key AKIA1234567890ABCDEF here", true},
+			"key AKIA7QHWN2DKR4FYPLJM here", true},
 		{"tool_input",
 			db.SecretFinding{SessionID: sid, LocationKind: "tool_input",
 				MessageOrdinal: 0, CallIndex: ptr(0)},

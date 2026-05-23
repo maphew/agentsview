@@ -34,10 +34,10 @@ func TestSyncPersistsSecretFindings(t *testing.T) {
 		)).
 		AddRaw(testjsonl.ClaudeToolResultUserJSON(
 			"toolu_aws1",
-			"AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF found in env",
+			"AWS_ACCESS_KEY_ID=AKIA7QHWN2DKR4FYPLJM found in env",
 			"2024-01-01T00:00:03Z",
 		)).
-		AddClaudeUser("2024-01-01T00:00:04Z", "that key AKIA1234567890ABCDEF is mine").
+		AddClaudeUser("2024-01-01T00:00:04Z", "that key AKIA7QHWN2DKR4FYPLJM is mine").
 		String()
 
 	filename := "secret-session.jsonl"

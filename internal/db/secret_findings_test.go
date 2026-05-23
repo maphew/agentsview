@@ -99,7 +99,7 @@ func TestReplaceSessionMessagesResetsSecretState(t *testing.T) {
 	ctx := context.Background()
 	insertSession(t, d, "s1", "proj")
 	if err := d.ReplaceSessionMessages("s1", []Message{
-		{SessionID: "s1", Ordinal: 0, Role: "user", Content: "key AKIA1234567890ABCDEF"},
+		{SessionID: "s1", Ordinal: 0, Role: "user", Content: "key AKIA7QHWN2DKR4FYPLJM"},
 	}); err != nil {
 		t.Fatalf("seed messages: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestSecretFindingSource(t *testing.T) {
 	insertSession(t, d, "s1", "proj", func(s *Session) { s.Agent = "claude" })
 	msgs := []Message{{
 		SessionID: "s1", Ordinal: 0, Role: "assistant",
-		Content:   "key AKIA1234567890ABCDEF here",
+		Content:   "key AKIA7QHWN2DKR4FYPLJM here",
 		Timestamp: "2026-05-20T12:00:00Z",
 		ToolCalls: []ToolCall{
 			{
@@ -460,7 +460,7 @@ func TestSecretFindingSource(t *testing.T) {
 		ok   bool
 	}{
 		{"message", SecretFinding{SessionID: "s1", LocationKind: "message",
-			MessageOrdinal: 0}, "key AKIA1234567890ABCDEF here", true},
+			MessageOrdinal: 0}, "key AKIA7QHWN2DKR4FYPLJM here", true},
 		{"tool_input", SecretFinding{SessionID: "s1", LocationKind: "tool_input",
 			MessageOrdinal: 0, CallIndex: Ptr(0)}, `{"command":"printenv"}`, true},
 		{"tool_result", SecretFinding{SessionID: "s1", LocationKind: "tool_result",
@@ -525,7 +525,7 @@ func TestOrphanCopyPreservesToolCallIndex(t *testing.T) {
 				Category:      "Bash",
 				ToolUseID:     "tu1",
 				InputJSON:     `{"command":"echo secret"}`,
-				ResultContent: "AKIA1234567890ABCDEF",
+				ResultContent: "AKIA7QHWN2DKR4FYPLJM",
 			},
 		},
 	}}
@@ -582,7 +582,7 @@ func TestOrphanCopyPreservesToolCallIndex(t *testing.T) {
 		t.Fatal("SecretFindingSource returned ok=false; " +
 			"tool call order corrupted during orphan copy")
 	}
-	const wantContent = "AKIA1234567890ABCDEF"
+	const wantContent = "AKIA7QHWN2DKR4FYPLJM"
 	if got != wantContent {
 		t.Errorf("SecretFindingSource = %q, want %q\n"+
 			"(call_index=1 resolved to wrong tool call; "+

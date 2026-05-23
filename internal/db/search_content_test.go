@@ -309,7 +309,7 @@ func TestSearchContentPaginationStableAcrossTies(t *testing.T) {
 func TestSearchContentRegex(t *testing.T) {
 	d := testDB(t)
 	seedSearchSession(t, d, "r1", "proj", [][2]string{
-		{"user", "key AKIA1234567890ABCDEF here"},
+		{"user", "key AKIA7QHWN2DKR4FYPLJM here"},
 		{"assistant", "no secrets in this line"},
 	})
 	got, err := d.SearchContent(context.Background(), ContentSearchFilter{

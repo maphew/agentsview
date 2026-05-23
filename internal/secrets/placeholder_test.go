@@ -35,13 +35,15 @@ func TestRejectsAWSDocsPlaceholders(t *testing.T) {
 	}
 }
 
-// TestAcceptsRealAWSKeys confirms the filter does not over-reach: an AKIA key
-// with a body that contains neither EXAMPL nor IOSFODNN must still match.
+// TestAcceptsRealAWSKeys confirms the filters do not over-reach: AKIA keys
+// whose body neither contains the doc markers nor matches a structural
+// placeholder shape (single byte dominating, repeating short block,
+// monotone alphabet/digit run) must still match.
 func TestAcceptsRealAWSKeys(t *testing.T) {
 	realLooking := []string{
-		"AKIA1234567890ABCDEF",
-		"AKIAZYXWVUTSRQPONMLK",
-		"ASIAQWERTYUIOPASDFGH",
+		"AKIA7QHWN2DKR4FYPLJM",
+		"AKIA3VBMK8XJZ6WPCNQH",
+		"ASIA5GTKD7RPYNXQVMBL",
 	}
 	for _, k := range realLooking {
 		t.Run(k, func(t *testing.T) {
@@ -134,11 +136,12 @@ func TestRejectsSlackPlaceholders(t *testing.T) {
 }
 
 // TestAcceptsRealSlackTokens confirms the filter does not drop tokens
-// whose tail is high-entropy.
+// whose body passes the structural checks (no dominant byte, no short
+// repeating block, no monotone alphabet/digit run).
 func TestAcceptsRealSlackTokens(t *testing.T) {
 	realLooking := []string{
-		"xoxb-123456789012-abcdefABCDEFc8Jp",
-		"xoxs-987654321098-fedcbaFEDCBAxYz9",
+		"xoxb-549271836401-fHk7Bm3Pz9Wt5Vx2Yq8Nc",
+		"xoxs-302846159270-xPk9Bm3Wv8Qt5Lz2Yh7Fc",
 	}
 	for _, k := range realLooking {
 		t.Run(k, func(t *testing.T) {
@@ -198,6 +201,73 @@ func TestAcceptsRealisticPEMBodies(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("private-key-block did not match realistic PEM (%s)", header)
+			}
+		})
+	}
+}
+
+// TestRejectsPEMInMarkdownDiff pins the PEM base64-purity gate: a markdown
+// diff containing the literal text "-----BEGIN PRIVATE KEY-----" and
+// "-----END PRIVATE KEY-----" with prose, tables, and pipe characters
+// between them must not produce a finding. These leak in when an agent
+// helps the user edit secrets-management documentation.
+func TestRejectsPEMInMarkdownDiff(t *testing.T) {
+	// Body deliberately includes pipes, hyphens, and prose — the characters
+	// markdown tables and bullet lists rely on but base64 doesn't permit.
+	body := strings.Repeat(
+		"| `APPLE_API_KEY` | `ABC123DEF0` | The 10-character Key ID |\n", 4)
+	text := "-----BEGIN PRIVATE KEY-----\n" + body +
+		"-----END PRIVATE KEY-----"
+	for _, m := range Scan(text) {
+		if m.Rule == "private-key-block" {
+			t.Errorf("private-key-block matched markdown diff: %q", m.Redacted)
+		}
+	}
+}
+
+// TestRejectsRepeatingBlockPlaceholders pins the structural placeholder
+// gate (bodyLooksRandom). Every match below is shaped like a real secret
+// but is built by repeating a short seed pattern — the dominant noise
+// shape across agent transcripts. None should be reported.
+func TestRejectsRepeatingBlockPlaceholders(t *testing.T) {
+	placeholders := map[string]string{
+		"github-pat":     "ghp_" + strings.Repeat("a", 36),
+		"github-pat-fg":  "github_pat_" + strings.Repeat("A1b2", 20),
+		"stripe-secret":  "sk_live_" + strings.Repeat("a1B2", 8),
+		"google-api-key": "AIza" + strings.Repeat("aB3_x", 7),
+	}
+	for name, p := range placeholders {
+		t.Run(name, func(t *testing.T) {
+			text := "TOKEN=" + p + " end"
+			for _, m := range Scan(text) {
+				if m.Rule == "github-pat" || m.Rule == "stripe-secret" ||
+					m.Rule == "google-api-key" {
+					t.Errorf("%s matched repeating-block placeholder %q (mask=%q)",
+						m.Rule, p, m.Redacted)
+				}
+			}
+		})
+	}
+}
+
+// TestRejectsSequentialRunPlaceholders pins the structural placeholder
+// gate against the second-most-common shape: alphabet or digit runs
+// inside a token body (xoxs-…-abcdefABCDEF012345, AKIAabcdefghijklmnop).
+// The body's monotone-run detector catches these.
+func TestRejectsSequentialRunPlaceholders(t *testing.T) {
+	placeholders := map[string]string{
+		"aws-access-key":        "AKIAZYXWVUTSRQPONMLK", // alphabet desc
+		"aws-access-key-digits": "AKIA12345678ABCDEFGH", // 12345678 + ABCDEFGH
+		"slack-token":           "xoxs-1234567890-abcdefABCDEF012345",
+	}
+	for name, p := range placeholders {
+		t.Run(name, func(t *testing.T) {
+			text := "TOKEN=" + p + " end"
+			for _, m := range Scan(text) {
+				if m.Rule == "aws-access-key" || m.Rule == "slack-token" {
+					t.Errorf("%s matched sequential-run placeholder %q (mask=%q)",
+						m.Rule, p, m.Redacted)
+				}
 			}
 		})
 	}

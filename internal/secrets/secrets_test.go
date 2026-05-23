@@ -7,7 +7,7 @@ import (
 )
 
 func TestScanFindsAWSAccessKey(t *testing.T) {
-	text := "export AWS_KEY=AKIA1234567890ABCDEF then continue"
+	text := "export AWS_KEY=AKIA7QHWN2DKR4FYPLJM then continue"
 	got := Scan(text)
 	if len(got) != 1 {
 		t.Fatalf("Scan returned %d matches, want 1: %+v", len(got), got)
@@ -19,8 +19,8 @@ func TestScanFindsAWSAccessKey(t *testing.T) {
 	if m.Confidence != ConfidenceDefinite {
 		t.Errorf("Confidence = %q, want definite", m.Confidence)
 	}
-	if text[m.Start:m.End] != "AKIA1234567890ABCDEF" {
-		t.Errorf("span = %q, want AKIA1234567890ABCDEF", text[m.Start:m.End])
+	if text[m.Start:m.End] != "AKIA7QHWN2DKR4FYPLJM" {
+		t.Errorf("span = %q, want AKIA7QHWN2DKR4FYPLJM", text[m.Start:m.End])
 	}
 	if m.Index != 0 {
 		t.Errorf("Index = %d, want 0", m.Index)
@@ -34,9 +34,9 @@ func TestScanNoMatch(t *testing.T) {
 }
 
 func TestRedactMasksSecretButKeepsContext(t *testing.T) {
-	text := "export AWS_KEY=AKIA1234567890ABCDEF then continue"
+	text := "export AWS_KEY=AKIA7QHWN2DKR4FYPLJM then continue"
 	got := Redact(text)
-	if strings.Contains(got, "AKIA1234567890ABCDEF") {
+	if strings.Contains(got, "AKIA7QHWN2DKR4FYPLJM") {
 		t.Fatalf("Redact leaked the full secret: %q", got)
 	}
 	if !strings.HasPrefix(got, "export AWS_KEY=") {
@@ -45,7 +45,7 @@ func TestRedactMasksSecretButKeepsContext(t *testing.T) {
 	if !strings.HasSuffix(got, " then continue") {
 		t.Errorf("Redact dropped trailing context: %q", got)
 	}
-	if !strings.Contains(got, "AKIA…CDEF") {
+	if !strings.Contains(got, "AKIA…PLJM") {
 		t.Errorf("Redact did not use the masked form: %q", got)
 	}
 }
@@ -139,9 +139,9 @@ func TestRedactWindowMasksStraddlingGroupedSecret(t *testing.T) {
 // secret fully inside the window keeps its rule mask, surrounding context
 // survives, and a window with no secret is returned verbatim.
 func TestRedactWindowKeepsContextAndContainedSecrets(t *testing.T) {
-	full := "the key is AKIA1234567890ABCDEF in config"
+	full := "the key is AKIA7QHWN2DKR4FYPLJM in config"
 	got := RedactWindow(full, 0, len(full))
-	if strings.Contains(got, "AKIA1234567890ABCDEF") {
+	if strings.Contains(got, "AKIA7QHWN2DKR4FYPLJM") {
 		t.Errorf("contained secret not masked: %q", got)
 	}
 	if !strings.Contains(got, "the key is ") || !strings.Contains(got, " in config") {
@@ -155,14 +155,14 @@ func TestRedactWindowKeepsContextAndContainedSecrets(t *testing.T) {
 
 func TestRedactNeverLeaksKnownSecrets(t *testing.T) {
 	secrets := []string{
-		"AKIA1234567890ABCDEF",
-		"ghp_" + rep("a", 36),
-		"xoxb-123456789012-abcdefABCDEFc8Jp",
-		"xoxs-987654321098-fedcbaFEDCBAxYz9",
-		"sk_live_" + rep("a1B2", 8),
-		"AIza" + rep("aB3_x", 7),
-		"AIza" + rep("aB3_x", 6) + "aB3_-",
-		"sk-ant-api03-" + "ZyXwVuTsRqPoNmLkJiHgFe",
+		"AKIA7QHWN2DKR4FYPLJM",
+		"ghp_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg",
+		"xoxb-549271836401-fHk7Bm3Pz9Wt5Vx2Yq8Nc",
+		"xoxs-302846159270-xPk9Bm3Wv8Qt5Lz2Yh7Fc",
+		"sk_live_7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm",
+		"AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4H",
+		"AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4-",
+		"sk-ant-api03-Xa9Kd03Lm5Qp7Rt2Vw8Zb4",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dumm_Sig-Value12345",
 	}
 	for _, sec := range secrets {
@@ -181,12 +181,12 @@ func TestScanRedactedNeverEqualsFullSecret(t *testing.T) {
 	// is exercised. The private-key-block mask is a fixed string and trivially
 	// differs from its (multi-line) match, so it is covered by the others.
 	samples := []string{
-		"k=AKIA1234567890ABCDEF",
-		"tok ghp_" + rep("a", 36),
-		"xoxb-123456789012-abcdefABCDEFc8Jp",
-		"sk_live_" + rep("a1B2", 8),
-		"AIza" + rep("aB3_x", 7),
-		"sk-ant-api03-" + "QrStUvWxYz0987654321Ab",
+		"k=AKIA7QHWN2DKR4FYPLJM",
+		"tok ghp_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg",
+		"xoxb-549271836401-fHk7Bm3Pz9Wt5Vx2Yq8Nc",
+		"sk_live_7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm",
+		"AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4H",
+		"sk-ant-api03-Xa9Kd03Lm5Qp7Rt2Vw8Zb4",
 		"auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dumm_Sig-Value12345",
 		"https://user:supersecretpw@example.com",
 		"SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6",

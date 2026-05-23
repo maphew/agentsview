@@ -48,7 +48,7 @@ func TestSecretsScan_DirectMode_Scans(t *testing.T) {
 	}
 	if err := d.InsertMessages([]db.Message{{
 		SessionID: "leaky", Ordinal: 0, Role: "user",
-		Content: "my key AKIA1234567890ABCDEF here",
+		Content: "my key AKIA7QHWN2DKR4FYPLJM here",
 	}}); err != nil {
 		t.Fatal(err)
 	}
