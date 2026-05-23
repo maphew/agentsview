@@ -308,6 +308,35 @@ describe("SessionsStore", () => {
       expect(sessions.sessions[0]!.is_index_only).toBe(true);
     });
 
+    it("preserves hydrated active rows when reloading the index", async () => {
+      mockSidebarIndex([makeSkinnyRow({ id: "active", message_count: 1 })]);
+      vi.mocked(api.getSession).mockResolvedValue(
+        makeSession({
+          id: "active",
+          first_message: "hydrated active detail",
+          message_count: 1,
+        }),
+      );
+
+      await sessions.load();
+      sessions.selectSession("active");
+      await vi.waitFor(() => {
+        expect(sessions.activeSession?.first_message).toBe(
+          "hydrated active detail",
+        );
+      });
+
+      mockSidebarIndex([makeSkinnyRow({ id: "active", message_count: 9 })]);
+      await sessions.load();
+
+      expect(sessions.sessions).toHaveLength(1);
+      expect(sessions.sessions[0]!.is_index_only).toBe(false);
+      expect(sessions.sessions[0]!.message_count).toBe(9);
+      expect(sessions.activeSession?.first_message).toBe(
+        "hydrated active detail",
+      );
+    });
+
     it("merges hydrated full rows without changing index order", async () => {
       mockSidebarIndex([
         makeSkinnyRow({ id: "second" }),
@@ -1579,6 +1608,38 @@ describe("SessionsStore", () => {
         "hydrated navigation",
       );
       expect(sessions.sessions[0]!.is_index_only).toBe(false);
+    });
+
+    it("merges a navigation fetch if the index row arrives while fetching", async () => {
+      let resolveGet!: (s: Session) => void;
+      vi.mocked(api.getSession).mockReturnValue(
+        new Promise<Session>((resolve) => {
+          resolveGet = resolve;
+        }),
+      );
+
+      const promise = sessions.navigateToSession("racy");
+      sessions.sessions = [
+        makeSession({
+          id: "racy",
+          first_message: null,
+          is_index_only: true,
+        }),
+      ];
+      resolveGet(makeSession({
+        id: "racy",
+        first_message: "fetched during navigation",
+      }));
+      await promise;
+
+      expect(sessions.sessions).toHaveLength(1);
+      expect(sessions.sessions[0]!.first_message).toBe(
+        "fetched during navigation",
+      );
+      expect(sessions.sessions[0]!.is_index_only).toBe(false);
+      expect(sessions.activeSession?.first_message).toBe(
+        "fetched during navigation",
+      );
     });
   });
 });

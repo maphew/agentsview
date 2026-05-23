@@ -329,7 +329,10 @@ class SessionsStore {
       this.sidebarIndexVersion = indexVersion;
       this.hydratedSessionsByVersion.set(indexVersion, new Map());
       this.sidebarHydrationEpochByVersion.set(indexVersion, 0);
-      this.sessions = index.sessions.map(sidebarIndexRowToSession);
+      const previousById = new Map(prev.sessions.map((s) => [s.id, s]));
+      this.sessions = index.sessions.map((row) =>
+        sidebarIndexRowToSession(row, previousById.get(row.id))
+      );
       this.nextCursor = null;
       this.total = index.total;
     } catch {
@@ -570,7 +573,12 @@ class SessionsStore {
     try {
       const session = await api.getSession(id);
       if (this.activeSessionId === id) {
-        this.sessions = [...this.sessions, session];
+        const idx = this.sessions.findIndex((s) => s.id === id);
+        if (idx >= 0) {
+          this.mergeHydratedSession(session);
+        } else {
+          this.sessions = [...this.sessions, session];
+        }
       }
     } catch {
       // Session not found — selection stands without metadata
@@ -1016,8 +1024,11 @@ export function createSessionsStore(): SessionsStore {
   return new SessionsStore();
 }
 
-function sidebarIndexRowToSession(row: SidebarSessionIndexRow): Session {
-  return {
+function sidebarIndexRowToSession(
+  row: SidebarSessionIndexRow,
+  existing?: Session,
+): Session {
+  const skinny: Session = {
     id: row.id,
     project: row.project,
     machine: row.machine,
@@ -1039,6 +1050,26 @@ function sidebarIndexRowToSession(row: SidebarSessionIndexRow): Session {
     is_teammate: row.is_teammate ?? false,
     is_index_only: true,
     created_at: row.created_at,
+  };
+  if (!existing || existing.is_index_only) return skinny;
+  return {
+    ...skinny,
+    ...existing,
+    project: skinny.project,
+    machine: skinny.machine,
+    agent: skinny.agent,
+    display_name: skinny.display_name ?? existing.display_name,
+    started_at: skinny.started_at,
+    ended_at: skinny.ended_at,
+    message_count: skinny.message_count,
+    user_message_count: skinny.user_message_count,
+    parent_session_id: skinny.parent_session_id,
+    relationship_type: skinny.relationship_type,
+    termination_status: skinny.termination_status,
+    is_automated: skinny.is_automated,
+    is_teammate: skinny.is_teammate ?? existing.is_teammate,
+    is_index_only: false,
+    created_at: skinny.created_at,
   };
 }
 

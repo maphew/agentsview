@@ -130,6 +130,10 @@ Select only skinny columns plus:
 INSTR(COALESCE(first_message, ''), '<teammate-message') > 0
 ```
 
+Keep the same deterministic result order as `ListSessions`: effective recency
+descending, then `id DESC`. Client sorting still owns the visible ordering, but
+deterministic input order prevents tie-order flakes.
+
 - [ ] **Step 3: Run SQLite tests green**
 
 Run:
@@ -179,6 +183,10 @@ git add internal/db/store.go internal/db/sessions.go internal/db/*test.go intern
 git commit -m "feat: add sidebar index endpoint"
 ```
 
+If this task and Task 2 are not completed in one uninterrupted implementation
+pass, defer this commit until the PostgreSQL store method exists so the shared
+`db.Store` interface is never left broken at a commit boundary.
+
 ## Task 2: PostgreSQL Sidebar Index And Parity
 
 **Files:**
@@ -191,7 +199,8 @@ git commit -m "feat: add sidebar index endpoint"
 
 Add tests for `Store.GetSidebarSessionIndex` mirroring the SQLite behavior:
 
-- `position('<teammate-message' in first_message) > 0` sets `IsTeammate`
+- `position('<teammate-message' in COALESCE(first_message, '')) > 0` sets
+  `IsTeammate`
 - display name is returned
 - automated and one-shot filters match SQLite semantics
 - child rows for matching roots are included
@@ -214,6 +223,9 @@ JSON-shape fields as SQLite and compute teammate with:
 ```sql
 position('<teammate-message' in COALESCE(first_message, '')) > 0
 ```
+
+Use the PostgreSQL equivalent of the SQLite deterministic ordering: effective
+recency descending, then `id DESC`.
 
 - [ ] **Step 3: Run PG parity tests**
 
@@ -380,8 +392,10 @@ Implementation contract:
 - `SessionList` reports viewport height to the store as soon as the
   `ResizeObserver` has a value.
 
-- `sessions.load()` fetches and groups the index, then keeps the new grouped
-  result pending until the initial visible IDs have hydrated.
+- `sessions.load()` fetches the index and publishes a new index version only
+  after the fetch succeeds. `SessionList` derives the actual first visible IDs
+  from grouped display items, starts hydration for those rows, and keeps the
+  previous painted list visible until the initial visible hydration resolves.
 
 - If a filter change happens while initial hydration is in flight, stale-version
   results are dropped and the old sidebar remains visible until the new version

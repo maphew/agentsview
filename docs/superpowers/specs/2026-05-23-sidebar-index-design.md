@@ -122,13 +122,13 @@ backend so sidebar-index filters stay aligned with current session-list filters.
 `is_teammate` is computed in the index query for slice 1. SQLite uses:
 
 ```sql
-INSTR(first_message, '<teammate-message') > 0
+INSTR(COALESCE(first_message, ''), '<teammate-message') > 0
 ```
 
 PostgreSQL uses:
 
 ```sql
-position('<teammate-message' in first_message) > 0
+position('<teammate-message' in COALESCE(first_message, '')) > 0
 ```
 
 This avoids a schema migration until the signal has another consumer. If other
