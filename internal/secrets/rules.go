@@ -483,9 +483,8 @@ func looksLikePEMHeaderStart(body string) bool {
 // matches from agentsview's own test files, so a development conversation that
 // recorded a fixture doesn't report it as a definite leak on subsequent scans.
 //
-// v5: store and match fixture deny-list entries by SHA-256 hash, include those
-// hashes in RulesVersion, and add historical transcript fixture hashes without
-// committing the raw secret-shaped values.
+// v5: store and match fixture deny-list entries by SHA-256 hash and include
+// those hashes in RulesVersion without committing the raw secret-shaped values.
 const rulesAlgorithmVersion = 5
 
 // Verify reports whether the named rule still produces a finding at exactly

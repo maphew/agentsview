@@ -321,22 +321,19 @@ func TestFixtureDenyListSuppressesAgentsviewFixtures(t *testing.T) {
 	}
 }
 
-// TestFixtureDenyListSuppressesHashedAgentsviewFixtures verifies that
-// production fixture suppression can cover historical transcript fixtures
-// without committing the raw secret-shaped literal into the source tree.
-func TestFixtureDenyListSuppressesHashedAgentsviewFixtures(t *testing.T) {
-	disableFixtureDenyForTest(func(f func()) { t.Cleanup(f) })
-	EnableFixtureDeny()
-	t.Cleanup(func() { fixtureDenyEnabled.Store(false) })
-
-	token := strings.Join([]string{
-		"ghp_", "M7qL8r", "P2sT5u", "V9wX3y",
-		"Z6aB1c", "D4eF7g", "H0iJ2k",
-	}, "")
-	for _, m := range Scan("token=" + token + " end") {
-		if m.Confidence == ConfidenceDefinite {
-			t.Errorf("deny-list let through hashed fixture: rule=%s mask=%s",
-				m.Rule, m.Redacted)
+// TestFixtureDenyListExcludesTranscriptOnlyLeakHashes verifies that production
+// fixture suppression does not hide arbitrary secret-shaped values just because
+// they appeared in an agentsview development transcript. Only committed source
+// fixtures belong in the hash deny-list.
+func TestFixtureDenyListExcludesTranscriptOnlyLeakHashes(t *testing.T) {
+	transcriptOnlyLeakHashes := []string{
+		"bdcb1b818a7ba4b3c5c7c421b9c6279beb34df45f7abab1503c6d150533ad642",
+		"c1589e1eece8695f238be33923fcd4cbc845b34fb792ef34f9b698beffbd5324",
+		"df26a79256a73d9b7c014e9ea73372498e70a6072d22c0386ed3c6edea9817ac",
+	}
+	for _, h := range transcriptOnlyLeakHashes {
+		if _, ok := agentsviewTestFixtureHashes[h]; ok {
+			t.Fatalf("transcript-only leak hash %s must not be fixture-denied", h)
 		}
 	}
 }
