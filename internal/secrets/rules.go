@@ -234,19 +234,30 @@ func hasMonotoneRun(s string, minRun int) bool {
 // material. It runs the cheap structural checks (Shannon entropy,
 // repeating short blocks, sequential alphabet/digit runs) and rejects
 // strings that fail any one. Each rule's validator strips the
-// well-known vendor prefix (e.g. "AKIA", "ghp_") before calling so the
-// fixed prefix doesn't drag entropy down or hide a body-level pattern.
+// well-known vendor prefix (e.g. "ghp_") before calling so the fixed
+// prefix doesn't drag entropy down or hide a body-level pattern.
 //
-// Shannon entropy is only applied when the body is at least 24 bytes.
-// A random 16-char base32 body (AWS access key shape) can plausibly
-// have ≤10 distinct characters by birthday luck and fall below 3.5
-// bits — applying the gate there would reject real keys. For shorter
-// bodies, the structural checks (which scale to any length) are the
-// only filter.
+// Callers with short fixed-length bodies (AWS access keys at 16 chars)
+// should not use this function: Shannon entropy ≥3.5 is too tight a
+// gate at 16 chars and would reject real random bodies that land
+// ≤10 distinct chars by birthday luck. Those validators call
+// bodyHasNoPlaceholderShape directly so only the structural checks
+// (which scale to any length) apply.
 func bodyLooksRandom(s string) bool {
-	if len(s) >= 24 && shannonEntropy(s) < 3.5 {
+	if shannonEntropy(s) < 3.5 {
 		return false
 	}
+	return bodyHasNoPlaceholderShape(s)
+}
+
+// bodyHasNoPlaceholderShape runs the structural checks
+// (hasRepeatingBlock, hasMonotoneRun) without the Shannon entropy
+// gate. AWS validators use it because their body is exactly 16 chars
+// and the entropy threshold would over-reject; every other definite
+// rule has a body ≥19 chars where bodyLooksRandom's entropy check is
+// still a useful filter against placeholders that pass the structural
+// checks.
+func bodyHasNoPlaceholderShape(s string) bool {
 	if hasRepeatingBlock(s) {
 		return false
 	}
@@ -263,13 +274,17 @@ func bodyLooksRandom(s string) bool {
 // The 6–8 char EXAMPL/IOSFODNN markers have a vanishing chance of
 // occurring in a real 16-char body (~3.5e-13 for IOSFODNN in random
 // uppercase), so the substring gate is safe for a definite rule.
+//
+// Shannon entropy is deliberately not applied: a random 16-char
+// base32 body can have ≤10 distinct chars by birthday luck and fall
+// below 3.5 bits.
 func notAWSPlaceholder(s string) bool {
 	if strings.Contains(s, "EXAMPL") || strings.Contains(s, "IOSFODNN") {
 		return false
 	}
 	body := strings.TrimPrefix(s, "AKIA")
 	body = strings.TrimPrefix(body, "ASIA")
-	return bodyLooksRandom(body)
+	return bodyHasNoPlaceholderShape(body)
 }
 
 // notAnthropicKeyPlaceholder rejects Anthropic API keys whose body

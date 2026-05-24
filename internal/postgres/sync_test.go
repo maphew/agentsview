@@ -164,6 +164,42 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 	}
 }
 
+// TestCheckSchemaCompatMissingSecretsRulesVersion pins the schema-compat
+// probe against a regression where pgSessionCols selects a column the
+// compat check doesn't probe for: a PG schema missing only
+// sessions.secrets_rules_version must fail CheckSchemaCompat rather
+// than passing the probe and 500-ing at runtime on the first session
+// query. EnsureSchema brings the column in via migration; this test
+// then drops it to simulate a legacy/read-only schema and verifies the
+// probe catches the absence.
+func TestCheckSchemaCompatMissingSecretsRulesVersion(t *testing.T) {
+	pgURL := testPGURL(t)
+	cleanPGSchema(t, pgURL)
+	t.Cleanup(func() { cleanPGSchema(t, pgURL) })
+
+	pg, err := Open(pgURL, "agentsview", true)
+	if err != nil {
+		t.Fatalf("connecting to pg: %v", err)
+	}
+	defer pg.Close()
+
+	ctx := context.Background()
+	if err := EnsureSchema(ctx, pg, "agentsview"); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	if err := CheckSchemaCompat(ctx, pg); err != nil {
+		t.Fatalf("precondition: CheckSchemaCompat should pass after EnsureSchema: %v", err)
+	}
+	if _, err := pg.ExecContext(ctx,
+		`ALTER TABLE sessions DROP COLUMN secrets_rules_version`,
+	); err != nil {
+		t.Fatalf("dropping secrets_rules_version: %v", err)
+	}
+	if err := CheckSchemaCompat(ctx, pg); err == nil {
+		t.Fatal("CheckSchemaCompat should fail when secrets_rules_version is missing")
+	}
+}
+
 func TestPushSingleSession(t *testing.T) {
 	pgURL := testPGURL(t)
 	cleanPGSchema(t, pgURL)
