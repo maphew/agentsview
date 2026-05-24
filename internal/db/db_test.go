@@ -3564,6 +3564,29 @@ func TestConcurrentReadsWhileReopen(t *testing.T) {
 	}
 }
 
+func TestReaderHandleAcquiredBeforeReopenStaysUsable(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "s1", "proj")
+
+	reader := d.getReader()
+	for range 2 {
+		if err := d.Reopen(); err != nil {
+			t.Fatalf("Reopen: %v", err)
+		}
+	}
+
+	var id string
+	err := reader.QueryRow(
+		"SELECT id FROM sessions WHERE id = ?", "s1",
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("query with pre-reopen reader handle: %v", err)
+	}
+	if id != "s1" {
+		t.Fatalf("id = %q, want s1", id)
+	}
+}
+
 func TestRepeatedReopenBoundsRetiredPools(t *testing.T) {
 	d := testDB(t)
 	insertSession(t, d, "s1", "proj")

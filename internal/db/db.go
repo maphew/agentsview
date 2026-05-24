@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	_ "embed"
@@ -148,8 +149,9 @@ type DB struct {
 	writer    atomic.Pointer[sql.DB]
 	reader    atomic.Pointer[sql.DB]
 	mu        sync.Mutex // serializes writes
-	retired   []*sql.DB  // old pools kept open for in-flight reads
-	dataStale bool       // set by Open when user_version < dataVersion
+	connMu    sync.RWMutex
+	retired   []*sql.DB // old pools kept open for in-flight reads
+	dataStale bool      // set by Open when user_version < dataVersion
 
 	cursorMu     sync.RWMutex
 	cursorSecret []byte
@@ -157,8 +159,58 @@ type DB struct {
 	customPricing map[string]config.CustomModelRate
 }
 
-// getReader returns the current read-only connection pool.
-func (db *DB) getReader() *sql.DB { return db.reader.Load() }
+type readerHandle struct {
+	owner *DB
+}
+
+func (r *readerHandle) current() *sql.DB {
+	return r.owner.reader.Load()
+}
+
+func (r *readerHandle) Exec(
+	query string, args ...any,
+) (sql.Result, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().Exec(query, args...)
+}
+
+func (r *readerHandle) Query(
+	query string, args ...any,
+) (*sql.Rows, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().Query(query, args...)
+}
+
+func (r *readerHandle) QueryContext(
+	ctx context.Context, query string, args ...any,
+) (*sql.Rows, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryContext(ctx, query, args...)
+}
+
+func (r *readerHandle) QueryRow(
+	query string, args ...any,
+) *sql.Row {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryRow(query, args...)
+}
+
+func (r *readerHandle) QueryRowContext(
+	ctx context.Context, query string, args ...any,
+) *sql.Row {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryRowContext(ctx, query, args...)
+}
+
+// getReader returns a guarded facade for the current read-only connection pool.
+func (db *DB) getReader() *readerHandle { return &readerHandle{owner: db} }
+
+func (db *DB) rawReader() *sql.DB { return db.reader.Load() }
 
 // getWriter returns the current write connection.
 func (db *DB) getWriter() *sql.DB { return db.writer.Load() }
@@ -1373,10 +1425,12 @@ func (db *DB) init() error {
 // retired pools left over from previous Reopen calls.
 func (db *DB) Close() error {
 	db.mu.Lock()
+	db.connMu.Lock()
 	w := db.getWriter()
-	r := db.getReader()
+	r := db.rawReader()
 	retired := db.retired
 	db.retired = nil
+	db.connMu.Unlock()
 	db.mu.Unlock()
 
 	errs := []error{w.Close(), r.Close()}
@@ -1393,10 +1447,12 @@ func (db *DB) Close() error {
 func (db *DB) CloseConnections() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	db.connMu.Lock()
+	defer db.connMu.Unlock()
 
 	errs := []error{
 		db.getWriter().Close(),
-		db.getReader().Close(),
+		db.rawReader().Close(),
 	}
 	for _, p := range db.retired {
 		errs = append(errs, p.Close())
@@ -1435,9 +1491,13 @@ func (db *DB) reopenLocked() error {
 	}
 	reader.SetMaxOpenConns(4)
 
-	// Close pools from any previous reopen. They have been
-	// retired for at least one full Reopen cycle, so all
-	// in-flight queries on them have long since completed.
+	db.connMu.Lock()
+	defer db.connMu.Unlock()
+
+	// Close pools from any previous reopen. The connection guard
+	// prevents new queries from starting on handles that are about
+	// to be closed; database/sql waits for queries already started
+	// on those pools to finish.
 	for _, p := range db.retired {
 		if err := p.Close(); err != nil {
 			log.Printf(
@@ -1479,7 +1539,7 @@ func (db *DB) Update(fn func(tx *sql.Tx) error) error {
 
 // Reader returns the read-only connection pool.
 func (db *DB) Reader() *sql.DB {
-	return db.getReader()
+	return db.rawReader()
 }
 
 // GetSyncState reads a value from the pg_sync_state table.
