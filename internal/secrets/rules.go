@@ -475,10 +475,15 @@ func looksLikePEMHeaderStart(body string) bool {
 // base64-purity of the body and lowered minBody to 48 so PKCS#8
 // Ed25519 (64-char body) is still detected; the gate skips legacy
 // "Proc-Type"/"DEK-Info" header lines before measuring purity. Shannon
-// entropy is only applied when the body is ≥24 bytes so short
-// base32-shaped bodies (AWS access keys, 16 chars) don't trip the gate
-// by birthday-paradox luck.
-const rulesAlgorithmVersion = 3
+// entropy is only applied to bodies ≥24 bytes via bodyLooksRandom;
+// AWS validators call bodyHasNoPlaceholderShape so the 16-char base32
+// body doesn't trip the gate by birthday-paradox luck.
+//
+// v4: added agentsviewTestFixtures deny-list. Scan and ScanDefinite
+// drop matches whose span is a literal value from agentsview's own
+// test files, so a development conversation that recorded a fixture
+// doesn't report it as a definite leak on subsequent scans.
+const rulesAlgorithmVersion = 4
 
 // Verify reports whether the named rule still produces a finding at exactly
 // [start:end) within source. Used by --reveal to confirm a stored finding's

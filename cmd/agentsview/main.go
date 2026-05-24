@@ -17,6 +17,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/signals"
 	"go.kenn.io/agentsview/internal/sync"
@@ -36,6 +37,13 @@ const (
 )
 
 func main() {
+	// Turn on the agentsview-test-fixture deny-list before any scan
+	// runs. The secrets package keeps the filter off by default so unit
+	// tests in this repo (which use the same random-looking fixtures
+	// production scans would suppress) can assert positive rule paths;
+	// the binary always wants the filter on.
+	secrets.EnableFixtureDeny()
+
 	if err := executeCLI(); err != nil {
 		fatal("%v", err)
 	}

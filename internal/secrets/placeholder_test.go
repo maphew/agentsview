@@ -287,6 +287,57 @@ func TestAcceptsAWSKeysWithRepeatedChars(t *testing.T) {
 	}
 }
 
+// TestFixtureDenyListSuppressesAgentsviewFixtures pins the production
+// deny-list path: when EnableFixtureDeny has been called, Scan drops
+// matches whose span is a literal value from agentsview's own test
+// fixtures (the values that flood scans of development conversations
+// recording the test source). Tests in this package leave the deny
+// off by default so they can verify positive rule paths against the
+// same fixtures.
+func TestFixtureDenyListSuppressesAgentsviewFixtures(t *testing.T) {
+	disableFixtureDenyForTest(func(f func()) { t.Cleanup(f) })
+	EnableFixtureDeny()
+	t.Cleanup(func() { fixtureDenyEnabled.Store(false) })
+
+	fixtures := []struct {
+		name string
+		text string
+	}{
+		{"aws", "key=AKIA7QHWN2DKR4FYPLJM end"},
+		{"anthropic", "TOKEN=sk-ant-api03-Xa9Kd03Lm5Qp7Rt2Vw8Zb4 done"},
+		{"slack", "TOKEN=xoxb-549271836401-fHk7Bm3Pz9Wt5Vx2Yq8Nc done"},
+		{"github_pat", "tok ghp_8Hk3Wn7Dz4Rp2Vx9Mb6Tj0Qc5Lm1Yp8Bv4Hg"},
+		{"stripe", "key=sk_live_7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm done"},
+		{"google_api", "key=AIza7Qh3Wn8Dk4Rp9Vx2Mb6Tj0Qc5Lm1Yp8Bv4H end"},
+	}
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			for _, m := range Scan(f.text) {
+				if m.Confidence == ConfidenceDefinite {
+					t.Errorf("deny-list let through fixture %q: rule=%s mask=%s",
+						f.text, m.Rule, m.Redacted)
+				}
+			}
+		})
+	}
+}
+
+// TestFixtureDenyListOffByDefault locks in the test-vs-production
+// default: ordinary unit tests must see fixture matches (otherwise
+// every test that uses a fixture would need a deny-disable call).
+func TestFixtureDenyListOffByDefault(t *testing.T) {
+	matches := Scan("key=AKIA7QHWN2DKR4FYPLJM end")
+	found := false
+	for _, m := range matches {
+		if m.Rule == "aws-access-key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("default behavior should allow fixture matches; got %+v", matches)
+	}
+}
+
 // TestRejectsPEMDocsPlaceholders pins the tighter base64-purity gate
 // (≥99%) against the agentsview-docs leaks: an illustrative body with
 // "...", "(2-3 lines of base64)", or string-concat operators inside
