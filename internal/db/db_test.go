@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,9 +17,92 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+const blockingCloseDriverName = "agentsview-blocking-close"
+
+var (
+	registerBlockingCloseDriverOnce sync.Once
+	blockingCloseDriverStates       sync.Map
+)
+
+type blockingCloseState struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+}
+
+type blockingCloseDriver struct{}
+
+func (blockingCloseDriver) Open(name string) (driver.Conn, error) {
+	state, ok := blockingCloseDriverStates.Load(name)
+	if !ok {
+		return nil, fmt.Errorf("missing blocking close state for %q", name)
+	}
+	return &blockingCloseConn{
+		state: state.(*blockingCloseState),
+	}, nil
+}
+
+type blockingCloseConn struct {
+	state *blockingCloseState
+}
+
+func (c *blockingCloseConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not implemented")
+}
+
+func (c *blockingCloseConn) Close() error {
+	c.state.startedOnce.Do(func() {
+		close(c.state.started)
+	})
+	<-c.state.release
+	return nil
+}
+
+func (c *blockingCloseConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("begin not implemented")
+}
+
+func openBlockingCloseDB(
+	t *testing.T,
+) (*sql.DB, <-chan struct{}, func()) {
+	t.Helper()
+
+	registerBlockingCloseDriverOnce.Do(func() {
+		sql.Register(blockingCloseDriverName, blockingCloseDriver{})
+	})
+
+	dsn := fmt.Sprintf("%s/%p", t.Name(), t)
+	state := &blockingCloseState{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	blockingCloseDriverStates.Store(dsn, state)
+
+	pool, err := sql.Open(blockingCloseDriverName, dsn)
+	if err != nil {
+		t.Fatalf("opening blocking close pool: %v", err)
+	}
+	pool.SetMaxOpenConns(1)
+	if err := pool.PingContext(context.Background()); err != nil {
+		t.Fatalf("priming blocking close pool: %v", err)
+	}
+
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(state.release)
+			blockingCloseDriverStates.Delete(dsn)
+		})
+	}
+	t.Cleanup(release)
+
+	return pool, state.started, release
+}
 
 // filterWith returns a SessionFilter with Limit defaulted to 100.
 func filterWith(fn func(*SessionFilter)) SessionFilter {
@@ -3584,6 +3668,49 @@ func TestExportedReaderAcquiredBeforeReopenStaysUsable(t *testing.T) {
 	}
 	if id != "s1" {
 		t.Fatalf("id = %q, want s1", id)
+	}
+}
+
+func TestReopenDoesNotBlockNewReadsWhileClosingRetiredPool(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "s1", "proj")
+
+	blockingPool, closeStarted, releaseClose := openBlockingCloseDB(t)
+	d.connMu.Lock()
+	d.retired = append(d.retired, blockingPool)
+	d.connMu.Unlock()
+
+	reopenDone := make(chan error, 1)
+	go func() {
+		reopenDone <- d.Reopen()
+	}()
+
+	select {
+	case <-closeStarted:
+	case err := <-reopenDone:
+		t.Fatalf("Reopen finished before blocking close: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reopen did not start closing retired pool")
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := d.GetSession(context.Background(), "s1")
+		readDone <- err
+	}()
+
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("new read while closing retired pool: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("new read blocked while Reopen closed a retired pool")
+	}
+
+	releaseClose()
+	if err := <-reopenDone; err != nil {
+		t.Fatalf("Reopen: %v", err)
 	}
 }
 

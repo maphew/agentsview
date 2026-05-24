@@ -1507,21 +1507,7 @@ func (db *DB) reopenLocked() error {
 	reader.SetMaxOpenConns(4)
 
 	db.connMu.Lock()
-	defer db.connMu.Unlock()
-
-	// Close pools from any previous reopen. The connection guard
-	// prevents new queries from starting on handles that are about
-	// to be closed; database/sql waits for queries already started
-	// on those pools to finish.
-	for _, p := range db.retired {
-		if err := p.Close(); err != nil {
-			log.Printf(
-				"warning: closing retired db pool: %v", err,
-			)
-		}
-	}
-	db.retired = db.retired[:0]
-
+	retired := append([]*sql.DB(nil), db.retired...)
 	oldWriter := db.writer.Swap(writer)
 	oldReader := db.reader.Swap(reader)
 
@@ -1529,7 +1515,19 @@ func (db *DB) reopenLocked() error {
 	// loaded the old pointer before the swap may still have
 	// in-flight queries; these pools will be closed on the
 	// next Reopen, CloseConnections, or Close call.
-	db.retired = append(db.retired, oldWriter, oldReader)
+	db.retired = []*sql.DB{oldWriter, oldReader}
+	db.connMu.Unlock()
+
+	// Close pools from earlier reopens outside connMu. database/sql
+	// may wait for active rows to finish, and that wait must not
+	// block new reads from acquiring the guarded current reader.
+	for _, p := range retired {
+		if err := p.Close(); err != nil {
+			log.Printf(
+				"warning: closing retired db pool: %v", err,
+			)
+		}
+	}
 	return nil
 }
 
