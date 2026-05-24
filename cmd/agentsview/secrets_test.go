@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,16 @@ func TestNewSecretsScanCommandFlags(t *testing.T) {
 	}
 }
 
+func syntheticAWSAccessKey(seed string) string {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	sum := sha256.Sum256([]byte(seed))
+	body := make([]byte, 16)
+	for i := range body {
+		body[i] = alphabet[int(sum[i])%len(alphabet)]
+	}
+	return "AKIA" + string(body)
+}
+
 // TestSecretsScan_DirectMode_Scans verifies `secrets scan` is wired with a
 // real sync.Engine in direct mode (no daemon). A nil-engine direct backend
 // would make ScanSecrets return db.ErrReadOnly; instead the scan must run and
@@ -46,9 +57,7 @@ func TestSecretsScan_DirectMode_Scans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret := strings.Join([]string{
-		"AKIA", "5GTK", "D7RP", "YNXQ", "VMBL",
-	}, "")
+	secret := syntheticAWSAccessKey(t.Name())
 	if err := d.InsertMessages([]db.Message{{
 		SessionID: "leaky", Ordinal: 0, Role: "user",
 		Content: "my key " + secret + " here",
