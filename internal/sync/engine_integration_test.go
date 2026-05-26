@@ -5066,6 +5066,23 @@ func TestResyncAllPreservesTrashedSessionData(t *testing.T) {
 	)
 	env.engine.SyncPaths([]string{orphanPath})
 	assertSessionMessageCount(t, env.db, "active-orphan", 2)
+	if err := env.db.UpdateSessionSignals(
+		"active-orphan",
+		db.SessionSignalUpdate{
+			Outcome:           "completed",
+			OutcomeConfidence: "high",
+			EndedWithRole:     "assistant",
+			HealthScore:       new(94),
+			HealthGrade:       new("A"),
+			QualitySignals: db.QualitySignals{
+				Version:                     db.CurrentQualitySignalVersion,
+				ShortPromptCount:            1,
+				MissingSuccessCriteriaCount: 1,
+			},
+		},
+	); err != nil {
+		t.Fatalf("UpdateSessionSignals orphan: %v", err)
+	}
 	if err := os.Remove(orphanPath); err != nil {
 		t.Fatalf("remove orphan source: %v", err)
 	}
@@ -5085,6 +5102,20 @@ func TestResyncAllPreservesTrashedSessionData(t *testing.T) {
 		t.Fatalf("ResyncAll aborted: %+v", stats)
 	}
 	assertSessionMessageCount(t, env.db, "active-orphan", 2)
+	assertSessionState(t, env.db, "active-orphan", func(sess *db.Session) {
+		if sess.HealthScore == nil || *sess.HealthScore != 94 {
+			t.Fatalf("orphan health score = %v, want 94", sess.HealthScore)
+		}
+		qs := sess.StoredQualitySignals()
+		if qs == nil {
+			t.Fatal("orphan quality signals were not preserved")
+		}
+		if qs.Version != db.CurrentQualitySignalVersion ||
+			qs.ShortPromptCount != 1 ||
+			qs.MissingSuccessCriteriaCount != 1 {
+			t.Fatalf("orphan quality signals = %+v, want preserved prompt signals", qs)
+		}
+	})
 
 	full, err := env.db.GetSessionFull(
 		context.Background(), "resync-trash",
