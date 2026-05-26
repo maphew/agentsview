@@ -6372,9 +6372,15 @@ type SecretScanProgress struct {
 
 // SecretScanSummary is the final result of a scan.
 type SecretScanSummary struct {
-	Scanned       int `json:"scanned"`
-	WithSecrets   int `json:"with_secrets"`
-	TotalFindings int `json:"total_findings"`
+	Scanned int `json:"scanned"`
+	// WithSecrets counts sessions with ≥1 definite finding. It does NOT
+	// include sessions whose findings are all candidate-tier; the
+	// presence of those is implied by CandidateFindings > 0 when
+	// DefiniteFindings is 0.
+	WithSecrets       int `json:"with_secrets"`
+	TotalFindings     int `json:"total_findings"`
+	DefiniteFindings  int `json:"definite_findings"`
+	CandidateFindings int `json:"candidate_findings"`
 }
 
 // ScanSecrets scans candidate sessions and persists their findings, invoking
@@ -6414,6 +6420,8 @@ func (e *Engine) ScanSecrets(
 		}
 		sum.Scanned++
 		sum.TotalFindings += nf
+		sum.DefiniteFindings += leak
+		sum.CandidateFindings += nf - leak
 		if leak > 0 {
 			sum.WithSecrets++
 		}

@@ -33,6 +33,100 @@ func TestDefiniteRules(t *testing.T) {
 				"-----END RSA PRIVATE KEY-----", true},
 		{"plain prose", "", "the quick brown fox jumps over", false},
 		{"short ghp", "", "ghp_tooShort", false},
+		{"openai project", "openai-key",
+			"tok sk-proj-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp end", true},
+		{"openai svcacct", "openai-key",
+			"tok sk-svcacct-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp end", true},
+		{"openai admin", "openai-key",
+			"tok sk-admin-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp end", true},
+		{"openai ending dash", "openai-key",
+			"tok sk-proj-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Y- end", true},
+		{"openai ending underscore", "openai-key",
+			"tok sk-proj-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Y_ end", true},
+		{"openai at eot", "openai-key",
+			"tok sk-proj-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp", true},
+		{"openai trailing-run placeholder", "",
+			"tok sk-proj-AAAAAAAAAAAAAAAAAAAAA end", false},
+		{"openai low-entropy body", "",
+			"tok sk-proj-abababababababababab end", false},
+		{"openai short body", "",
+			"tok sk-proj-short end", false},
+		{"openai bare sk- not matched", "",
+			"tok sk-Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpA end", false},
+		{"gitlab pat", "gitlab-pat",
+			"tok glpat-Xa9Kd03Lm5Qp7Rt2Vw8Zb end", true},
+		{"gitlab pat ending dash", "gitlab-pat",
+			"tok glpat-Xa9Kd03Lm5Qp7Rt2Vw8Z- end", true},
+		{"gitlab pat at eot", "gitlab-pat",
+			"tok glpat-Xa9Kd03Lm5Qp7Rt2Vw8Zb", true},
+		{"gitlab placeholder repeating", "",
+			"tok glpat-AAAAAAAAAAAAAAAAAAAA end", false},
+		{"gitlab placeholder monotone", "",
+			"tok glpat-abcdefghijklmnopqrst end", false},
+		{"gitlab short body", "",
+			"tok glpat-short end", false},
+		{"gitlab trailing-run placeholder", "",
+			"tok glpat-Xa9Kd03Lm5Qp7Rt2AAAA end", false},
+		{"npm token", "npm-token",
+			"tok npm_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpAbCdEf end", true},
+		{"npm placeholder repeating", "",
+			"tok npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA end", false},
+		{"npm legacy bare hex not matched", "",
+			"tok 0123456789abcdef0123456789abcdef0123 end", false},
+		{"npm short body", "",
+			"tok npm_short end", false},
+		{"npm trailing-run placeholder", "",
+			"tok npm_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpAbAAAA end", false},
+		{"pypi token 69 tail matches", "pypi-token",
+			"tok pypi-AgEIcHlwaS5vcmcCXa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp8Bv4HgNX2cWpQz7MjRv3Ts6Ku0Fy9DnEwPaRbTZ end", true},
+		{"pypi token 68 tail rejected", "",
+			"tok pypi-AgEIcHlwaS5vcmcCXa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp8Bv4HgNX2cWpQz7MjRv3Ts6Ku0Fy9DnEwPaRbT end", false},
+		{"pypi token ending dash 69 tail", "pypi-token",
+			"tok pypi-AgEIcHlwaS5vcmcCXa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp8Bv4HgNX2cWpQz7MjRv3Ts6Ku0Fy9DnEwPaRbT- end", true},
+		{"pypi placeholder repeating", "",
+			"tok pypi-AgEIcHlwaS5vcmcC" + rep("AAAAAAAAA", 8) + " end", false},
+		{"pypi trailing-run placeholder", "",
+			"tok pypi-AgEIcHlwaS5vcmcCXa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1Yp8Bv4HgNX2cWpQz7MjRv3Ts6Ku0Fy9DnEwPAAAAA end", false},
+		{"hf token", "huggingface-token",
+			"tok hf_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpAbCd end", true},
+		{"hf token longer", "huggingface-token",
+			"tok hf_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpAbCdEfGhIj end", true},
+		{"hf token at eot", "huggingface-token",
+			"tok hf_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6Hf1YpAbCd", true},
+		{"hf placeholder repeating", "",
+			"tok hf_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA end", false},
+		{"hf placeholder monotone", "",
+			"tok hf_abcdefghijklmnopqrstuvwxyzABCD end", false},
+		{"hf short body", "",
+			"tok hf_short end", false},
+		{"hf trailing-run placeholder", "",
+			"tok hf_Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6HAAAA end", false},
+		// sendgrid-key: format SG.<22 base64url>.<43 base64url>
+		// ident22 = "Xa9Kd03Lm5Qp7Rt2Vw8Zb4" (22 chars)
+		// secret43 = "yifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6sHrF" (43 chars)
+		{"sendgrid key", "sendgrid-key",
+			"tok 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 end", true},
+		{"sendgrid key ending dash", "sendgrid-key",
+			"tok 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 end", true},
+		{"sendgrid key at eot", "sendgrid-key",
+			"tok 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", true},
+		{"sendgrid key trailing dot stops at dot", "sendgrid-key",
+			"tok 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. end", true},
+		// negative cases
+		{"sendgrid missing separator", "",
+			"tok SG.Xa9Kd03Lm5Qp7Rt2Vw8Zb4yifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6sHrF end", false},
+		// wrong ident = 20 chars ("Xa9Kd03Lm5Qp7Rt2Vw8Z", drop last 2 from ident22)
+		{"sendgrid wrong identifier length", "",
+			"tok SG.Xa9Kd03Lm5Qp7Rt2Vw8Z.yifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6sHrF end", false},
+		// wrong secret = 44 chars (append "S" to secret43)
+		{"sendgrid wrong secret length", "",
+			"tok SG.Xa9Kd03Lm5Qp7Rt2Vw8Zb4.yifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6sHrFS end", false},
+		{"sendgrid placeholder repeating", "",
+			"tok SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB end", false},
+		// trailing-run secret = first 39 of secret43 + "AAAA" = 43 chars
+		// secret43[:39]="yifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6" + "AAAA"
+		{"sendgrid trailing-run placeholder", "",
+			"tok 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 end", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -254,6 +348,80 @@ func TestHasRepeatingBlock(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			assert.Equal(t, c.want, hasRepeatingBlock(c.s))
 		})
+	}
+}
+
+// TestHighEntropyPaddingCapture verifies that the high-entropy-assignment
+// rule includes base64 '=' padding in the captured span.
+func TestHighEntropyPaddingCapture(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		suffix string // expected last chars of the captured span
+	}{
+		{"double padding",
+			`KEY="Xa9Kd03Lm5Qp7Rt2Vw8Zb4N=="`,
+			`==`},
+		{"single padding",
+			`KEY="Xa9Kd03Lm5Qp7Rt2Vw8Zb4=`,
+			`=`},
+		{"no padding",
+			`KEY="Xa9Kd03Lm5Qp7Rt2Vw8Zb4N"`,
+			`N`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Scan(c.text)
+			var m *Match
+			for i := range got {
+				if got[i].Rule == "high-entropy-assignment" {
+					m = &got[i]
+					break
+				}
+			}
+			if m == nil {
+				t.Fatalf("no high-entropy match in %q; got %+v", c.text, got)
+			}
+			span := c.text[m.Start:m.End]
+			if !strings.HasSuffix(span, c.suffix) {
+				t.Errorf("captured span %q does not end with %q",
+					span, c.suffix)
+			}
+		})
+	}
+}
+
+// TestHighEntropyValueTrimsPaddingBeforeLength verifies that
+// highEntropyValue trims trailing '=' before applying the 20-char
+// length floor. A 19-char body padded to 21 chars must fail the new
+// gate (body length 19 after trim) even though the raw input is 21
+// chars — proving the trim runs before the length check.
+func TestHighEntropyValueTrimsPaddingBeforeLength(t *testing.T) {
+	const body = "A1b2C3d4E5f6G7h8I9j" // 19 chars
+	if len(body) != 19 {
+		t.Fatalf("test setup: body length = %d, want 19", len(body))
+	}
+	padded := body + "=="
+	if highEntropyValue(padded) {
+		t.Errorf("highEntropyValue(%q) = true, want false "+
+			"(trimmed body is 19 chars, below the 20-char floor)",
+			padded)
+	}
+}
+
+// TestHighEntropyValueAcceptsPaddedRealBody verifies that the validator
+// accepts a real high-entropy body whether or not '=' padding is
+// appended.
+func TestHighEntropyValueAcceptsPaddedRealBody(t *testing.T) {
+	const body = "Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6" // 25 chars, real high entropy
+	if !highEntropyValue(body) {
+		t.Fatalf("precondition: bare body should pass")
+	}
+	for _, pad := range []string{"=", "=="} {
+		if !highEntropyValue(body + pad) {
+			t.Errorf("highEntropyValue(%q) = false, want true",
+				body+pad)
+		}
 	}
 }
 

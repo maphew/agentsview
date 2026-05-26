@@ -112,6 +112,108 @@ func TestSecretsScan_DirectMode_DeniesAgentsviewFixtures(t *testing.T) {
 	assert.Equal(t, 0, got.TotalFindings, "fixture should be suppressed, got %+v", got)
 }
 
+// TestSecretsScanHint_ShownOnCandidate verifies the hint is printed
+// when at least one candidate finding exists and output is not JSON.
+func TestSecretsScanHint_ShownOnCandidate(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	seedSession(t, dataDir, "leaky", "proj")
+	d, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Candidate finding only (high-entropy assignment), no definite leak.
+	if err := d.InsertMessages([]db.Message{{
+		SessionID: "leaky", Ordinal: 0, Role: "user",
+		Content: "SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6 here",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeCommand(newRootCommand(),
+		"secrets", "scan", "--backfill")
+	if err != nil {
+		t.Fatalf("secrets scan: %v", err)
+	}
+	if !strings.Contains(out, "Candidate findings are hidden") {
+		t.Errorf("expected hint in output, got: %s", out)
+	}
+	if !strings.Contains(out, "--confidence all") {
+		t.Errorf("expected hint to mention --confidence all, got: %s", out)
+	}
+}
+
+// TestSecretsScanHint_SuppressedWhenDefiniteOnly verifies the hint is
+// NOT printed when only definite findings exist.
+func TestSecretsScanHint_SuppressedWhenDefiniteOnly(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	seedSession(t, dataDir, "leaky", "proj")
+	d, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := syntheticAWSAccessKey(t.Name())
+	if err := d.InsertMessages([]db.Message{{
+		SessionID: "leaky", Ordinal: 0, Role: "user",
+		Content: "my key " + secret + " here",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeCommand(newRootCommand(),
+		"secrets", "scan", "--backfill")
+	if err != nil {
+		t.Fatalf("secrets scan: %v", err)
+	}
+	if strings.Contains(out, "Candidate findings are hidden") {
+		t.Errorf("hint should be absent for definite-only scan, got: %s", out)
+	}
+}
+
+// TestSecretsScanHint_SuppressedInJSON verifies the hint is NOT printed
+// in JSON mode even when candidates exist.
+func TestSecretsScanHint_SuppressedInJSON(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	seedSession(t, dataDir, "leaky", "proj")
+	d, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.InsertMessages([]db.Message{{
+		SessionID: "leaky", Ordinal: 0, Role: "user",
+		Content: "SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6 here",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeCommand(newRootCommand(),
+		"secrets", "scan", "--backfill", "--format", "json")
+	if err != nil {
+		t.Fatalf("secrets scan: %v", err)
+	}
+	if strings.Contains(out, "Candidate findings are hidden") {
+		t.Errorf("hint should be absent in JSON mode, got: %s", out)
+	}
+	var sum struct {
+		CandidateFindings int `json:"candidate_findings"`
+	}
+	if err := json.Unmarshal([]byte(out), &sum); err != nil {
+		t.Fatalf("expected JSON output, got: %s", out)
+	}
+	if sum.CandidateFindings == 0 {
+		t.Errorf("expected candidate_findings > 0, got %d",
+			sum.CandidateFindings)
+	}
+}
+
 func TestPrintSecretFindingsHuman(t *testing.T) {
 	var buf bytes.Buffer
 	res := &service.SecretFindingList{

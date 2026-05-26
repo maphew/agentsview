@@ -153,6 +153,48 @@ func TestInlineScanThenBackfillStoresCandidates(t *testing.T) {
 	assert.Zero(t, sum2.Scanned, "second backfill Scanned = %d, want 0 (now at full version)", sum2.Scanned)
 }
 
+// TestScanSecretsBreakdown verifies that ScanSecrets reports definite
+// and candidate findings separately while preserving the existing
+// WithSecrets semantic (sessions with ≥1 definite finding).
+func TestScanSecretsBreakdown(t *testing.T) {
+	fx := newEngineFixture(t)
+	ctx := context.Background()
+	const id = "s1"
+	if err := fx.db.UpsertSession(db.Session{
+		ID: id, Project: "proj", Machine: "m", Agent: "claude",
+		MessageCount: 1, UserMessageCount: 1,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	// One message containing both a definite AWS key and a candidate
+	// high-entropy assignment.
+	if err := fx.db.ReplaceSessionMessages(id, []db.Message{
+		{SessionID: id, Ordinal: 0, Role: "user",
+			Content: "aws AKIA7QHWN2DKR4FYPLJM and SECRET=Xa9Kd03Lm5Qp7Rt2Vw8Zb4Nc6"},
+	}); err != nil {
+		t.Fatalf("ReplaceSessionMessages: %v", err)
+	}
+	sum, err := fx.engine.ScanSecrets(ctx, SecretScanInput{Backfill: true}, nil)
+	if err != nil {
+		t.Fatalf("ScanSecrets: %v", err)
+	}
+	if sum.Scanned != 1 {
+		t.Fatalf("Scanned = %d, want 1", sum.Scanned)
+	}
+	if sum.DefiniteFindings != 1 {
+		t.Errorf("DefiniteFindings = %d, want 1", sum.DefiniteFindings)
+	}
+	if sum.CandidateFindings != 1 {
+		t.Errorf("CandidateFindings = %d, want 1", sum.CandidateFindings)
+	}
+	if sum.TotalFindings != 2 {
+		t.Errorf("TotalFindings = %d, want 2", sum.TotalFindings)
+	}
+	if sum.WithSecrets != 1 {
+		t.Errorf("WithSecrets = %d, want 1 (session has ≥1 definite finding)", sum.WithSecrets)
+	}
+}
+
 func countConfidence(findings []db.SecretFinding, confidence string) int {
 	n := 0
 	for _, f := range findings {
