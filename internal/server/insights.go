@@ -438,6 +438,7 @@ func (s *Server) handleGenerateCannedInsight(
 	r *http.Request,
 	req generateInsightRequest,
 ) {
+	req.Prompt = strings.TrimSpace(req.Prompt)
 	kind := insight.CannedKind(req.Kind)
 	if !insight.ValidCannedKinds[kind] {
 		writeError(w, http.StatusBadRequest,
@@ -454,7 +455,7 @@ func (s *Server) handleGenerateCannedInsight(
 			"llm_opt_in must be true for canned insights")
 		return
 	}
-	if len([]rune(strings.TrimSpace(req.Prompt))) > insight.MaxCannedFocusRunes {
+	if len([]rune(req.Prompt)) > insight.MaxCannedFocusRunes {
 		writeError(w, http.StatusBadRequest,
 			"prompt is too long for canned insight focus")
 		return
