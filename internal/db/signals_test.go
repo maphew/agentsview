@@ -29,6 +29,16 @@ func TestUpdateSessionSignals(t *testing.T) {
 		ContextPressureMax:     new(0.85),
 		HealthScore:            new(72),
 		HealthGrade:            new("B"),
+		QualitySignals: QualitySignals{
+			Version:                     CurrentQualitySignalVersion,
+			ShortPromptCount:            2,
+			UnstructuredStart:           true,
+			MissingSuccessCriteriaCount: 1,
+			MissingVerificationCount:    1,
+			DuplicatePromptCount:        3,
+			NoCodeContextCount:          1,
+			RunawayToolLoopCount:        1,
+		},
 	}
 	if err := d.UpdateSessionSignals("sig-1", update); err != nil {
 		t.Fatalf("UpdateSessionSignals: %v", err)
@@ -56,6 +66,17 @@ func TestUpdateSessionSignals(t *testing.T) {
 		{"EndedWithRole", got.EndedWithRole, "assistant"},
 		{"FinalFailureStreak", got.FinalFailureStreak, 0},
 		{"CompactionCount", got.CompactionCount, 2},
+		{"QualitySignalVersion", got.QualitySignalVersion, 1},
+		{"ShortPromptCount", got.ShortPromptCount, 2},
+		{"UnstructuredStart", got.UnstructuredStart, true},
+		{
+			"MissingSuccessCriteriaCount",
+			got.MissingSuccessCriteriaCount, 1,
+		},
+		{"MissingVerificationCount", got.MissingVerificationCount, 1},
+		{"DuplicatePromptCount", got.DuplicatePromptCount, 3},
+		{"NoCodeContextCount", got.NoCodeContextCount, 1},
+		{"RunawayToolLoopCount", got.RunawayToolLoopCount, 1},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -133,6 +154,12 @@ func TestUpdateSessionSignals(t *testing.T) {
 	}
 	if got2.HealthGrade != nil {
 		t.Errorf("HealthGrade = %v, want nil", *got2.HealthGrade)
+	}
+	if got2.StoredQualitySignals() != nil {
+		t.Errorf(
+			"StoredQualitySignals = %+v, want nil",
+			got2.StoredQualitySignals(),
+		)
 	}
 }
 

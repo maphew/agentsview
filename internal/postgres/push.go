@@ -769,6 +769,11 @@ func (s *Sync) pushSession(
 			context_pressure_max,
 			health_score, health_grade,
 			has_tool_calls, has_context_data,
+			quality_signal_version,
+			short_prompt_count, unstructured_start,
+			missing_success_criteria_count,
+			missing_verification_count, duplicate_prompt_count,
+			no_code_context_count, runaway_tool_loop_count,
 			updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
@@ -783,6 +788,7 @@ func (s *Sync) pushSession(
 			$37, $38,
 			$39,
 			$40, $41, $42, $43,
+			$44, $45, $46, $47, $48, $49, $50, $51,
 			NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -828,6 +834,14 @@ func (s *Sync) pushSession(
 			health_grade = EXCLUDED.health_grade,
 			has_tool_calls = EXCLUDED.has_tool_calls,
 			has_context_data = EXCLUDED.has_context_data,
+			quality_signal_version = EXCLUDED.quality_signal_version,
+			short_prompt_count = EXCLUDED.short_prompt_count,
+			unstructured_start = EXCLUDED.unstructured_start,
+			missing_success_criteria_count = EXCLUDED.missing_success_criteria_count,
+			missing_verification_count = EXCLUDED.missing_verification_count,
+			duplicate_prompt_count = EXCLUDED.duplicate_prompt_count,
+			no_code_context_count = EXCLUDED.no_code_context_count,
+			runaway_tool_loop_count = EXCLUDED.runaway_tool_loop_count,
 			updated_at = NOW()
 		WHERE sessions.machine IS DISTINCT FROM EXCLUDED.machine
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
@@ -870,7 +884,15 @@ func (s *Sync) pushSession(
 			OR sessions.health_score IS DISTINCT FROM EXCLUDED.health_score
 			OR sessions.health_grade IS DISTINCT FROM EXCLUDED.health_grade
 			OR sessions.has_tool_calls IS DISTINCT FROM EXCLUDED.has_tool_calls
-			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data`,
+			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data
+			OR sessions.quality_signal_version IS DISTINCT FROM EXCLUDED.quality_signal_version
+			OR sessions.short_prompt_count IS DISTINCT FROM EXCLUDED.short_prompt_count
+			OR sessions.unstructured_start IS DISTINCT FROM EXCLUDED.unstructured_start
+			OR sessions.missing_success_criteria_count IS DISTINCT FROM EXCLUDED.missing_success_criteria_count
+			OR sessions.missing_verification_count IS DISTINCT FROM EXCLUDED.missing_verification_count
+			OR sessions.duplicate_prompt_count IS DISTINCT FROM EXCLUDED.duplicate_prompt_count
+			OR sessions.no_code_context_count IS DISTINCT FROM EXCLUDED.no_code_context_count
+			OR sessions.runaway_tool_loop_count IS DISTINCT FROM EXCLUDED.runaway_tool_loop_count`,
 		sess.ID, s.machine,
 		sanitizePG(sess.Project),
 		sess.Agent,
@@ -898,6 +920,11 @@ func (s *Sync) pushSession(
 		sess.ContextPressureMax,
 		sess.HealthScore, nilStr(sess.HealthGrade),
 		sess.HasToolCalls, sess.HasContextData,
+		sess.QualitySignalVersion,
+		sess.ShortPromptCount, sess.UnstructuredStart,
+		sess.MissingSuccessCriteriaCount,
+		sess.MissingVerificationCount, sess.DuplicatePromptCount,
+		sess.NoCodeContextCount, sess.RunawayToolLoopCount,
 	)
 	return err
 }
