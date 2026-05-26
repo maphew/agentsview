@@ -24,9 +24,7 @@ func TestGetDailyUsageEmpty(t *testing.T) {
 	})
 	requireNoError(t, err, "GetDailyUsage empty")
 
-	if result.Daily == nil {
-		t.Fatal("Daily should be non-nil empty slice")
-	}
+	require.NotNil(t, result.Daily, "Daily should be non-nil empty slice")
 	assert.Len(t, result.Daily, 0, "got")
 	assert.Equal(t, 0.0, result.Totals.TotalCost, "TotalCost")
 }
@@ -65,27 +63,25 @@ func TestUsageEventsReplaceAndList(t *testing.T) {
 	got, err := d.GetUsageEvents(ctx, "hermes:event")
 	require.NoError(t, err, "GetUsageEvents")
 	require.Len(t, got, 1, "len")
-	if got[0].InputTokens != 100 ||
-		got[0].OutputTokens != 50 ||
-		got[0].CacheCreationInputTokens != 7 ||
-		got[0].CacheReadInputTokens != 11 ||
-		got[0].ReasoningTokens != 13 {
-		t.Fatalf("token fields not round-tripped: %#v", got[0])
-	}
-	if got[0].MessageOrdinal == nil || *got[0].MessageOrdinal != 3 {
-		t.Fatalf("MessageOrdinal = %#v, want 3", got[0].MessageOrdinal)
-	}
-	if got[0].CostUSD == nil || *got[0].CostUSD != cost {
-		t.Fatalf("CostUSD = %#v, want %v", got[0].CostUSD, cost)
-	}
-	if got[0].DedupKey != "session:hermes:event" {
-		t.Fatalf("DedupKey = %q", got[0].DedupKey)
-	}
+	require.Equal(t, 100, got[0].InputTokens,
+		"InputTokens (token fields not round-tripped: %#v)", got[0])
+	require.Equal(t, 50, got[0].OutputTokens,
+		"OutputTokens (token fields not round-tripped: %#v)", got[0])
+	require.Equal(t, 7, got[0].CacheCreationInputTokens,
+		"CacheCreationInputTokens (token fields not round-tripped: %#v)", got[0])
+	require.Equal(t, 11, got[0].CacheReadInputTokens,
+		"CacheReadInputTokens (token fields not round-tripped: %#v)", got[0])
+	require.Equal(t, 13, got[0].ReasoningTokens,
+		"ReasoningTokens (token fields not round-tripped: %#v)", got[0])
+	require.NotNil(t, got[0].MessageOrdinal, "MessageOrdinal want 3")
+	require.Equal(t, 3, *got[0].MessageOrdinal, "MessageOrdinal")
+	require.NotNil(t, got[0].CostUSD, "CostUSD want %v", cost)
+	require.Equal(t, cost, *got[0].CostUSD, "CostUSD")
+	require.Equal(t, "session:hermes:event", got[0].DedupKey, "DedupKey")
 	fps, err := d.UsageEventFingerprints([]string{"hermes:event", "missing"})
 	require.NoError(t, err, "UsageEventFingerprints")
-	if fps["hermes:event"] == "" {
-		t.Fatal("expected non-empty usage event fingerprint")
-	}
+	require.NotEmpty(t, fps["hermes:event"],
+		"expected non-empty usage event fingerprint")
 	require.Equal(t, "", fps["missing"], "missing fingerprint")
 
 	err = d.ReplaceSessionUsageEvents("hermes:event", nil)
@@ -149,23 +145,15 @@ func TestGetDailyUsageWithData(t *testing.T) {
 	//      = 11340 / 1_000_000
 	//      = 0.01134
 	wantCost := 0.01134
-	if math.Abs(day.TotalCost-wantCost) > 1e-9 {
-		t.Errorf("TotalCost = %v, want %v",
-			day.TotalCost, wantCost)
-	}
+	assert.InDelta(t, wantCost, day.TotalCost, 1e-9, "TotalCost")
 
-	if len(day.ModelsUsed) != 1 ||
-		day.ModelsUsed[0] != "claude-sonnet-4-20250514" {
-		t.Errorf("ModelsUsed = %v, want [claude-sonnet-4-20250514]",
-			day.ModelsUsed)
-	}
+	assert.Equal(t, []string{"claude-sonnet-4-20250514"},
+		day.ModelsUsed, "ModelsUsed")
 
 	// Totals should match single day
 	assert.Equal(t, 1000, result.Totals.InputTokens, "Totals.InputTokens")
-	if math.Abs(result.Totals.TotalCost-wantCost) > 1e-9 {
-		t.Errorf("Totals.TotalCost = %v, want %v",
-			result.Totals.TotalCost, wantCost)
-	}
+	assert.InDelta(t, wantCost, result.Totals.TotalCost, 1e-9,
+		"Totals.TotalCost")
 }
 
 func TestUsageQueriesUnionMessageAndUsageEvents(t *testing.T) {
@@ -229,16 +217,15 @@ func TestUsageQueriesUnionMessageAndUsageEvents(t *testing.T) {
 	}
 	daily, err := d.GetDailyUsage(ctx, filter)
 	requireNoError(t, err, "GetDailyUsage")
-	if daily.Totals.InputTokens != 450 ||
-		daily.Totals.OutputTokens != 115 ||
-		daily.Totals.CacheReadTokens != 20 {
-		t.Fatalf("daily totals = %#v", daily.Totals)
-	}
+	require.Equal(t, 450, daily.Totals.InputTokens,
+		"daily totals: %#v", daily.Totals)
+	require.Equal(t, 115, daily.Totals.OutputTokens,
+		"daily totals: %#v", daily.Totals)
+	require.Equal(t, 20, daily.Totals.CacheReadTokens,
+		"daily totals: %#v", daily.Totals)
 	require.Len(t, daily.Daily, 1, "daily entries =")
-	if len(daily.Daily[0].AgentBreakdowns) != 2 {
-		t.Fatalf("agent breakdowns = %#v",
-			daily.Daily[0].AgentBreakdowns)
-	}
+	require.Len(t, daily.Daily[0].AgentBreakdowns, 2,
+		"agent breakdowns: %#v", daily.Daily[0].AgentBreakdowns)
 
 	top, err := d.GetTopSessionsByCost(ctx, filter, 10)
 	requireNoError(t, err, "GetTopSessionsByCost")
@@ -246,25 +233,20 @@ func TestUsageQueriesUnionMessageAndUsageEvents(t *testing.T) {
 	for _, entry := range top {
 		topByID[entry.SessionID] = entry
 	}
-	if topByID["claude:msg"].TotalTokens != 140 {
-		t.Fatalf("claude top tokens = %#v", topByID["claude:msg"])
-	}
-	if topByID["hermes:event"].TotalTokens != 390 {
-		t.Fatalf("hermes top tokens = %#v", topByID["hermes:event"])
-	}
-	if topByID["hermes:event-2"].TotalTokens != 55 {
-		t.Fatalf("second hermes top tokens = %#v", topByID["hermes:event-2"])
-	}
+	require.Equal(t, 140, topByID["claude:msg"].TotalTokens,
+		"claude top tokens: %#v", topByID["claude:msg"])
+	require.Equal(t, 390, topByID["hermes:event"].TotalTokens,
+		"hermes top tokens: %#v", topByID["hermes:event"])
+	require.Equal(t, 55, topByID["hermes:event-2"].TotalTokens,
+		"second hermes top tokens: %#v", topByID["hermes:event-2"])
 
 	counts, err := d.GetUsageSessionCounts(ctx, filter)
 	requireNoError(t, err, "GetUsageSessionCounts")
-	if counts.Total != 3 ||
-		counts.ByAgent["claude"] != 1 ||
-		counts.ByAgent["hermes"] != 2 ||
-		counts.ByProject["proj-a"] != 1 ||
-		counts.ByProject["proj-b"] != 2 {
-		t.Fatalf("counts = %#v", counts)
-	}
+	require.Equal(t, 3, counts.Total, "counts: %#v", counts)
+	require.Equal(t, 1, counts.ByAgent["claude"], "counts: %#v", counts)
+	require.Equal(t, 2, counts.ByAgent["hermes"], "counts: %#v", counts)
+	require.Equal(t, 1, counts.ByProject["proj-a"], "counts: %#v", counts)
+	require.Equal(t, 2, counts.ByProject["proj-b"], "counts: %#v", counts)
 }
 
 // TestGetDailyUsage_CacheSavingsUsesPerModelRates pins down
@@ -334,27 +316,16 @@ func TestGetDailyUsage_CacheSavingsUsesPerModelRates(t *testing.T) {
 	// Sonnet savings on 1M + 1M = 2.70 + (-0.75) = 1.95.
 	// Net total savings = 9.75 + 1.95 = 11.70.
 	wantSavings := 11.70
-	if math.Abs(
-		result.Totals.CacheSavings-wantSavings,
-	) > 1e-9 {
-		t.Errorf(
-			"Totals.CacheSavings = %v, want %v",
-			result.Totals.CacheSavings, wantSavings,
-		)
-	}
+	assert.InDelta(t, wantSavings, result.Totals.CacheSavings, 1e-9,
+		"Totals.CacheSavings")
 
 	// Falsification: if the code had used Sonnet rates for
 	// both rows the total would be 2 * 1.95 = 3.90, which
 	// differs from wantSavings by >$7. Assert we're nowhere
 	// near that value so a regression to a single-rate path
 	// trips the test.
-	if math.Abs(result.Totals.CacheSavings-3.90) < 0.1 {
-		t.Errorf(
-			"CacheSavings = %v looks like single-rate path; "+
-				"expected per-model math",
-			result.Totals.CacheSavings,
-		)
-	}
+	assert.Greater(t, math.Abs(result.Totals.CacheSavings-3.90), 0.1,
+		"CacheSavings looks like single-rate path; expected per-model math")
 }
 
 func TestGetDailyUsageAgentFilter(t *testing.T) {
@@ -499,10 +470,8 @@ func TestGetDailyUsageMultipleDaysAndModels(t *testing.T) {
 	//             day2 model-a = (300*2+150*10)/1e6 = 0.0021
 	//             total = 0.0056
 	wantTotalCost := 0.0056
-	if math.Abs(result.Totals.TotalCost-wantTotalCost) > 1e-9 {
-		t.Errorf("Totals.TotalCost = %v, want %v",
-			result.Totals.TotalCost, wantTotalCost)
-	}
+	assert.InDelta(t, wantTotalCost, result.Totals.TotalCost, 1e-9,
+		"Totals.TotalCost")
 }
 
 func TestGetDailyUsageNoPricing(t *testing.T) {
@@ -534,11 +503,8 @@ func TestGetDailyUsageNoPricing(t *testing.T) {
 	assert.Equal(t, 500, day.InputTokens, "InputTokens")
 	assert.Equal(t, 250, day.OutputTokens, "OutputTokens")
 	assert.Equal(t, 0.0, day.TotalCost, "TotalCost")
-	if len(day.ModelsUsed) != 1 ||
-		day.ModelsUsed[0] != "unknown-model" {
-		t.Errorf("ModelsUsed = %v, want [unknown-model]",
-			day.ModelsUsed)
-	}
+	assert.Equal(t, []string{"unknown-model"}, day.ModelsUsed,
+		"ModelsUsed")
 }
 
 // TestGetDailyUsageTruncatedTokenJSON documents what happens when
@@ -592,31 +558,26 @@ func TestGetDailyUsageTruncatedTokenJSON(t *testing.T) {
 	require.Len(t, result.Daily, 1, "got")
 	day := result.Daily[0]
 	// 1000 (valid row) + 9999 (truncated but still parseable)
-	if day.InputTokens != 10999 {
-		t.Errorf("InputTokens = %d, want 10999 "+
-			"(gjson should extract leading fields from truncated JSON)",
-			day.InputTokens)
-	}
+	assert.Equal(t, 10999, day.InputTokens,
+		"InputTokens want 10999 "+
+			"(gjson should extract leading fields from truncated JSON)")
 	assert.Equal(t, 4742, day.OutputTokens, "OutputTokens")
 }
 
 func TestGetDailyUsage_DedupesByClaudeMessageAndRequestID(t *testing.T) {
 	d := testDB(t)
-	if err := d.UpsertModelPricing([]ModelPricing{{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
 		ModelPattern:         "claude-opus-4-6",
 		InputPerMTok:         15.0,
 		OutputPerMTok:        75.0,
 		CacheCreationPerMTok: 18.75,
 		CacheReadPerMTok:     1.50,
-	}}); err != nil {
-		t.Fatalf("seed pricing: %v", err)
-	}
+	}}), "seed pricing")
 
 	mustExec := func(q string, args ...any) {
 		t.Helper()
-		if _, err := d.getWriter().Exec(q, args...); err != nil {
-			t.Fatalf("exec %q: %v", q, err)
-		}
+		_, err := d.getWriter().Exec(q, args...)
+		require.NoError(t, err, "exec %q", q)
 	}
 	mustExec(`INSERT INTO sessions (id, project, machine, agent, started_at, ended_at)
 	          VALUES (?, ?, 'local', 'claude', ?, ?)`,
@@ -659,18 +620,15 @@ func TestGetDailyUsage_DedupesByClaudeMessageAndRequestID(t *testing.T) {
 
 func TestGetDailyUsage_MissingDedupKeysCountedEveryTime(t *testing.T) {
 	d := testDB(t)
-	if err := d.UpsertModelPricing([]ModelPricing{{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
 		ModelPattern:  "claude-opus-4-6",
 		OutputPerMTok: 75.0,
-	}}); err != nil {
-		t.Fatalf("seed pricing: %v", err)
-	}
+	}}), "seed pricing")
 
 	mustExec := func(q string, args ...any) {
 		t.Helper()
-		if _, err := d.getWriter().Exec(q, args...); err != nil {
-			t.Fatalf("exec %q: %v", q, err)
-		}
+		_, err := d.getWriter().Exec(q, args...)
+		require.NoError(t, err, "exec %q", q)
 	}
 	mustExec(`INSERT INTO sessions (id, project, machine, agent, started_at, ended_at)
 	          VALUES ('s1', 'proj', 'local', 'claude', ?, ?)`,
@@ -691,9 +649,10 @@ func TestGetDailyUsage_MissingDedupKeysCountedEveryTime(t *testing.T) {
 		From: "2026-04-10", To: "2026-04-10", Timezone: "UTC",
 	})
 	require.NoError(t, err, "GetDailyUsage")
-	if len(result.Daily) != 1 || result.Daily[0].OutputTokens != 20 {
-		t.Errorf("output = %v, want 20 (both no-key rows counted)", result.Daily)
-	}
+	require.Len(t, result.Daily, 1,
+		"output want 20 (both no-key rows counted): %v", result.Daily)
+	assert.Equal(t, 20, result.Daily[0].OutputTokens,
+		"output want 20 (both no-key rows counted): %v", result.Daily)
 }
 
 func TestGetDailyUsageLongLivedSession(t *testing.T) {
@@ -848,10 +807,7 @@ func TestGetDailyUsageModelFilter(t *testing.T) {
 	require.Len(t, result.Daily, 1, "got")
 	day := result.Daily[0]
 	assert.Equal(t, 1000, day.InputTokens, "InputTokens")
-	if len(day.ModelsUsed) != 1 || day.ModelsUsed[0] != "gpt-5" {
-		t.Errorf("ModelsUsed = %v, want [gpt-5]",
-			day.ModelsUsed)
-	}
+	assert.Equal(t, []string{"gpt-5"}, day.ModelsUsed, "ModelsUsed")
 }
 
 func TestGetDailyUsageProjectBreakdowns(t *testing.T) {
@@ -909,19 +865,15 @@ func TestGetDailyUsageProjectBreakdowns(t *testing.T) {
 	}
 	for _, name := range []string{"proj-a", "proj-b"} {
 		pb, ok := projMap[name]
-		if !ok {
-			t.Errorf("missing ProjectBreakdown for %s", name)
+		if !assert.Truef(t, ok,
+			"missing ProjectBreakdown for %s", name) {
 			continue
 		}
-		if pb.InputTokens != 1000 {
-			t.Errorf("%s InputTokens = %d, want 1000",
-				name, pb.InputTokens)
-		}
+		assert.Equal(t, 1000, pb.InputTokens,
+			"%s InputTokens", name)
 	}
-	if math.Abs(projCostSum-day.TotalCost) > 1e-9 {
-		t.Errorf("sum(ProjectBreakdowns.Cost) = %v, "+
-			"want TotalCost = %v", projCostSum, day.TotalCost)
-	}
+	assert.InDelta(t, day.TotalCost, projCostSum, 1e-9,
+		"sum(ProjectBreakdowns.Cost) want TotalCost")
 }
 
 func TestGetDailyUsageAgentBreakdowns(t *testing.T) {
@@ -979,19 +931,15 @@ func TestGetDailyUsageAgentBreakdowns(t *testing.T) {
 	}
 	for _, name := range []string{"claude", "codex"} {
 		ab, ok := agentMap[name]
-		if !ok {
-			t.Errorf("missing AgentBreakdown for %s", name)
+		if !assert.Truef(t, ok,
+			"missing AgentBreakdown for %s", name) {
 			continue
 		}
-		if ab.InputTokens != 1000 {
-			t.Errorf("%s InputTokens = %d, want 1000",
-				name, ab.InputTokens)
-		}
+		assert.Equal(t, 1000, ab.InputTokens,
+			"%s InputTokens", name)
 	}
-	if math.Abs(agentCostSum-day.TotalCost) > 1e-9 {
-		t.Errorf("sum(AgentBreakdowns.Cost) = %v, "+
-			"want TotalCost = %v", agentCostSum, day.TotalCost)
-	}
+	assert.InDelta(t, day.TotalCost, agentCostSum, 1e-9,
+		"sum(AgentBreakdowns.Cost) want TotalCost")
 }
 
 func TestGetDailyUsageBreakdownInvariant(t *testing.T) {
@@ -1066,26 +1014,16 @@ func TestGetDailyUsageBreakdownInvariant(t *testing.T) {
 		agentCostSum += ab.Cost
 	}
 
-	if math.Abs(modelCostSum-day.TotalCost) > 1e-9 {
-		t.Errorf("sum(ModelBreakdowns.Cost) = %v, "+
-			"want TotalCost = %v", modelCostSum, day.TotalCost)
-	}
-	if math.Abs(projectCostSum-day.TotalCost) > 1e-9 {
-		t.Errorf("sum(ProjectBreakdowns.Cost) = %v, "+
-			"want TotalCost = %v", projectCostSum, day.TotalCost)
-	}
-	if math.Abs(agentCostSum-day.TotalCost) > 1e-9 {
-		t.Errorf("sum(AgentBreakdowns.Cost) = %v, "+
-			"want TotalCost = %v", agentCostSum, day.TotalCost)
-	}
-	if math.Abs(modelCostSum-projectCostSum) > 1e-9 {
-		t.Errorf("model cost sum %v != project cost sum %v",
-			modelCostSum, projectCostSum)
-	}
-	if math.Abs(modelCostSum-agentCostSum) > 1e-9 {
-		t.Errorf("model cost sum %v != agent cost sum %v",
-			modelCostSum, agentCostSum)
-	}
+	assert.InDelta(t, day.TotalCost, modelCostSum, 1e-9,
+		"sum(ModelBreakdowns.Cost) want TotalCost")
+	assert.InDelta(t, day.TotalCost, projectCostSum, 1e-9,
+		"sum(ProjectBreakdowns.Cost) want TotalCost")
+	assert.InDelta(t, day.TotalCost, agentCostSum, 1e-9,
+		"sum(AgentBreakdowns.Cost) want TotalCost")
+	assert.InDelta(t, projectCostSum, modelCostSum, 1e-9,
+		"model cost sum != project cost sum")
+	assert.InDelta(t, agentCostSum, modelCostSum, 1e-9,
+		"model cost sum != agent cost sum")
 }
 
 // BenchmarkGetDailyUsage measures the hot-path scan over a realistic
@@ -1154,15 +1092,11 @@ func TestGetTopSessionsByCost(t *testing.T) {
 	assert.Equal(t, "claude", top[0].Agent, "top[0].Agent")
 	// TotalTokens = 5000 + 2000 + 1000 + 3000 = 11000
 	assert.Equal(t, 11000, top[0].TotalTokens, "top[0].TotalTokens")
-	if top[0].Cost <= 0 {
-		t.Errorf("top[0].Cost = %v, want > 0", top[0].Cost)
-	}
+	assert.Greater(t, top[0].Cost, 0.0, "top[0].Cost want > 0")
 
 	assert.Equal(t, "sSmall", top[1].SessionID, "top[1].SessionID")
-	if top[0].Cost <= top[1].Cost {
-		t.Errorf("top[0].Cost (%v) should be > top[1].Cost (%v)",
-			top[0].Cost, top[1].Cost)
-	}
+	assert.Greater(t, top[0].Cost, top[1].Cost,
+		"top[0].Cost should be > top[1].Cost")
 }
 
 func TestGetTopSessionsByCost_DisplayNameFallback(t *testing.T) {
@@ -1248,22 +1182,14 @@ func TestGetTopSessionsByCost_DisplayNameFallback(t *testing.T) {
 		byID[e.SessionID] = e
 	}
 
-	if got := byID["s-dn"].DisplayName; got != "My Custom Name" {
-		t.Errorf("s-dn DisplayName = %q, want %q",
-			got, "My Custom Name")
-	}
-	if got := byID["s-fm"].DisplayName; got != "fix the login bug" {
-		t.Errorf("s-fm DisplayName = %q, want %q",
-			got, "fix the login bug")
-	}
-	if got := byID["s-proj"].DisplayName; got != "my-project" {
-		t.Errorf("s-proj DisplayName = %q, want %q",
-			got, "my-project")
-	}
-	if got := byID["s-id"].DisplayName; got != "s-id" {
-		t.Errorf("s-id DisplayName = %q, want %q",
-			got, "s-id")
-	}
+	assert.Equal(t, "My Custom Name", byID["s-dn"].DisplayName,
+		"s-dn DisplayName")
+	assert.Equal(t, "fix the login bug", byID["s-fm"].DisplayName,
+		"s-fm DisplayName")
+	assert.Equal(t, "my-project", byID["s-proj"].DisplayName,
+		"s-proj DisplayName")
+	assert.Equal(t, "s-id", byID["s-id"].DisplayName,
+		"s-id DisplayName")
 }
 
 // TestGetTopSessionsByCost_DedupesByClaudeMessageAndRequestID
@@ -1353,11 +1279,9 @@ func TestGetTopSessionsByCost_DedupesByClaudeMessageAndRequestID(
 	// Fork should only own the unique message: 10+20 = 30
 	// tokens. If the dedup were missing, the shared row would
 	// be counted again and this would jump to 4730.
-	if fork.TotalTokens != 30 {
-		t.Errorf("fork.TotalTokens = %d, want 30 "+
-			"(shared message should be deduped)",
-			fork.TotalTokens)
-	}
+	assert.Equal(t, 30, fork.TotalTokens,
+		"fork.TotalTokens want 30 "+
+			"(shared message should be deduped)")
 
 	// Total across both entries must equal the undeduped
 	// message sum: parent 4700 + fork 30 = 4730.
@@ -1516,24 +1440,10 @@ func TestGetUsageSessionCounts_DedupesByClaudeMessageAndRequestID(
 	})
 	requireNoError(t, err, "GetUsageSessionCounts")
 
-	if counts.Total != 1 {
-		t.Errorf(
-			"Total = %d, want 1 (fork should dedup out)",
-			counts.Total,
-		)
-	}
-	if counts.ByProject["proj"] != 1 {
-		t.Errorf(
-			"ByProject[proj] = %d, want 1",
-			counts.ByProject["proj"],
-		)
-	}
-	if counts.ByAgent["claude"] != 1 {
-		t.Errorf(
-			"ByAgent[claude] = %d, want 1",
-			counts.ByAgent["claude"],
-		)
-	}
+	assert.Equal(t, 1, counts.Total,
+		"Total want 1 (fork should dedup out)")
+	assert.Equal(t, 1, counts.ByProject["proj"], "ByProject[proj]")
+	assert.Equal(t, 1, counts.ByAgent["claude"], "ByAgent[claude]")
 }
 
 // TestUsageQueryEligibilityParity seeds messages that fail each
@@ -1623,10 +1533,8 @@ func TestUsageQueryEligibilityParity(t *testing.T) {
 	top, err := d.GetTopSessionsByCost(ctx, filter, 20)
 	requireNoError(t, err, "GetTopSessionsByCost parity")
 	require.Len(t, top, 1, "GetTopSessionsByCost len")
-	if top[0].SessionID != "good" {
-		t.Errorf("GetTopSessionsByCost[0].SessionID = %q, "+
-			"want good", top[0].SessionID)
-	}
+	assert.Equal(t, "good", top[0].SessionID,
+		"GetTopSessionsByCost[0].SessionID")
 }
 
 // TestExcludeProjectFilter verifies that ExcludeProject removes
@@ -1688,9 +1596,8 @@ func TestExcludeProjectFilter(t *testing.T) {
 	requireNoError(t, err, "GetTopSessionsByCost exclude")
 	require.Len(t, top, 2, "exclude proj-b: top len =")
 	for _, ts := range top {
-		if ts.Project == "proj-b" {
-			t.Errorf("excluded proj-b still in top sessions")
-		}
+		assert.NotEqual(t, "proj-b", ts.Project,
+			"excluded proj-b still in top sessions")
 	}
 
 	// GetUsageSessionCounts with exclude.
@@ -1749,12 +1656,11 @@ func TestUsageSessionFilters(t *testing.T) {
 		s.UserMessageCount = 3
 		s.StartedAt = new("2024-06-15T10:00:00Z")
 	})
-	if _, err := d.getWriter().Exec(
+	_, err := d.getWriter().Exec(
 		"UPDATE sessions SET is_automated = 1 WHERE id = ?",
 		"usage-filter-automated",
-	); err != nil {
-		t.Fatalf("patch automated fixture: %v", err)
-	}
+	)
+	require.NoError(t, err, "patch automated fixture")
 
 	for _, sid := range []string{
 		"usage-filter-keep",
@@ -1788,9 +1694,10 @@ func TestUsageSessionFilters(t *testing.T) {
 
 	top, err := d.GetTopSessionsByCost(ctx, filter, 10)
 	requireNoError(t, err, "GetTopSessionsByCost session filters")
-	if len(top) != 1 || top[0].SessionID != "usage-filter-keep" {
-		t.Fatalf("top sessions = %+v, want only usage-filter-keep", top)
-	}
+	require.Len(t, top, 1,
+		"top sessions want only usage-filter-keep: %+v", top)
+	require.Equal(t, "usage-filter-keep", top[0].SessionID,
+		"top sessions want only usage-filter-keep: %+v", top)
 
 	counts, err := d.GetUsageSessionCounts(ctx, filter)
 	requireNoError(t, err, "GetUsageSessionCounts session filters")
@@ -1850,10 +1757,10 @@ func TestUsageExcludeOneShotUsesUserMessageCount(t *testing.T) {
 
 	top, err := d.GetTopSessionsByCost(ctx, filter, 10)
 	requireNoError(t, err, "GetTopSessionsByCost exclude one-shot")
-	if len(top) != 1 || top[0].SessionID != "usage-two-user-messages" {
-		t.Fatalf("top sessions = %+v, want only usage-two-user-messages",
-			top)
-	}
+	require.Len(t, top, 1,
+		"top sessions want only usage-two-user-messages: %+v", top)
+	require.Equal(t, "usage-two-user-messages", top[0].SessionID,
+		"top sessions want only usage-two-user-messages: %+v", top)
 
 	counts, err := d.GetUsageSessionCounts(ctx, filter)
 	requireNoError(t, err, "GetUsageSessionCounts exclude one-shot")
@@ -1938,9 +1845,8 @@ func TestExcludeModelFilter(t *testing.T) {
 	assert.Equal(t, 1000, daily.Totals.InputTokens, "exclude opus: InputTokens")
 	require.Len(t, daily.Daily, 1, "daily len =")
 	for _, mb := range daily.Daily[0].ModelBreakdowns {
-		if mb.ModelName == "opus" {
-			t.Errorf("excluded model opus still in breakdowns")
-		}
+		assert.NotEqual(t, "opus", mb.ModelName,
+			"excluded model opus still in breakdowns")
 	}
 }
 
@@ -2118,22 +2024,19 @@ func TestGetDailyUsage_PricingPrecedence(t *testing.T) {
 			})
 			requireNoError(t, err, "GetDailyUsage")
 
-			if math.Abs(result.Totals.TotalCost-tt.wantCost) > 0.01 {
-				t.Errorf("TotalCost = %.4f, want %.4f", result.Totals.TotalCost, tt.wantCost)
-			}
+			assert.InDelta(t, tt.wantCost, result.Totals.TotalCost, 0.01,
+				"TotalCost")
 		})
 	}
 }
 
 func seedOpusPricing(t *testing.T, d *DB) {
 	t.Helper()
-	if err := d.UpsertModelPricing([]ModelPricing{{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
 		ModelPattern: "claude-opus-4-6",
 		InputPerMTok: 5.0, OutputPerMTok: 25.0,
 		CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.5,
-	}}); err != nil {
-		t.Fatalf("UpsertModelPricing: %v", err)
-	}
+	}}), "UpsertModelPricing")
 }
 
 func TestGetSessionUsage_PricedModel(t *testing.T) {
@@ -2158,23 +2061,15 @@ func TestGetSessionUsage_PricedModel(t *testing.T) {
 
 	u, err := d.GetSessionUsage(ctx, "claude:s1")
 	requireNoError(t, err, "GetSessionUsage")
-	if u == nil {
-		t.Fatal("usage is nil")
-	}
+	require.NotNil(t, u, "usage is nil")
 	require.True(t, u.HasCost, "HasCost = false, want true")
-	if math.Abs(u.CostUSD-0.0175) > 1e-9 {
-		t.Errorf("CostUSD = %v, want 0.0175", u.CostUSD)
-	}
-	if u.TotalOutputTokens != 500 || u.PeakContextTokens != 1200 {
-		t.Errorf("token fields = %d/%d, want 500/1200",
-			u.TotalOutputTokens, u.PeakContextTokens)
-	}
-	if len(u.Models) != 1 || u.Models[0] != "claude-opus-4-6" {
-		t.Errorf("Models = %v, want [claude-opus-4-6]", u.Models)
-	}
-	if len(u.UnpricedModels) != 0 {
-		t.Errorf("UnpricedModels = %v, want empty", u.UnpricedModels)
-	}
+	assert.InDelta(t, 0.0175, u.CostUSD, 1e-9, "CostUSD")
+	assert.Equal(t, 500, u.TotalOutputTokens,
+		"TotalOutputTokens want 500")
+	assert.Equal(t, 1200, u.PeakContextTokens,
+		"PeakContextTokens want 1200")
+	assert.Equal(t, []string{"claude-opus-4-6"}, u.Models, "Models")
+	assert.Empty(t, u.UnpricedModels, "UnpricedModels")
 }
 
 func TestGetSessionUsage_UnpricedModel(t *testing.T) {
@@ -2197,9 +2092,8 @@ func TestGetSessionUsage_UnpricedModel(t *testing.T) {
 	requireNoError(t, err, "GetSessionUsage")
 	assert.False(t, u.HasCost, "HasCost = true, want false (unpriced)")
 	assert.Equal(t, 0.0, u.CostUSD, "CostUSD")
-	if len(u.UnpricedModels) != 1 || u.UnpricedModels[0] != "local-llama-99" {
-		t.Errorf("UnpricedModels = %v, want [local-llama-99]", u.UnpricedModels)
-	}
+	assert.Equal(t, []string{"local-llama-99"}, u.UnpricedModels,
+		"UnpricedModels")
 }
 
 func TestGetSessionUsage_MixedPricedUnpriced(t *testing.T) {
@@ -2229,9 +2123,8 @@ func TestGetSessionUsage_MixedPricedUnpriced(t *testing.T) {
 	requireNoError(t, err, "GetSessionUsage")
 	assert.False(t, u.HasCost, "HasCost = true, want false (mixed)")
 	assert.Equal(t, 0.0, u.CostUSD, "CostUSD")
-	if len(u.UnpricedModels) != 1 || u.UnpricedModels[0] != "local-llama-99" {
-		t.Errorf("UnpricedModels = %v, want [local-llama-99]", u.UnpricedModels)
-	}
+	assert.Equal(t, []string{"local-llama-99"}, u.UnpricedModels,
+		"UnpricedModels")
 }
 
 func TestGetSessionUsage_ExplicitCostOnly(t *testing.T) {
@@ -2242,24 +2135,18 @@ func TestGetSessionUsage_ExplicitCostOnly(t *testing.T) {
 		s.StartedAt = new("2026-05-20T10:00:00Z")
 	})
 	cost := 0.02
-	if err := d.ReplaceSessionUsageEvents("hermes:s4", []UsageEvent{{
+	require.NoError(t, d.ReplaceSessionUsageEvents("hermes:s4", []UsageEvent{{
 		SessionID: "hermes:s4", Source: "session", Model: "gpt-5.4",
 		InputTokens: 100, OutputTokens: 50,
 		CostUSD: &cost, CostStatus: "estimated", CostSource: "hermes",
 		OccurredAt: "2026-05-20T10:05:00Z", DedupKey: "session:hermes:s4",
-	}}); err != nil {
-		t.Fatalf("ReplaceSessionUsageEvents: %v", err)
-	}
+	}}), "ReplaceSessionUsageEvents")
 
 	u, err := d.GetSessionUsage(ctx, "hermes:s4")
 	requireNoError(t, err, "GetSessionUsage")
 	assert.True(t, u.HasCost, "HasCost = false, want true (explicit cost)")
-	if math.Abs(u.CostUSD-0.02) > 1e-9 {
-		t.Errorf("CostUSD = %v, want 0.02", u.CostUSD)
-	}
-	if len(u.Models) != 1 || u.Models[0] != "gpt-5.4" {
-		t.Errorf("Models = %v, want [gpt-5.4]", u.Models)
-	}
+	assert.InDelta(t, 0.02, u.CostUSD, 1e-9, "CostUSD")
+	assert.Equal(t, []string{"gpt-5.4"}, u.Models, "Models")
 }
 
 func TestGetSessionUsage_DedupesDuplicateClaudeRows(t *testing.T) {
@@ -2289,9 +2176,7 @@ func TestGetSessionUsage_DedupesDuplicateClaudeRows(t *testing.T) {
 	u, err := d.GetSessionUsage(ctx, "claude:s6")
 	requireNoError(t, err, "GetSessionUsage")
 	// One row priced at 1000*5/1e6 + 500*25/1e6 = 0.0175; deduped, not 0.035.
-	if math.Abs(u.CostUSD-0.0175) > 1e-9 {
-		t.Errorf("CostUSD = %v, want 0.0175 (deduped)", u.CostUSD)
-	}
+	assert.InDelta(t, 0.0175, u.CostUSD, 1e-9, "CostUSD want 0.0175 (deduped)")
 	assert.True(t, u.HasCost, "HasCost = false, want true")
 }
 
@@ -2309,18 +2194,14 @@ func TestGetSessionUsage_NoTokenRowsKeepsMetadata(t *testing.T) {
 
 	u, err := d.GetSessionUsage(ctx, "claude:s5")
 	requireNoError(t, err, "GetSessionUsage")
-	if u == nil {
-		t.Fatal("usage is nil")
-	}
-	if u.TotalOutputTokens != 700 || u.PeakContextTokens != 3000 {
-		t.Errorf("tokens = %d/%d, want 700/3000",
-			u.TotalOutputTokens, u.PeakContextTokens)
-	}
+	require.NotNil(t, u, "usage is nil")
+	assert.Equal(t, 700, u.TotalOutputTokens,
+		"TotalOutputTokens want 700")
+	assert.Equal(t, 3000, u.PeakContextTokens,
+		"PeakContextTokens want 3000")
 	assert.True(t, u.HasTokenData, "HasTokenData = false, want true")
 	assert.False(t, u.HasCost, "HasCost = true, want false (no cost rows)")
-	if u.Models == nil {
-		t.Error("Models = nil, want non-nil empty slice")
-	}
+	assert.NotNil(t, u.Models, "Models = nil, want non-nil empty slice")
 }
 
 func TestGetSessionUsage_NotFound(t *testing.T) {
