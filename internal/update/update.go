@@ -103,8 +103,18 @@ func CheckForUpdate(
 		"%s/%s/SHA256SUMS", githubReleaseDownloadBase, tag,
 	)
 
+	// HEAD the asset to confirm it exists for this platform. The previous
+	// API-based code returned "no release asset for OS/ARCH" up front; now
+	// that we construct the URL ourselves, we have to verify it resolves.
+	size, err := fetchContentLength(downloadURL)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"no release asset for %s/%s: %w",
+			runtime.GOOS, runtime.GOARCH, err,
+		)
+	}
+
 	checksum, _ := fetchChecksumFromFile(checksumsURL, assetName)
-	size, _ := fetchContentLength(downloadURL)
 
 	return &UpdateInfo{
 		CurrentVersion: currentVersion,
