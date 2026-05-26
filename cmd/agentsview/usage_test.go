@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/pricing"
 )
 
 func TestFmtCost(t *testing.T) {
@@ -169,5 +171,157 @@ func TestFormatDailyUsageJSON(t *testing.T) {
 		if _, ok := totals[f]; !ok {
 			t.Errorf("missing field %q in totals", f)
 		}
+	}
+}
+
+func TestRefreshPricingIfStale_FreshAttemptSkipsFetch(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+
+	// Last attempt 10 minutes ago, cooldown 1 hour: skip.
+	prev := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	if err := d.SetPricingMeta(
+		pricingRefreshMetaKey, prev,
+	); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	called := false
+	refreshed, err := refreshPricingIfStale(
+		d, func() ([]pricing.ModelPricing, error) {
+			called = true
+			return nil, nil
+		}, time.Hour, now,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if refreshed {
+		t.Error("refreshed = true, want false within cooldown")
+	}
+	if called {
+		t.Error("fetch should not run within cooldown")
+	}
+
+	// Meta value preserved (we did not overwrite it).
+	got, err := d.GetPricingMeta(pricingRefreshMetaKey)
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if got != prev {
+		t.Errorf("meta = %q, want %q (unchanged)", got, prev)
+	}
+}
+
+func TestRefreshPricingIfStale_StaleTriggersFetch(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+
+	// Last attempt 2 hours ago, cooldown 1 hour: refresh.
+	prev := now.Add(-2 * time.Hour).Format(time.RFC3339)
+	if err := d.SetPricingMeta(
+		pricingRefreshMetaKey, prev,
+	); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	refreshed, err := refreshPricingIfStale(
+		d, func() ([]pricing.ModelPricing, error) {
+			return []pricing.ModelPricing{{
+				ModelPattern:  "gpt-5.5",
+				InputPerMTok:  1.25,
+				OutputPerMTok: 10.0,
+			}}, nil
+		}, time.Hour, now,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("refreshed = false, want true after cooldown")
+	}
+
+	// Pricing row written.
+	p, err := d.GetModelPricing("gpt-5.5")
+	if err != nil {
+		t.Fatalf("get pricing: %v", err)
+	}
+	if p == nil || p.OutputPerMTok != 10.0 {
+		t.Errorf("gpt-5.5 row missing or wrong: %+v", p)
+	}
+
+	// Meta updated to now.
+	got, err := d.GetPricingMeta(pricingRefreshMetaKey)
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if got != now.Format(time.RFC3339) {
+		t.Errorf("meta = %q, want %q", got, now.Format(time.RFC3339))
+	}
+}
+
+func TestRefreshPricingIfStale_NeverAttemptedTriggersFetch(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+
+	called := false
+	refreshed, err := refreshPricingIfStale(
+		d, func() ([]pricing.ModelPricing, error) {
+			called = true
+			return nil, nil
+		}, time.Hour, now,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !called {
+		t.Error("fetch should run when meta empty")
+	}
+	if !refreshed {
+		t.Error("refreshed = false, want true on first attempt")
+	}
+}
+
+func TestRefreshPricingIfStale_FetchFailureRecordsAttempt(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+
+	wantErr := errors.New("network down")
+	refreshed, err := refreshPricingIfStale(
+		d, func() ([]pricing.ModelPricing, error) {
+			return nil, wantErr
+		}, time.Hour, now,
+	)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want network down", err)
+	}
+	if refreshed {
+		t.Error("refreshed = true, want false on fetch failure")
+	}
+
+	// Cooldown still recorded so a persistent failure doesn't
+	// retry on every CLI call.
+	got, err := d.GetPricingMeta(pricingRefreshMetaKey)
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if got != now.Format(time.RFC3339) {
+		t.Errorf("meta = %q, want %q (recorded on failure)",
+			got, now.Format(time.RFC3339))
+	}
+
+	// A second call within cooldown skips the fetch entirely.
+	called := false
+	_, err = refreshPricingIfStale(
+		d, func() ([]pricing.ModelPricing, error) {
+			called = true
+			return nil, nil
+		}, time.Hour, now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("second call err: %v", err)
+	}
+	if called {
+		t.Error("second call should be suppressed by cooldown")
 	}
 }

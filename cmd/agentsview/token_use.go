@@ -336,6 +336,28 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
 		return nil, tokenUseExitNotFound, nil
 	}
+	// If the session uses models the local pricing catalog
+	// doesn't know about, try a one-off LiteLLM refresh and
+	// re-query — newly released models often hit this until
+	// the user next runs `agentsview serve`. Skip when a
+	// server is active (it owns pricing writes) or the
+	// cooldown hasn't elapsed.
+	if len(u.UnpricedModels) > 0 && !serverActive {
+		refreshed, refErr := refreshPricingIfStale(
+			database, pricing.FetchLiteLLMPricing,
+			pricingRefreshCooldown, time.Now(),
+		)
+		if refErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: pricing refresh failed: %v\n", refErr)
+		} else if refreshed {
+			if u2, e := database.GetSessionUsage(
+				ctx, resolvedID,
+			); e == nil && u2 != nil {
+				u = u2
+			}
+		}
+	}
 	if u.Agent == "" {
 		if def, ok := parser.AgentByPrefix(u.SessionID); ok {
 			u.Agent = string(def.Type)
