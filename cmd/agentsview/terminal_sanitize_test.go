@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSanitizeTerminal(t *testing.T) {
@@ -91,19 +93,13 @@ func TestSanitizeTerminal(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := sanitizeTerminal(tc.in)
-			if got != tc.want {
-				t.Errorf(
-					"sanitizeTerminal(%q) = %q, want %q",
-					tc.in, got, tc.want,
-				)
-			}
+			assert.Equal(t, tc.want, got,
+				"sanitizeTerminal(%q)", tc.in)
 			// Post-condition: no ESC byte or NUL in output.
-			if strings.ContainsRune(got, 0x1b) {
-				t.Errorf("output still contains ESC: %q", got)
-			}
-			if strings.ContainsRune(got, 0) {
-				t.Errorf("output still contains NUL: %q", got)
-			}
+			assert.False(t, strings.ContainsRune(got, 0x1b),
+				"output still contains ESC: %q", got)
+			assert.False(t, strings.ContainsRune(got, 0),
+				"output still contains NUL: %q", got)
 		})
 	}
 }

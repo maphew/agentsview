@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"os"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func executeCommand(root *cobra.Command, args ...string) (string, error) {
@@ -27,9 +27,7 @@ func executeCommandC(root *cobra.Command, args ...string) (*cobra.Command, strin
 
 func TestRootHelpShowsKeySectionsAndCommands(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "--help")
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	require.NoError(t, err, "Execute")
 	for _, want := range []string{
 		"Usage:\n  agentsview [flags]\n  agentsview <command> [flags]",
 		"Core Commands:",
@@ -43,41 +41,32 @@ func TestRootHelpShowsKeySectionsAndCommands(t *testing.T) {
 		"Flags:",
 		"--version",
 	} {
-		if !strings.Contains(help, want) {
-			t.Fatalf("help missing %q\n%s", want, help)
-		}
+		assert.Contains(t, help, want, "help missing %q", want)
 	}
 	for _, unwanted := range []string{
 		"--host string",
 		"--port int",
 	} {
-		if strings.Contains(help, unwanted) {
-			t.Fatalf("root help should not include serve flag %q\n%s", unwanted, help)
-		}
+		assert.NotContains(t, help, unwanted,
+			"root help should not include serve flag %q", unwanted)
 	}
 }
 
 func TestRootNoArgsShowsHelp(t *testing.T) {
 	out, err := executeCommand(newRootCommand())
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	require.NoError(t, err, "Execute")
 	for _, want := range []string{
 		"Usage:\n  agentsview [flags]\n  agentsview <command> [flags]",
 		"Core Commands:",
 		"serve                  Start server",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("output missing %q\n%s", want, out)
-		}
+		assert.Contains(t, out, want, "output missing %q", want)
 	}
 }
 
 func TestRootHelpKeepsSummaryClean(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "--help")
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	require.NoError(t, err, "Execute")
 	for _, unwanted := range []string{
 		"agentsview serve [flags]",
 		"\nCommands:\n",
@@ -86,9 +75,8 @@ func TestRootHelpKeepsSummaryClean(t *testing.T) {
 		"completion powershell",
 		"completion zsh",
 	} {
-		if strings.Contains(help, unwanted) {
-			t.Fatalf("root help should not include %q\n%s", unwanted, help)
-		}
+		assert.NotContains(t, help, unwanted,
+			"root help should not include %q", unwanted)
 	}
 }
 
@@ -105,36 +93,26 @@ func TestNormalizeFlagHelpWidth(t *testing.T) {
 		{in: 220, want: 160},
 	}
 	for _, tt := range tests {
-		if got := normalizeFlagHelpWidth(tt.in); got != tt.want {
-			t.Fatalf("normalizeFlagHelpWidth(%d) = %d, want %d", tt.in, got, tt.want)
-		}
+		assert.Equal(t, tt.want, normalizeFlagHelpWidth(tt.in),
+			"normalizeFlagHelpWidth(%d)", tt.in)
 	}
 }
 
 func TestFlagHelpWidthFallback(t *testing.T) {
-	if got := flagHelpWidth(&bytes.Buffer{}); got != 80 {
-		t.Fatalf("flagHelpWidth(buffer) = %d, want 80", got)
-	}
+	assert.Equal(t, 80, flagHelpWidth(&bytes.Buffer{}),
+		"flagHelpWidth(buffer)")
 
 	f, err := os.CreateTemp(t.TempDir(), "help-width")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
+	require.NoError(t, err, "CreateTemp")
 	defer f.Close()
 
-	if got := flagHelpWidth(f); got != 80 {
-		t.Fatalf("flagHelpWidth(file) = %d, want 80", got)
-	}
+	assert.Equal(t, 80, flagHelpWidth(f), "flagHelpWidth(file)")
 }
 
 func TestRootVersionFlag(t *testing.T) {
 	got, err := executeCommand(newRootCommand(), "--version")
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(got, "agentsview ") {
-		t.Fatalf("version output = %q", got)
-	}
+	require.NoError(t, err, "Execute")
+	assert.Contains(t, got, "agentsview ", "version output = %q", got)
 }
 
 func TestNormalizeLegacyLongFlags(t *testing.T) {
@@ -155,17 +133,13 @@ func TestNormalizeLegacyLongFlags(t *testing.T) {
 		"--",
 		"-port", "1000",
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("normalized = %#v, want %#v", got, want)
-	}
+	assert.Equal(t, want, got)
 	wantRewrites := []string{
 		"-host -> --host",
 		"-port -> --port",
 		"-full -> --full",
 	}
-	if !slices.Equal(rewrites, wantRewrites) {
-		t.Fatalf("rewrites = %#v, want %#v", rewrites, wantRewrites)
-	}
+	assert.Equal(t, wantRewrites, rewrites)
 }
 
 func TestNormalizeLegacyLongFlagsSkipsShortFlagsAndNumbers(t *testing.T) {
@@ -178,12 +152,8 @@ func TestNormalizeLegacyLongFlagsSkipsShortFlagsAndNumbers(t *testing.T) {
 		"--port", "9090",
 	}, flags)
 	want := []string{"-h", "-v", "-1", "-abc", "--port", "9090"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("normalized = %#v, want %#v", got, want)
-	}
-	if len(rewrites) != 0 {
-		t.Fatalf("rewrites = %#v, want none", rewrites)
-	}
+	assert.Equal(t, want, got)
+	assert.Empty(t, rewrites)
 }
 
 func TestLegacyLongFlagWarning(t *testing.T) {
@@ -192,21 +162,16 @@ func TestLegacyLongFlagWarning(t *testing.T) {
 		"-port -> --port",
 	})
 	want := "warning: deprecated single-dash long flags detected; use GNU-style long flags instead: -host -> --host, -port -> --port\n"
-	if got != want {
-		t.Fatalf("warning = %q, want %q", got, want)
-	}
+	assert.Equal(t, want, got)
 }
 
 func TestExecuteCLIWithLegacyFlagCompatWarnsOnce(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := executeCLIWithLegacyFlagCompat([]string{"-version"}, &stdout, &stderr); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "agentsview ") {
-		t.Fatalf("version output = %q", stdout.String())
-	}
+	require.NoError(t,
+		executeCLIWithLegacyFlagCompat([]string{"-version"}, &stdout, &stderr),
+		"Execute")
+	assert.Contains(t, stdout.String(), "agentsview ",
+		"version output = %q", stdout.String())
 	want := "warning: deprecated single-dash long flags detected; use GNU-style long flags instead: -version -> --version\n"
-	if stderr.String() != want {
-		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
-	}
+	assert.Equal(t, want, stderr.String())
 }

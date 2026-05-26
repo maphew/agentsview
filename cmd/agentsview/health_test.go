@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -23,10 +24,7 @@ func TestGradeCell(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := gradeCell(tc.in); got != tc.want {
-				t.Errorf("gradeCell = %q, want %q",
-					got, tc.want)
-			}
+			assert.Equal(t, tc.want, gradeCell(tc.in))
 		})
 	}
 }
@@ -43,22 +41,15 @@ func TestFormatPressure(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := formatPressure(tc.in); got != tc.want {
-				t.Errorf("formatPressure = %q, want %q",
-					got, tc.want)
-			}
+			assert.Equal(t, tc.want, formatPressure(tc.in))
 		})
 	}
 }
 
 func TestFormatScore(t *testing.T) {
 	score := 87
-	if got := formatScore(nil); got != "" {
-		t.Errorf("nil score = %q, want empty", got)
-	}
-	if got := formatScore(&score); got != " (score 87)" {
-		t.Errorf("score = %q, want ' (score 87)'", got)
-	}
+	assert.Empty(t, formatScore(nil), "nil score should be empty")
+	assert.Equal(t, " (score 87)", formatScore(&score))
 }
 
 func TestFormatConfidence(t *testing.T) {
@@ -88,11 +79,7 @@ func TestFormatConfidence(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatConfidence(tc.conf, tc.endedWith)
-			if got != tc.want {
-				t.Errorf("formatConfidence = %q, want %q",
-					got, tc.want)
-			}
+			assert.Equal(t, tc.want, formatConfidence(tc.conf, tc.endedWith))
 		})
 	}
 }
@@ -117,10 +104,8 @@ func TestShortDate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shortDate(tc.in); got != tc.want {
-				t.Errorf("shortDate(%q) = %q, want %q",
-					tc.in, got, tc.want)
-			}
+			assert.Equal(t, tc.want, shortDate(tc.in),
+				"shortDate(%q)", tc.in)
 		})
 	}
 }
@@ -139,10 +124,8 @@ func TestTruncate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := truncate(tc.in, tc.n); got != tc.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q",
-					tc.in, tc.n, got, tc.want)
-			}
+			assert.Equal(t, tc.want, truncate(tc.in, tc.n),
+				"truncate(%q, %d)", tc.in, tc.n)
 		})
 	}
 }
@@ -159,10 +142,8 @@ func TestShortID(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shortID(tc.in); got != tc.want {
-				t.Errorf("shortID(%q) = %q, want %q",
-					tc.in, got, tc.want)
-			}
+			assert.Equal(t, tc.want, shortID(tc.in),
+				"shortID(%q)", tc.in)
 		})
 	}
 }
@@ -204,10 +185,7 @@ func TestPrintHealthList(t *testing.T) {
 		"roborev", "codex", "D", "failed",
 		"abc12345", "def67890",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q\n--- output ---\n%s",
-				want, out)
-		}
+		assert.Contains(t, out, want, "output missing %q", want)
 	}
 }
 
@@ -258,30 +236,22 @@ func TestPrintHealthDetail(t *testing.T) {
 		"Compactions:          1",
 		"Context pressure:     45%",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q\n--- output ---\n%s",
-				want, out)
-		}
+		assert.Contains(t, out, want, "output missing %q", want)
 	}
 }
 
 func TestResolveSessionID(t *testing.T) {
 	dir := t.TempDir()
 	database, err := db.Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	require.NoError(t, err, "open db")
 	t.Cleanup(func() { database.Close() })
 
 	upsert := func(id string) {
 		t.Helper()
-		err := database.UpsertSession(db.Session{
+		require.NoError(t, database.UpsertSession(db.Session{
 			ID: id, Project: "p", Machine: "m",
 			Agent: "claude", MessageCount: 1,
-		})
-		if err != nil {
-			t.Fatalf("upsert %q: %v", id, err)
-		}
+		}), "upsert %q", id)
 	}
 
 	// "abcdef12" is both a full session ID and the short-ID
@@ -301,46 +271,30 @@ func TestResolveSessionID(t *testing.T) {
 
 	t.Run("unique substring resolves", func(t *testing.T) {
 		got, err := resolveSessionID(ctx, database, "unique")
-		if err != nil {
-			t.Fatalf("resolveSessionID: %v", err)
-		}
-		if got != "unique-session-id" {
-			t.Errorf("got %q, want unique-session-id", got)
-		}
+		require.NoError(t, err, "resolveSessionID")
+		assert.Equal(t, "unique-session-id", got)
 	})
 
 	t.Run("exact full id matching another short id is ambiguous",
 		func(t *testing.T) {
 			_, err := resolveSessionID(ctx, database, "abcdef12")
-			if err == nil {
-				t.Fatal("expected ambiguity error, got nil")
-			}
-			if !strings.Contains(err.Error(), "ambiguous") {
-				t.Errorf("error %q lacks 'ambiguous'",
-					err.Error())
-			}
+			require.Error(t, err, "expected ambiguity error")
+			assert.Contains(t, err.Error(), "ambiguous",
+				"error lacks 'ambiguous'")
 		})
 
 	t.Run("no match returns empty", func(t *testing.T) {
 		got, err := resolveSessionID(ctx, database, "zzznope")
-		if err != nil {
-			t.Fatalf("resolveSessionID: %v", err)
-		}
-		if got != "" {
-			t.Errorf("got %q, want empty", got)
-		}
+		require.NoError(t, err, "resolveSessionID")
+		assert.Empty(t, got)
 	})
 
 	t.Run("unique full id resolves", func(t *testing.T) {
 		got, err := resolveSessionID(
 			ctx, database, "abcdef1234567890",
 		)
-		if err != nil {
-			t.Fatalf("resolveSessionID: %v", err)
-		}
-		if got != "abcdef1234567890" {
-			t.Errorf("got %q, want abcdef1234567890", got)
-		}
+		require.NoError(t, err, "resolveSessionID")
+		assert.Equal(t, "abcdef1234567890", got)
 	})
 
 	t.Run("exact id contained in host-prefixed id resolves",
@@ -348,15 +302,8 @@ func TestResolveSessionID(t *testing.T) {
 			got, err := resolveSessionID(
 				ctx, database, "local-uuid-aaaa-bbbb",
 			)
-			if err != nil {
-				t.Fatalf("resolveSessionID: %v", err)
-			}
-			if got != "local-uuid-aaaa-bbbb" {
-				t.Errorf(
-					"got %q, want local-uuid-aaaa-bbbb",
-					got,
-				)
-			}
+			require.NoError(t, err, "resolveSessionID")
+			assert.Equal(t, "local-uuid-aaaa-bbbb", got)
 		})
 }
 
@@ -369,21 +316,16 @@ func TestResolveSessionID(t *testing.T) {
 func TestResolveSessionIDCollisionBeyondTopFew(t *testing.T) {
 	dir := t.TempDir()
 	database, err := db.Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	require.NoError(t, err, "open db")
 	t.Cleanup(func() { database.Close() })
 
 	upsert := func(id string, started string) {
 		t.Helper()
-		err := database.UpsertSession(db.Session{
+		require.NoError(t, database.UpsertSession(db.Session{
 			ID: id, Project: "p", Machine: "m",
 			Agent: "claude", MessageCount: 1,
 			StartedAt: &started,
-		})
-		if err != nil {
-			t.Fatalf("upsert %q: %v", id, err)
-		}
+		}), "upsert %q", id)
 	}
 
 	// shortID() truncates the segment after the last "~" to
@@ -411,12 +353,9 @@ func TestResolveSessionIDCollisionBeyondTopFew(t *testing.T) {
 
 	ctx := context.Background()
 	_, err = resolveSessionID(ctx, database, partial)
-	if err == nil {
-		t.Fatal("expected ambiguity error, got nil")
-	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error %q lacks 'ambiguous'", err.Error())
-	}
+	require.Error(t, err, "expected ambiguity error")
+	assert.Contains(t, err.Error(), "ambiguous",
+		"error lacks 'ambiguous'")
 }
 
 func parseLocalDate(t *testing.T, ts string) string {

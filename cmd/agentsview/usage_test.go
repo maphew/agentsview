@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -26,10 +28,8 @@ func TestFmtCost(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fmtCost(tc.in); got != tc.want {
-				t.Errorf("fmtCost(%v) = %q, want %q",
-					tc.in, got, tc.want)
-			}
+			assert.Equal(t, tc.want, fmtCost(tc.in),
+				"fmtCost(%v)", tc.in)
 		})
 	}
 }
@@ -77,10 +77,7 @@ func TestResolveDefaultSince(t *testing.T) {
 			got := resolveDefaultSince(
 				tc.since, tc.until, tc.all, now, utc,
 			)
-			if got != tc.want {
-				t.Errorf("resolveDefaultSince = %q, want %q",
-					got, tc.want)
-			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -118,30 +115,20 @@ func TestFormatDailyUsageJSON(t *testing.T) {
 	}
 
 	out, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
-	}
+	require.NoError(t, err, "json.Marshal failed")
 
 	var decoded map[string]json.RawMessage
-	if err := json.Unmarshal(out, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal failed: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(out, &decoded),
+		"json.Unmarshal failed")
 
-	if _, ok := decoded["daily"]; !ok {
-		t.Error("missing 'daily' key in JSON output")
-	}
-	if _, ok := decoded["totals"]; !ok {
-		t.Error("missing 'totals' key in JSON output")
-	}
+	assert.Contains(t, decoded, "daily", "missing 'daily' key in JSON output")
+	assert.Contains(t, decoded, "totals", "missing 'totals' key in JSON output")
 
 	// Verify daily array has expected entry
 	var daily []map[string]json.RawMessage
-	if err := json.Unmarshal(decoded["daily"], &daily); err != nil {
-		t.Fatalf("parsing daily array: %v", err)
-	}
-	if len(daily) != 1 {
-		t.Fatalf("daily length = %d, want 1", len(daily))
-	}
+	require.NoError(t, json.Unmarshal(decoded["daily"], &daily),
+		"parsing daily array")
+	require.Len(t, daily, 1, "daily length")
 
 	// Check expected fields exist in daily entry
 	wantFields := []string{
@@ -150,24 +137,21 @@ func TestFormatDailyUsageJSON(t *testing.T) {
 		"totalCost", "modelsUsed", "modelBreakdowns",
 	}
 	for _, f := range wantFields {
-		if _, ok := daily[0][f]; !ok {
-			t.Errorf("missing field %q in daily entry", f)
-		}
+		assert.Contains(t, daily[0], f,
+			"missing field %q in daily entry", f)
 	}
 
 	// Verify totals fields
 	var totals map[string]json.RawMessage
-	if err := json.Unmarshal(decoded["totals"], &totals); err != nil {
-		t.Fatalf("parsing totals: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(decoded["totals"], &totals),
+		"parsing totals")
 	totalFields := []string{
 		"inputTokens", "outputTokens",
 		"cacheCreationTokens", "cacheReadTokens",
 		"totalCost",
 	}
 	for _, f := range totalFields {
-		if _, ok := totals[f]; !ok {
-			t.Errorf("missing field %q in totals", f)
-		}
+		assert.Contains(t, totals, f,
+			"missing field %q in totals", f)
 	}
 }

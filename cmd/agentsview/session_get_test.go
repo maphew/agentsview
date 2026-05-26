@@ -2,9 +2,10 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/service"
 )
 
@@ -13,13 +14,10 @@ func TestPrintSessionDetailShowsSecretLeak(t *testing.T) {
 	d.ID = "s1"
 	d.SecretLeakCount = 3
 	var buf bytes.Buffer
-	if err := printSessionDetailHuman(&buf, d); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, printSessionDetailHuman(&buf, d))
 	out := buf.String()
-	if !strings.Contains(out, "Secrets") || !strings.Contains(out, "3") {
-		t.Errorf("detail output missing secret leak count:\n%s", out)
-	}
+	assert.Contains(t, out, "Secrets")
+	assert.Contains(t, out, "3")
 }
 
 func TestPrintSessionDetailHidesZeroSecretLeak(t *testing.T) {
@@ -27,10 +25,7 @@ func TestPrintSessionDetailHidesZeroSecretLeak(t *testing.T) {
 	d.ID = "s1"
 	d.SecretLeakCount = 0
 	var buf bytes.Buffer
-	if err := printSessionDetailHuman(&buf, d); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), "Secrets") {
-		t.Errorf("clean session should not show a Secrets line:\n%s", buf.String())
-	}
+	require.NoError(t, printSessionDetailHuman(&buf, d))
+	assert.NotContains(t, buf.String(), "Secrets",
+		"clean session should not show a Secrets line")
 }
