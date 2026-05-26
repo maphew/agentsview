@@ -282,6 +282,7 @@ func TestBuildCannedPromptIncludesBoundaries(t *testing.T) {
 		Kind:     CannedToolReliabilityReview,
 		DateFrom: "2025-01-15",
 		DateTo:   "2025-01-16",
+		Focus:    "Emphasize repeated shell failures.",
 		EvidenceRefs: []CannedEvidenceRef{
 			{ID: "signals:tool_health", Description: "tool health"},
 		},
@@ -298,6 +299,8 @@ func TestBuildCannedPromptIncludesBoundaries(t *testing.T) {
 		"Output JSON only",
 		"Do not recalculate, override",
 		"tool_reliability_review",
+		"User focus",
+		"Emphasize repeated shell failures.",
 		hash,
 		"Aggregate payload JSON",
 	} {

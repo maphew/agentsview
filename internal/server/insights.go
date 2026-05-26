@@ -454,6 +454,11 @@ func (s *Server) handleGenerateCannedInsight(
 			"llm_opt_in must be true for canned insights")
 		return
 	}
+	if len([]rune(strings.TrimSpace(req.Prompt))) > insight.MaxCannedFocusRunes {
+		writeError(w, http.StatusBadRequest,
+			"prompt is too long for canned insight focus")
+		return
+	}
 	if !timeutil.IsValidDate(req.DateFrom) {
 		writeError(w, http.StatusBadRequest,
 			"invalid date_from: use YYYY-MM-DD")
@@ -518,7 +523,7 @@ func (s *Server) handleGenerateCannedInsight(
 			return
 		}
 		if cached != nil {
-			cached.CacheStatus = "hit"
+			markInsightCacheHit(cached)
 			if !status("cache_hit") {
 				return
 			}
@@ -657,6 +662,26 @@ func (s *Server) handleGenerateCannedInsight(
 		return
 	}
 	sendJSON("done", saved)
+}
+
+func markInsightCacheHit(s *db.Insight) {
+	if s == nil {
+		return
+	}
+	s.CacheStatus = "hit"
+	if strings.TrimSpace(s.ProvenanceJSON) == "" {
+		return
+	}
+	var prov map[string]any
+	if err := json.Unmarshal([]byte(s.ProvenanceJSON), &prov); err != nil {
+		return
+	}
+	prov["cache_status"] = "hit"
+	data, err := json.Marshal(prov)
+	if err != nil {
+		return
+	}
+	s.ProvenanceJSON = string(data)
 }
 
 func (s *Server) buildCannedPayload(
