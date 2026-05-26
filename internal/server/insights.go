@@ -17,8 +17,9 @@ import (
 )
 
 var validInsightTypes = map[string]bool{
-	"daily_activity": true,
-	"agent_analysis": true,
+	"daily_activity":   true,
+	"agent_analysis":   true,
+	insight.CannedType: true,
 }
 
 func (s *Server) handleListInsights(
@@ -29,7 +30,7 @@ func (s *Server) handleListInsights(
 	typ := q.Get("type")
 	if typ != "" && !validInsightTypes[typ] {
 		writeError(w, http.StatusBadRequest,
-			"invalid type: must be daily_activity or agent_analysis")
+			"invalid type: must be daily_activity, agent_analysis, or llm_canned")
 		return
 	}
 
@@ -126,12 +127,15 @@ func (s *Server) handleDeleteInsight(
 }
 
 type generateInsightRequest struct {
-	Type     string `json:"type"`
-	DateFrom string `json:"date_from"`
-	DateTo   string `json:"date_to"`
-	Project  string `json:"project"`
-	Prompt   string `json:"prompt"`
-	Agent    string `json:"agent"`
+	Type         string `json:"type"`
+	DateFrom     string `json:"date_from"`
+	DateTo       string `json:"date_to"`
+	Project      string `json:"project"`
+	Prompt       string `json:"prompt"`
+	Agent        string `json:"agent"`
+	Kind         string `json:"kind"`
+	LLMOptIn     bool   `json:"llm_opt_in"`
+	ForceRefresh bool   `json:"force_refresh"`
 }
 
 func insightGenerateClientMessage(
@@ -168,7 +172,12 @@ func (s *Server) handleGenerateInsight(
 		return
 	}
 
-	if !validInsightTypes[req.Type] {
+	if req.Kind != "" {
+		s.handleGenerateCannedInsight(w, r, req)
+		return
+	}
+
+	if req.Type != "daily_activity" && req.Type != "agent_analysis" {
 		writeError(w, http.StatusBadRequest,
 			"invalid type: must be daily_activity or agent_analysis")
 		return
@@ -422,4 +431,302 @@ func (s *Server) handleGenerateInsight(
 	}
 
 	sendJSON("done", saved)
+}
+
+func (s *Server) handleGenerateCannedInsight(
+	w http.ResponseWriter,
+	r *http.Request,
+	req generateInsightRequest,
+) {
+	kind := insight.CannedKind(req.Kind)
+	if !insight.ValidCannedKinds[kind] {
+		writeError(w, http.StatusBadRequest,
+			"invalid kind: unsupported canned insight")
+		return
+	}
+	if req.Type != "" && req.Type != insight.CannedType {
+		writeError(w, http.StatusBadRequest,
+			"type must be llm_canned for canned insights")
+		return
+	}
+	if !req.LLMOptIn {
+		writeError(w, http.StatusBadRequest,
+			"llm_opt_in must be true for canned insights")
+		return
+	}
+	if !timeutil.IsValidDate(req.DateFrom) {
+		writeError(w, http.StatusBadRequest,
+			"invalid date_from: use YYYY-MM-DD")
+		return
+	}
+	if !timeutil.IsValidDate(req.DateTo) {
+		writeError(w, http.StatusBadRequest,
+			"invalid date_to: use YYYY-MM-DD")
+		return
+	}
+	if req.DateTo < req.DateFrom {
+		writeError(w, http.StatusBadRequest,
+			"date_to must be >= date_from")
+		return
+	}
+	if req.Agent == "" {
+		req.Agent = "claude"
+	}
+	if !insight.ValidAgents[req.Agent] {
+		writeError(w, http.StatusBadRequest,
+			"invalid agent: must be one of "+
+				strings.Join(insight.ValidAgentNames, ", "))
+		return
+	}
+
+	stream, err := NewSSEStream(w)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError,
+			"streaming not supported")
+		return
+	}
+	sendJSON := func(event string, v any) bool {
+		return stream.SendJSON(event, v)
+	}
+	status := func(phase string) bool {
+		return sendJSON("status", map[string]string{
+			"phase": phase,
+		})
+	}
+
+	if !status("building_payload") {
+		return
+	}
+	payload, aggregateHash, cacheKey, err := s.buildCannedPayload(
+		r.Context(), kind, req,
+	)
+	if err != nil {
+		log.Printf("canned insight payload error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to build canned insight payload",
+		})
+		return
+	}
+
+	if !req.ForceRefresh {
+		cached, err := s.db.GetCachedInsight(r.Context(), cacheKey)
+		if err != nil {
+			log.Printf("canned insight cache lookup error: %v", err)
+			sendJSON("error", map[string]string{
+				"message": "failed to check insight cache",
+			})
+			return
+		}
+		if cached != nil {
+			cached.CacheStatus = "hit"
+			if !status("cache_hit") {
+				return
+			}
+			sendJSON("done", cached)
+			return
+		}
+	}
+
+	prompt, err := insight.BuildCannedPrompt(payload, aggregateHash)
+	if err != nil {
+		log.Printf("canned insight prompt error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to build canned prompt",
+		})
+		return
+	}
+
+	if !status("generating") {
+		return
+	}
+	genCtx, cancel := context.WithTimeout(
+		r.Context(), 3*time.Minute,
+	)
+	defer cancel()
+	result, err := s.generateStreamFunc(
+		genCtx, req.Agent, prompt, nil,
+	)
+	if err != nil {
+		log.Printf("canned insight generate error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": insightGenerateClientMessage(
+				req.Agent, err,
+			),
+		})
+		return
+	}
+
+	if !status("validating") {
+		return
+	}
+	envelope, err := insight.ParseCannedEnvelope(result.Content)
+	if err != nil {
+		log.Printf("canned insight parse error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "generated insight was not valid JSON",
+		})
+		return
+	}
+	if err := insight.ValidateCannedEnvelope(envelope, payload); err != nil {
+		log.Printf("canned insight validation error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "generated insight failed validation",
+		})
+		return
+	}
+
+	if !status("saving") {
+		return
+	}
+	model := result.Model
+	prov, err := insight.NewCannedProvenance(
+		payload, aggregateHash, cacheKey, "fresh",
+		result.Agent, model, time.Now(),
+	)
+	if err != nil {
+		log.Printf("canned insight provenance error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to build insight provenance",
+		})
+		return
+	}
+	provJSON, err := json.Marshal(prov)
+	if err != nil {
+		log.Printf("canned insight provenance JSON error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to encode insight provenance",
+		})
+		return
+	}
+	structuredJSON, err := json.Marshal(envelope)
+	if err != nil {
+		log.Printf("canned insight structured JSON error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to encode generated insight",
+		})
+		return
+	}
+
+	var project *string
+	if req.Project != "" {
+		project = &req.Project
+	}
+	var modelPtr *string
+	if model != "" {
+		modelPtr = &model
+	}
+	var promptPtr *string
+	if req.Prompt != "" {
+		promptPtr = &req.Prompt
+	}
+
+	id, err := s.db.InsertInsight(db.Insight{
+		Type:            insight.CannedType,
+		DateFrom:        req.DateFrom,
+		DateTo:          req.DateTo,
+		Project:         project,
+		Agent:           result.Agent,
+		Model:           modelPtr,
+		Prompt:          promptPtr,
+		Content:         insight.RenderCannedMarkdown(envelope, prov),
+		Kind:            string(kind),
+		SchemaVersion:   insight.CannedSchemaVersion,
+		TemplateID:      prov.TemplateID,
+		TemplateVersion: prov.TemplateVersion,
+		AggregateHash:   aggregateHash,
+		CacheKey:        cacheKey,
+		CacheStatus:     "fresh",
+		ProvenanceJSON:  string(provJSON),
+		StructuredJSON:  string(structuredJSON),
+	})
+	if err != nil {
+		log.Printf("canned insight insert error: %v", err)
+		sendJSON("error", map[string]string{
+			"message": "failed to save insight",
+		})
+		return
+	}
+
+	saved, err := s.db.GetInsight(r.Context(), id)
+	if err != nil || saved == nil {
+		log.Printf("canned insight get error: id=%d err=%v",
+			id, err)
+		sendJSON("error", map[string]string{
+			"message": "failed to retrieve saved insight",
+		})
+		return
+	}
+	sendJSON("done", saved)
+}
+
+func (s *Server) buildCannedPayload(
+	ctx context.Context,
+	kind insight.CannedKind,
+	req generateInsightRequest,
+) (insight.CannedAggregatePayload, string, string, error) {
+	analyticsFilter := db.AnalyticsFilter{
+		From:             req.DateFrom,
+		To:               req.DateTo,
+		Project:          req.Project,
+		Timezone:         "UTC",
+		ExcludeOneShot:   true,
+		ExcludeAutomated: true,
+	}
+	signals, err := s.db.GetAnalyticsSignals(ctx, analyticsFilter)
+	if err != nil {
+		return insight.CannedAggregatePayload{}, "", "", err
+	}
+
+	usageFilter := db.UsageFilter{
+		From:             req.DateFrom,
+		To:               req.DateTo,
+		Project:          req.Project,
+		Timezone:         "UTC",
+		ExcludeOneShot:   true,
+		ExcludeAutomated: true,
+		Breakdowns:       false,
+	}
+	usageResult, err := s.db.GetDailyUsage(ctx, usageFilter)
+	if err != nil {
+		return insight.CannedAggregatePayload{}, "", "", err
+	}
+	topSessions, err := s.db.GetTopSessionsByCost(ctx, usageFilter, 5)
+	if err != nil {
+		return insight.CannedAggregatePayload{}, "", "", err
+	}
+	usageSummary := &insight.CannedUsageSummary{
+		InputTokens:         usageResult.Totals.InputTokens,
+		OutputTokens:        usageResult.Totals.OutputTokens,
+		CacheCreationTokens: usageResult.Totals.CacheCreationTokens,
+		CacheReadTokens:     usageResult.Totals.CacheReadTokens,
+		TotalCost:           usageResult.Totals.TotalCost,
+		CacheSavings:        usageResult.Totals.CacheSavings,
+		TopSessionsByCost:   topSessions,
+	}
+
+	payload := insight.CannedAggregatePayload{
+		Kind:     kind,
+		DateFrom: req.DateFrom,
+		DateTo:   req.DateTo,
+		Project:  req.Project,
+		Focus:    req.Prompt,
+		Signals:  signals,
+		Usage:    usageSummary,
+	}
+	payload.EvidenceRefs = insight.CannedEvidenceRefs(
+		signals, usageSummary,
+	)
+
+	aggregateHash, err := insight.CannedAggregateHash(payload)
+	if err != nil {
+		return insight.CannedAggregatePayload{}, "", "", err
+	}
+	cacheKey, err := insight.CannedCacheKey(
+		kind, req.DateFrom, req.DateTo, req.Project,
+		req.Agent, req.Prompt, aggregateHash,
+	)
+	if err != nil {
+		return insight.CannedAggregatePayload{}, "", "", err
+	}
+	return payload, aggregateHash, cacheKey, nil
 }
