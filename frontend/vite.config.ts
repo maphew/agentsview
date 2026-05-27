@@ -12,6 +12,16 @@ function gitCommit(): string {
   }
 }
 
+const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
+
+function apiTargetOrigin(target: string): string {
+  try {
+    return new URL(target).origin;
+  } catch {
+    return target;
+  }
+}
+
 export default defineConfig({
   base: "/",
   plugins: [svelte()],
@@ -26,8 +36,13 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080",
+        target: apiTarget,
         changeOrigin: true,
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.setHeader("Origin", apiTargetOrigin(apiTarget));
+          });
+        },
       },
     },
   },
