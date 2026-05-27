@@ -94,6 +94,21 @@ func parseAnalyticsFilter(
 
 	includeOneShot := q.Get("include_one_shot") == "true"
 	includeAutomated := q.Get("include_automated") == "true"
+	automatedScope := q.Get("automated_scope")
+	if automatedScope == "" {
+		if includeAutomated {
+			automatedScope = "all"
+		} else {
+			automatedScope = "human"
+		}
+	}
+	scope, ok := normalizeInsightAutomatedScope(automatedScope)
+	if !ok {
+		writeError(w, http.StatusBadRequest,
+			"automated_scope must be human, all, or automated")
+		return db.AnalyticsFilter{}, false
+	}
+	automatedScope = scope
 
 	return db.AnalyticsFilter{
 		From:             from,
@@ -107,6 +122,7 @@ func parseAnalyticsFilter(
 		MinUserMessages:  minUserMsgs,
 		ExcludeOneShot:   !includeOneShot,
 		ExcludeAutomated: !includeAutomated,
+		AutomatedScope:   automatedScope,
 		ActiveSince:      activeSince,
 		Termination:      q.Get("termination"),
 	}, true

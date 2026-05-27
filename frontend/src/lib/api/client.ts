@@ -914,6 +914,7 @@ export interface AnalyticsParams {
   min_user_messages?: number;
   include_one_shot?: boolean;
   include_automated?: boolean;
+  automated_scope?: "human" | "all" | "automated";
   active_since?: string;
   termination?: string;
 }

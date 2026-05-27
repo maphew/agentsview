@@ -403,6 +403,7 @@ type SessionFilter struct {
 	MinUserMessages  int      // user_message_count >= N (0 = no filter)
 	ExcludeOneShot   bool     // exclude sessions with user_message_count <= 1
 	ExcludeAutomated bool     // exclude sessions where is_automated = 1
+	AutomatedScope   string   // "", "human", "all", or "automated"
 	IncludeChildren  bool     // include subagent sessions (for sidebar grouping)
 	Outcome          []string // filter by outcome values
 	HealthGrade      []string // filter by health grade values
@@ -602,9 +603,10 @@ func buildSessionFilter(f SessionFilter) (string, []any) {
 	// sessions are single-turn by definition, so a strict
 	// user_message_count > 1 predicate would always hide them.
 	oneShotPred := ""
+	scope := normalizeAutomatedScope(f.AutomatedScope, f.ExcludeAutomated)
 	if f.ExcludeOneShot {
 		pred := "user_message_count > 1"
-		if !f.ExcludeAutomated {
+		if scope != "human" {
 			pred = "(user_message_count > 1 OR is_automated = 1)"
 		}
 		if f.IncludeChildren {
@@ -614,8 +616,8 @@ func buildSessionFilter(f SessionFilter) (string, []any) {
 		}
 	}
 
-	if f.ExcludeAutomated {
-		filterPreds = append(filterPreds, "is_automated = 0")
+	if pred := automatedScopePredicate(scope, "is_automated"); pred != "" {
+		filterPreds = append(filterPreds, pred)
 	}
 
 	if len(f.Outcome) > 0 {

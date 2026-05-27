@@ -12,6 +12,7 @@ import type {
   HeatmapMetric,
   TopSessionsMetric,
   SignalsAnalyticsResponse,
+  AutomatedScope,
 } from "../api/types.js";
 import {
   getAnalyticsSummary,
@@ -74,6 +75,7 @@ class AnalyticsStore {
   minUserMessages: number = $state(0);
   includeOneShot: boolean = $state(true);
   includeAutomated: boolean = $state(false);
+  automatedScope: AutomatedScope = $state("human");
   recentlyActive: boolean = $state(false);
   selectedDow: number | null = $state(null);
   selectedHour: number | null = $state(null);
@@ -142,7 +144,7 @@ class AnalyticsStore {
       this.termination !== "" ||
       this.minUserMessages > 0 ||
       !this.includeOneShot ||
-      this.includeAutomated ||
+      this.automatedScope !== "human" ||
       this.recentlyActive ||
       this.selectedDow !== null ||
       this.selectedHour !== null
@@ -158,6 +160,7 @@ class AnalyticsStore {
     this.minUserMessages = 0;
     this.includeOneShot = true;
     this.includeAutomated = false;
+    this.automatedScope = "human";
     this.recentlyActive = false;
     this.selectedDow = null;
     this.selectedHour = null;
@@ -217,11 +220,18 @@ class AnalyticsStore {
 
   clearIncludeAutomated() {
     this.includeAutomated = false;
+    this.automatedScope = "human";
     sessions.filters.includeAutomated = false;
     sessions.activeSessionId = null;
     sessions.invalidateFilterCaches();
     sessions.load();
     this.fetchAll();
+  }
+
+  setAutomatedScope(scope: AutomatedScope) {
+    this.automatedScope = scope;
+    this.includeAutomated = scope !== "human";
+    this.fetchSignalsForInsights();
   }
 
   clearRecentlyActive() {
@@ -329,9 +339,7 @@ class AnalyticsStore {
     if (this.includeOneShot) {
       p.include_one_shot = true;
     }
-    if (this.includeAutomated) {
-      p.include_automated = true;
-    }
+    p.automated_scope = this.automatedScope;
     if (this.recentlyActive) {
       p.active_since = new Date(
         Date.now() - 24 * 60 * 60 * 1000,
@@ -372,9 +380,7 @@ class AnalyticsStore {
       if (this.includeOneShot) {
         p.include_one_shot = true;
       }
-      if (this.includeAutomated) {
-        p.include_automated = true;
-      }
+      p.automated_scope = this.automatedScope;
       if (this.recentlyActive) {
         p.active_since = new Date(
           Date.now() - 24 * 60 * 60 * 1000,
