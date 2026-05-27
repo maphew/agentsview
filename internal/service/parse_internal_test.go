@@ -92,7 +92,8 @@ func TestParseSSE_SurfacesReadError(t *testing.T) {
 }
 
 const summaryEvent = "event: summary\n" +
-	"data: {\"scanned\":2,\"with_secrets\":1,\"total_findings\":3}\n\n"
+	"data: {\"scanned\":2,\"with_secrets\":1,\"total_findings\":3," +
+	"\"definite_findings\":2,\"candidate_findings\":1}\n\n"
 
 func TestParseScanStream_SummaryReturned(t *testing.T) {
 	t.Parallel()
@@ -102,6 +103,8 @@ func TestParseScanStream_SummaryReturned(t *testing.T) {
 	assert.Equal(t, 2, sum.Scanned)
 	assert.Equal(t, 1, sum.WithSecrets)
 	assert.Equal(t, 3, sum.TotalFindings)
+	assert.Equal(t, 2, sum.DefiniteFindings)
+	assert.Equal(t, 1, sum.CandidateFindings)
 }
 
 func TestParseScanStream_NoSummaryIsError(t *testing.T) {

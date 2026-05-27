@@ -44,9 +44,11 @@ type SecretScanProgress struct {
 
 // SecretScanSummary is the final scan result (mirrors sync.SecretScanSummary).
 type SecretScanSummary struct {
-	Scanned       int `json:"scanned"`
-	WithSecrets   int `json:"with_secrets"`
-	TotalFindings int `json:"total_findings"`
+	Scanned           int `json:"scanned"`
+	WithSecrets       int `json:"with_secrets"`
+	TotalFindings     int `json:"total_findings"`
+	DefiniteFindings  int `json:"definite_findings"`
+	CandidateFindings int `json:"candidate_findings"`
 }
 
 // SecretListFilter parameterises ListSecrets.

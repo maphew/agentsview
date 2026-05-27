@@ -485,8 +485,11 @@ func (b *directBackend) ScanSecrets(
 		return nil, err
 	}
 	return &SecretScanSummary{
-		Scanned: sum.Scanned, WithSecrets: sum.WithSecrets,
-		TotalFindings: sum.TotalFindings,
+		Scanned:           sum.Scanned,
+		WithSecrets:       sum.WithSecrets,
+		TotalFindings:     sum.TotalFindings,
+		DefiniteFindings:  sum.DefiniteFindings,
+		CandidateFindings: sum.CandidateFindings,
 	}, nil
 }
 

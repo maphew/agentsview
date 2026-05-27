@@ -36,8 +36,18 @@ func newSecretsScanCommand() *cobra.Command {
 		project, agent, dateFrom, dateTo string
 	)
 	cmd := &cobra.Command{
-		Use:          "scan",
-		Short:        "Scan sessions for secret leaks (use --backfill for the archive)",
+		Use:   "scan",
+		Short: "Run a full-ruleset scan (definite + candidate rules) and persist findings",
+		Long: `Inline sync runs only the fast, well-anchored definite rules. This command
+runs the full ruleset, including candidate-tier detectors (generic
+high-entropy env values, JWTs, basic-auth URLs).
+
+By default every matching session is rescanned. Use --backfill to skip
+sessions already at the current ruleset version — the efficient choice
+after a binary upgrade.
+
+Findings from candidate rules are hidden by 'secrets list' unless you pass
+--confidence candidate or --confidence all.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -70,14 +80,23 @@ func newSecretsScanCommand() *cobra.Command {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(sum)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"Scanned %d sessions; %d with secrets; %d findings.\n",
-				sum.Scanned, sum.WithSecrets, sum.TotalFindings)
+				"Scanned %d sessions; %d with definite leaks; "+
+					"%d findings (%d definite, %d candidate).\n",
+				sum.Scanned, sum.WithSecrets, sum.TotalFindings,
+				sum.DefiniteFindings, sum.CandidateFindings)
+			if sum.CandidateFindings > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(),
+					"\nCandidate findings are hidden by default in 'secrets list'. "+
+						"To see them:")
+				fmt.Fprintln(cmd.OutOrStdout(),
+					"  agentsview secrets list --confidence all")
+			}
 			return nil
 		},
 	}
 	flags := cmd.Flags()
 	flags.BoolVar(&backfill, "backfill", false,
-		"Scan only sessions not yet scanned at the current ruleset version")
+		"Skip sessions already scanned at the current ruleset version")
 	flags.StringVar(&project, "project", "", "Limit to a project")
 	flags.StringVar(&agent, "agent", "", "Limit to an agent")
 	flags.StringVar(&dateFrom, "date-from", "", "Sessions on or after YYYY-MM-DD")

@@ -40,6 +40,91 @@ var rules = []rule{
 		mask:       func(s string) string { return maskKeepEnds(s, 7, 4) },
 	},
 	{
+		// openai-key: matches OpenAI's project (sk-proj-), service-account
+		// (sk-svcacct-), and admin (sk-admin-) key prefixes. These prefix
+		// patterns are scanner knowledge derived from observed token format;
+		// no clean upstream announcement URL is cited because none was found.
+		// Legacy sk- + 48-char keys are deliberately not matched (no anchor
+		// that doesn't collide with sk-ant-).
+		name:       "openai-key",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"sk-proj-", "sk-svcacct-", "sk-admin-"},
+		re: regexp.MustCompile(
+			`\b(sk-(?:proj|svcacct|admin)-[0-9A-Za-z_\-]{20,})` +
+				`(?:[^0-9A-Za-z_\-]|$)`),
+		group:    1,
+		validate: notOpenAIKeyPlaceholder,
+		mask:     maskOpenAIKey,
+	},
+	{
+		// gitlab-pat: GitLab personal/project access tokens. Prefix per
+		// https://docs.gitlab.com/security/tokens/token_prefixes/ — glpat-
+		// is documented as the PAT prefix; minimum body length is 20.
+		name:       "gitlab-pat",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"glpat-"},
+		re: regexp.MustCompile(
+			`\b(glpat-[0-9A-Za-z_\-]{20,})(?:[^0-9A-Za-z_\-]|$)`),
+		group:    1,
+		validate: notGitLabPATPlaceholder,
+		mask:     func(s string) string { return maskKeepEnds(s, 6, 4) },
+	},
+	{
+		// npm-token: npm access tokens since the 2021 format change. Per
+		// https://github.blog/2021-09-23-announcing-npms-new-access-token-format/
+		// the format is npm_ + 36 base62 chars (30 base62 payload + 6 base62
+		// CRC). Legacy classic tokens (bare 36-char hex, no prefix) are
+		// deliberately not matched — they would need a separate rule with no
+		// anchor and a high false-positive rate.
+		name:       "npm-token",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"npm_"},
+		re:         regexp.MustCompile(`\bnpm_[0-9A-Za-z]{36}\b`),
+		validate:   notNPMTokenPlaceholder,
+		mask:       func(s string) string { return maskKeepEnds(s, 4, 4) },
+	},
+	{
+		// pypi-token: PyPI API tokens. Per https://docs.pypi.org/api/secrets/
+		// the documented format is pypi-[A-Za-z0-9_-]{85,}. The literal
+		// "AgEIcHlwaS5vcmcC" is the base64 of the macaroon protocol-version
+		// and URL bytes that every PyPI token starts with — a much stronger
+		// anchor than just pypi-. The 16-char anchor counts toward the
+		// 85-char minimum, so the variable tail must be ≥69 chars.
+		name:       "pypi-token",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"pypi-"},
+		re: regexp.MustCompile(
+			`\b(pypi-AgEIcHlwaS5vcmcC[0-9A-Za-z_\-]{69,})` +
+				`(?:[^0-9A-Za-z_\-]|$)`),
+		group:    1,
+		validate: notPyPITokenPlaceholder,
+		mask:     func(s string) string { return maskKeepEnds(s, 21, 4) },
+	},
+	{
+		// huggingface-token: Hugging Face access tokens. Prefix hf_ +
+		// base62 body, ≥30 chars empirically (token lengths vary by
+		// generation, but observed minimum is well above 30).
+		name:       "huggingface-token",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"hf_"},
+		re:         regexp.MustCompile(`\bhf_[0-9A-Za-z]{30,}\b`),
+		validate:   notHuggingFaceTokenPlaceholder,
+		mask:       func(s string) string { return maskKeepEnds(s, 3, 4) },
+	},
+	{
+		// sendgrid-key: SendGrid API keys. Format SG.<22 base64url>.<43
+		// base64url> — two fixed-length segments separated by a literal '.'.
+		name:       "sendgrid-key",
+		confidence: ConfidenceDefinite,
+		prefilters: []string{"SG."},
+		re: regexp.MustCompile(
+			`\b(SG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43})` +
+				`(?:[^0-9A-Za-z_\-]|$)`),
+		group:    1,
+		validate: notSendGridKeyPlaceholder,
+		mask:     func(s string) string { return maskKeepEnds(s, 3, 4) },
+	},
+	{
 		name:       "basic-auth-url",
 		confidence: ConfidenceCandidate,
 		prefilters: []string{"://"},
@@ -108,7 +193,7 @@ var rules = []rule{
 		confidence: ConfidenceCandidate,
 		prefilters: []string{"=", ":"},
 		re: regexp.MustCompile(
-			`(?i)\b[a-z][a-z0-9_]{2,}\s*[=:]\s*['"]?([A-Za-z0-9+/_\-]{20,})['"]?`),
+			`(?i)\b[a-z][a-z0-9_]{2,}\s*[=:]\s*['"]?([A-Za-z0-9+/_\-]{20,}={0,2})['"]?`),
 		group:    1,
 		validate: highEntropyValue,
 		mask:     func(s string) string { return maskKeepEnds(s, 0, 4) },
@@ -151,9 +236,12 @@ func shannonEntropy(s string) float64 {
 }
 
 // highEntropyValue gates the high-entropy-assignment rule: the value must
-// be long enough and random-looking to plausibly be a secret.
+// be long enough and random-looking to plausibly be a secret. Trailing '='
+// padding is trimmed before the length and entropy checks so padding bytes
+// cannot inflate the length gate or dilute entropy.
 func highEntropyValue(s string) bool {
-	return len(s) >= 20 && shannonEntropy(s) >= 3.5
+	body := strings.TrimRight(s, "=")
+	return len(body) >= 20 && shannonEntropy(body) >= 3.5
 }
 
 // hasRepeatingBlock reports whether s is dominated by a short repeating
@@ -296,6 +384,102 @@ func notAnthropicKeyPlaceholder(s string) bool {
 		return false
 	}
 	return bodyLooksRandom(strings.TrimPrefix(s, "sk-ant-"))
+}
+
+// notOpenAIKeyPlaceholder rejects OpenAI keys whose body (after the
+// matched sk-proj- / sk-svcacct- / sk-admin- prefix) fails the structural
+// checks or shows a trailing-run repeat.
+func notOpenAIKeyPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	body := s
+	for _, p := range []string{"sk-svcacct-", "sk-admin-", "sk-proj-"} {
+		if after, ok := strings.CutPrefix(body, p); ok {
+			body = after
+			break
+		}
+	}
+	return bodyLooksRandom(body)
+}
+
+// maskOpenAIKey preserves the matched OpenAI prefix length when redacting.
+// sk-proj- (8), sk-admin- (9), and sk-svcacct- (11) differ in length, so a
+// fixed offset would truncate the longer prefixes mid-word in the display.
+// Longest-first ordering is defensive in case a future prefix shares a
+// shorter prefix with a current one (no such case exists today).
+func maskOpenAIKey(s string) string {
+	for _, p := range []string{"sk-svcacct-", "sk-admin-", "sk-proj-"} {
+		if strings.HasPrefix(s, p) {
+			return maskKeepEnds(s, len(p), 4)
+		}
+	}
+	panic("openai-key: regex matched without known prefix; rule and " +
+		"maskOpenAIKey are out of sync")
+}
+
+// notGitLabPATPlaceholder rejects GitLab PATs whose body (after "glpat-")
+// fails structural checks or shows a trailing-run repeat. Catches the
+// placeholder shapes agents emit when illustrating PAT format:
+// "glpat-AAAA…", "glpat-Xa9Kd…AAAA".
+func notGitLabPATPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	return bodyLooksRandom(strings.TrimPrefix(s, "glpat-"))
+}
+
+// notNPMTokenPlaceholder rejects npm tokens whose body fails structural
+// checks or shows a trailing-run repeat. The fixed 36-char body uses
+// bodyHasNoPlaceholderShape (no entropy gate) like AWS's 16-char body —
+// a long enough random base62 body can legitimately have ≤10 distinct
+// chars by birthday luck and fall below 3.5 bits.
+func notNPMTokenPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	return bodyHasNoPlaceholderShape(strings.TrimPrefix(s, "npm_"))
+}
+
+// notPyPITokenPlaceholder rejects PyPI tokens whose macaroon payload
+// (after the full pypi-AgEIcHlwaS5vcmcC anchor) fails structural checks
+// or shows a trailing-run repeat. Catches placeholder shapes agents emit:
+// "pypi-AgEI…AAAA", "pypi-…AAAA".
+func notPyPITokenPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	return bodyLooksRandom(strings.TrimPrefix(s, "pypi-AgEIcHlwaS5vcmcC"))
+}
+
+// notHuggingFaceTokenPlaceholder rejects HF tokens whose body fails
+// structural checks or shows a trailing-run repeat. Catches placeholder
+// shapes agents emit: "hf_AAAA…", "hf_Xa9Kd…AAAA".
+func notHuggingFaceTokenPlaceholder(s string) bool {
+	if !notTrailingRunRepeat(s, 4) {
+		return false
+	}
+	return bodyLooksRandom(strings.TrimPrefix(s, "hf_"))
+}
+
+// notSendGridKeyPlaceholder rejects SendGrid keys whose segments fail
+// structural checks. The 22-char identifier uses bodyHasNoPlaceholderShape
+// (short body, like AWS); the 43-char secret uses notTrailingRunRepeat +
+// bodyLooksRandom to catch the same trailing-run placeholder shape that
+// affects the other variable-length-body definite-tier validators.
+func notSendGridKeyPlaceholder(s string) bool {
+	body := strings.TrimPrefix(s, "SG.")
+	ident, secret, ok := strings.Cut(body, ".")
+	if !ok {
+		return false
+	}
+	if !bodyHasNoPlaceholderShape(ident) {
+		return false
+	}
+	if !notTrailingRunRepeat(secret, 4) {
+		return false
+	}
+	return bodyLooksRandom(secret)
 }
 
 // notGitHubPATPlaceholder rejects GitHub PATs whose body (after "ghp_"
@@ -485,7 +669,14 @@ func looksLikePEMHeaderStart(body string) bool {
 //
 // v5: store and match fixture deny-list entries by SHA-256 hash and include
 // those hashes in RulesVersion without committing the raw secret-shaped values.
-const rulesAlgorithmVersion = 5
+//
+// v6: added six well-anchored vendor rules (openai-key, gitlab-pat,
+// npm-token, pypi-token, huggingface-token, sendgrid-key); widened the
+// high-entropy-assignment capture group to include trailing base64 '='
+// padding so the reported span matches the literal value, and updated
+// highEntropyValue to trim trailing '=' before measuring entropy/length
+// so the padding doesn't push a borderline body below the 3.5-bit floor.
+const rulesAlgorithmVersion = 6
 
 // Verify reports whether the named rule still produces a finding at exactly
 // [start:end) within source. Used by --reveal to confirm a stored finding's
