@@ -576,7 +576,9 @@ func (s *Server) handleGenerateCannedInsight(
 	if err := insight.ValidateCannedEnvelope(envelope, payload); err != nil {
 		log.Printf("canned insight validation error: %v", err)
 		sendJSON("error", map[string]string{
-			"message": "generated insight failed validation",
+			"message": fmt.Sprintf(
+				"generated insight failed validation: %v", err,
+			),
 		})
 		return
 	}
