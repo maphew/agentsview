@@ -405,6 +405,10 @@ class AnalyticsStore {
     return this.baseParams({ includeProject, includeTime });
   }
 
+  signalEvidenceParams(): AnalyticsParams {
+    return this.filterParams();
+  }
+
   private async executeFetch<T>(
     panel: Panel,
     fetchRequest: () => Promise<T>,

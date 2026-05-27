@@ -362,6 +362,44 @@ func (s *Server) handleAnalyticsSignals(
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleAnalyticsSignalSessions(
+	w http.ResponseWriter, r *http.Request,
+) {
+	f, ok := parseAnalyticsFilter(w, r)
+	if !ok {
+		return
+	}
+	signal := r.URL.Query().Get("signal")
+	if signal == "" {
+		writeError(w, http.StatusBadRequest,
+			"signal parameter is required")
+		return
+	}
+	limit := 10
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest,
+				"invalid limit parameter")
+			return
+		}
+		limit = n
+	}
+	result, err := s.db.GetAnalyticsSignalSessions(
+		r.Context(), f, signal, limit,
+	)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		log.Printf("analytics signal sessions error: %v", err)
+		writeError(w, http.StatusInternalServerError,
+			"internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleAnalyticsTopSessions(
 	w http.ResponseWriter, r *http.Request,
 ) {

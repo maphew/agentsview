@@ -25,6 +25,7 @@ import type {
   ToolsAnalyticsResponse,
   TopSessionsResponse,
   SignalsAnalyticsResponse,
+  SignalSessionsResponse,
   Granularity,
   HeatmapMetric,
   TopSessionsMetric,
@@ -984,6 +985,14 @@ export function getAnalyticsSignals(
 ): Promise<SignalsAnalyticsResponse> {
   return fetchJSON(
     `/analytics/signals${buildQuery({ ...params })}`,
+  );
+}
+
+export function getAnalyticsSignalSessions(
+  params: AnalyticsParams & { signal: string; limit?: number },
+): Promise<SignalSessionsResponse> {
+  return fetchJSON(
+    `/analytics/signal-sessions${buildQuery({ ...params })}`,
   );
 }
 
