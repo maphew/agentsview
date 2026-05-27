@@ -74,11 +74,20 @@ func appendPGUsageRowFilterClauses(
 	if f.MinUserMessages > 0 {
 		query += " AND u.user_message_count >= " + pb.add(f.MinUserMessages)
 	}
+	scope := normalizePGAutomatedScope(
+		f.AutomatedScope, f.ExcludeAutomated)
 	if f.ExcludeOneShot {
-		query += " AND u.user_message_count > 1"
+		if scope == "human" {
+			query += " AND u.user_message_count > 1"
+		} else {
+			query += " AND (u.user_message_count > 1 OR COALESCE(u.is_automated, false) = TRUE)"
+		}
 	}
-	if f.ExcludeAutomated {
-		query += " AND COALESCE(u.is_automated, false) = false"
+	if pred := pgAutomatedScopePredicate(
+		scope,
+		"COALESCE(u.is_automated, false)",
+	); pred != "" {
+		query += " AND " + pred
 	}
 	if f.ActiveSince != "" {
 		query += " AND u.session_activity_at >= " +

@@ -67,6 +67,31 @@ func (pb *paramBuilder) add(v any) string {
 	return fmt.Sprintf("$%d", pb.n)
 }
 
+func normalizePGAutomatedScope(
+	scope string,
+	excludeAutomated bool,
+) string {
+	switch strings.TrimSpace(scope) {
+	case "human", "all", "automated":
+		return strings.TrimSpace(scope)
+	}
+	if excludeAutomated {
+		return "human"
+	}
+	return "all"
+}
+
+func pgAutomatedScopePredicate(scope, col string) string {
+	switch scope {
+	case "human":
+		return col + " = FALSE"
+	case "automated":
+		return col + " = TRUE"
+	default:
+		return ""
+	}
+}
+
 // pgActivityWindows holds the cutoff durations used by
 // pgTerminationPred. Kept in sync with the SQLite-side constants
 // in internal/db/sessions.go so both stores classify a session
@@ -306,12 +331,12 @@ func buildPGSessionFilter(
 	if pred := pgTerminationPred(f.Termination, pb); pred != "" {
 		filterPreds = append(filterPreds, pred)
 	}
-	// "" and "all" add no predicate.
-
 	oneShotPred := ""
+	scope := normalizePGAutomatedScope(
+		f.AutomatedScope, f.ExcludeAutomated)
 	if f.ExcludeOneShot {
 		pred := "user_message_count > 1"
-		if !f.ExcludeAutomated {
+		if scope != "human" {
 			pred = "(user_message_count > 1 OR is_automated = TRUE)"
 		}
 		if f.IncludeChildren {
@@ -321,9 +346,8 @@ func buildPGSessionFilter(
 		}
 	}
 
-	if f.ExcludeAutomated {
-		filterPreds = append(filterPreds,
-			"is_automated = FALSE")
+	if pred := pgAutomatedScopePredicate(scope, "is_automated"); pred != "" {
+		filterPreds = append(filterPreds, pred)
 	}
 
 	if len(f.Outcome) > 0 {

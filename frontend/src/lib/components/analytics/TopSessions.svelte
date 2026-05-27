@@ -28,7 +28,10 @@
       sessions.filters.includeOneShot = true;
       needInvalidate = true;
     }
-    if (analytics.includeAutomated && !sessions.filters.includeAutomated) {
+    if (
+      analytics.automatedScope !== "human" &&
+      !sessions.filters.includeAutomated
+    ) {
       sessions.filters.includeAutomated = true;
       needInvalidate = true;
     }

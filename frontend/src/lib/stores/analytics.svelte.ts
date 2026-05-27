@@ -151,6 +151,12 @@ class AnalyticsStore {
     );
   }
 
+  private get effectiveAutomatedScope(): AutomatedScope {
+    if (!this.includeAutomated) return "human";
+    if (this.automatedScope === "human") return "all";
+    return this.automatedScope;
+  }
+
   clearAllFilters() {
     this.selectedDate = null;
     this.project = "";
@@ -339,7 +345,7 @@ class AnalyticsStore {
     if (this.includeOneShot) {
       p.include_one_shot = true;
     }
-    p.automated_scope = this.automatedScope;
+    p.automated_scope = this.effectiveAutomatedScope;
     if (this.recentlyActive) {
       p.active_since = new Date(
         Date.now() - 24 * 60 * 60 * 1000,
@@ -380,7 +386,7 @@ class AnalyticsStore {
       if (this.includeOneShot) {
         p.include_one_shot = true;
       }
-      p.automated_scope = this.automatedScope;
+      p.automated_scope = this.effectiveAutomatedScope;
       if (this.recentlyActive) {
         p.active_since = new Date(
           Date.now() - 24 * 60 * 60 * 1000,
