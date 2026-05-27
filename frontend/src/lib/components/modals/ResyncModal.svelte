@@ -67,7 +67,12 @@
     <div class="modal-header">
       <h3 class="modal-title">Full Resync</h3>
       {#if view !== "progress"}
-        <button class="modal-close" onclick={close}>
+        <button
+          class="modal-close"
+          onclick={close}
+          title="Close resync dialog"
+          aria-label="Close resync dialog"
+        >
           &times;
         </button>
       {/if}

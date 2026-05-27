@@ -93,6 +93,8 @@
       <button
         class="modal-close"
         onclick={() => ui.activeModal = null}
+        title="Close publish dialog"
+        aria-label="Close publish dialog"
       >
         &times;
       </button>

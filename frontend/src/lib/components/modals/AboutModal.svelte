@@ -49,6 +49,8 @@
       <button
         class="close-btn"
         onclick={() => ui.activeModal = null}
+        title="Close about dialog"
+        aria-label="Close about dialog"
       >
         &times;
       </button>

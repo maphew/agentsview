@@ -388,7 +388,11 @@
 
 
 <div class="session-breadcrumb">
-  <button class="breadcrumb-link" onclick={onBack}>
+  <button
+    class="breadcrumb-link"
+    onclick={onBack}
+    title="Back to sessions"
+  >
     Sessions
   </button>
   <span class="breadcrumb-sep">/</span>
@@ -552,8 +556,9 @@
         {@const rawId = sessionDisplayId(session.id)}
         <button
           class="session-id"
-          title={rawId}
+          title="Copy session ID: {rawId}"
           onclick={() => copySessionId(rawId, session.id)}
+          aria-label="Copy session ID"
         >
           {copiedSessionId === session.id
             ? "Copied!"
@@ -618,6 +623,7 @@
         <button
           class="actions-btn"
           title="Session actions"
+          aria-label="Session actions"
           bind:this={menuBtnEl}
           onclick={toggleMenu}
         >

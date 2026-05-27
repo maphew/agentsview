@@ -120,6 +120,19 @@ describe("SessionList filter dropdown", () => {
     );
     expect(sessionFilterControlSource).toContain("overflow-y: auto;");
   });
+
+  it("labels compact header controls with hover hints", async () => {
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const filterButton = document.querySelector<HTMLButtonElement>(
+      ".filter-btn",
+    );
+
+    expect(filterButton).not.toBeNull();
+    expect(filterButton?.title).toBe("Filter sessions");
+    expect(filterButton?.getAttribute("aria-label")).toBe("Filters");
+  });
 });
 
 describe("SessionList visible hydration", () => {

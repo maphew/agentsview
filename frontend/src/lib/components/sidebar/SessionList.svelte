@@ -448,6 +448,8 @@
           <button
             class="group-header"
             onclick={() => toggleGroup(item.label)}
+            title="{collapsed.has(item.label) ? 'Expand' : 'Collapse'} {item.label} group"
+            aria-label="{collapsed.has(item.label) ? 'Expand' : 'Collapse'} {item.label} group"
           >
             <svg
               class="chevron"
@@ -485,6 +487,8 @@
             class="sub-group-header"
             style:padding-left="{8 + (item.depth ?? 1) * 16}px"
             onclick={() => toggleChainExpand(subKey)}
+            title="{subExpanded ? 'Collapse' : 'Expand'} Subagents group"
+            aria-label="{subExpanded ? 'Collapse' : 'Expand'} Subagents group"
           >
             <svg class="sub-group-arrow" class:expanded={subExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
             <svg class="sub-group-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -500,6 +504,8 @@
             class="sub-group-header"
             style:padding-left="{8 + (item.depth ?? 1) * 16}px"
             onclick={() => toggleChainExpand(teamKey)}
+            title="{teamExpanded ? 'Collapse' : 'Expand'} Team group"
+            aria-label="{teamExpanded ? 'Collapse' : 'Expand'} Team group"
           >
             <svg class="sub-group-arrow" class:expanded={teamExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
             <svg class="sub-group-icon" width="12" height="10" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">

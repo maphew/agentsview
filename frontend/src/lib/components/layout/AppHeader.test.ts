@@ -99,4 +99,21 @@ describe("AppHeader export actions", () => {
     expect(ui.followLatest).toBe(false);
     expect(followButton!.classList.contains("active")).toBe(false);
   });
+
+  it("labels compact title-bar actions with hover hints", async () => {
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    const moreButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="More navigation"]',
+    );
+    const shortcutsButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Keyboard shortcuts"]',
+    );
+
+    expect(moreButton).not.toBeNull();
+    expect(moreButton?.title).toBe("More navigation");
+    expect(shortcutsButton).not.toBeNull();
+    expect(shortcutsButton?.title).toBe("Keyboard shortcuts (?)");
+  });
 });

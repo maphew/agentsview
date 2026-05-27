@@ -125,6 +125,7 @@
   class="filter-btn"
   bind:this={filterBtnRef}
   onclick={() => (open = !open)}
+  title="Filter sessions"
   aria-label="Filters"
   aria-expanded={open}
 >

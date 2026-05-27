@@ -217,6 +217,7 @@
           class="modal-close"
           onclick={handleClose}
           disabled={importing}
+          title="Close import dialog"
           aria-label="Close"
         >&times;</button>
       </div>

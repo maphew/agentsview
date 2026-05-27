@@ -255,6 +255,7 @@
         class:active={router.route === "trends" || router.route === "pinned" || router.route === "insights" || router.route === "trash" || moreOpen}
         bind:this={moreBtnRef}
         onclick={() => { moreOpen = !moreOpen; }}
+        title="More navigation"
         aria-label="More navigation"
         aria-expanded={moreOpen}
       >
@@ -637,6 +638,7 @@
       class="header-btn"
       onclick={() => (ui.activeModal = "shortcuts")}
       title="Keyboard shortcuts (?)"
+      aria-label="Keyboard shortcuts"
     >
       ?
     </button>
