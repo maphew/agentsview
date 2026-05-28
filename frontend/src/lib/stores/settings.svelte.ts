@@ -20,7 +20,7 @@ class SettingsStore {
   loading: boolean = $state(false);
   saving: boolean = $state(false);
   error: string | null = $state(null);
-  /** True when the API returned 401/403, indicating the user needs
+  /** True when the API returned 401, indicating the user needs
    *  to provide an auth token before the app can load. */
   needsAuth: boolean = $state(false);
 
@@ -44,7 +44,7 @@ class SettingsStore {
         setAuthToken(data.auth_token);
       }
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      if (e instanceof ApiError && e.status === 401) {
         this.needsAuth = true;
       } else {
         this.error =
