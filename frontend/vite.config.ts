@@ -1,5 +1,4 @@
 import { execSync } from "node:child_process";
-import { isIP } from "node:net";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
@@ -16,13 +15,23 @@ function gitCommit(): string {
 const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 const apiTargetOrigin = new URL(apiTarget).origin;
 
+function isIPv4LoopbackLiteral(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") return false;
+  return parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false;
+    const value = Number(part);
+    return value >= 0 && value <= 255;
+  });
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const lower = hostname.toLowerCase();
   const unbracketed = lower.startsWith("[") && lower.endsWith("]")
     ? lower.slice(1, -1)
     : lower;
   return lower === "localhost" ||
-    (isIP(unbracketed) === 4 && unbracketed.split(".")[0] === "127") ||
+    isIPv4LoopbackLiteral(unbracketed) ||
     unbracketed === "::1";
 }
 
