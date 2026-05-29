@@ -208,14 +208,14 @@ func remoteTarStderrBenign(err error) bool {
 	}
 	sawPrimary := false
 	for line := range strings.SplitSeq(ce.Stderr, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimRight(strings.TrimSpace(line), ". ")
 		switch {
 		case line == "":
 			continue
-		case lineContainsAny(line, benignRemoteTarPrimary):
+		case hasBenignPrimary(line):
 			sawPrimary = true
-		case lineContainsAny(line, benignRemoteTarFallout):
-			// Tolerated only as attached fallout.
+		case hasBenignFallout(line):
+			// Summary line: tolerated only as attached fallout.
 		default:
 			return false
 		}
@@ -223,9 +223,27 @@ func remoteTarStderrBenign(err error) bool {
 	return sawPrimary
 }
 
-func lineContainsAny(line string, subs []string) bool {
-	for _, sub := range subs {
-		if strings.Contains(line, sub) {
+// hasBenignPrimary reports whether line is a per-file remote tar
+// warning about a file mutating or vanishing mid-archive. tar formats
+// these as "<path>: <message>", so the phrase is matched as a suffix
+// after the ": " separator. Matching it anywhere in the line would let
+// a benign phrase embedded in a file path mask a real error reported
+// for that same path (e.g. ".../file changed as we read it: Cannot
+// open: Permission denied").
+func hasBenignPrimary(line string) bool {
+	for _, phrase := range benignRemoteTarPrimary {
+		if strings.HasSuffix(line, ": "+phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBenignFallout reports whether line is a tar end-of-run summary,
+// which tar prints with no leading path.
+func hasBenignFallout(line string) bool {
+	for _, phrase := range benignRemoteTarFallout {
+		if strings.HasSuffix(line, phrase) {
 			return true
 		}
 	}

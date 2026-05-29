@@ -64,6 +64,24 @@ func TestRemoteTarStderrBenign(t *testing.T) {
 				"tar: b: Cannot stat: No such file or directory",
 			want: false,
 		},
+		{
+			name: "benign phrase in path with real error stays fatal",
+			stderr: "tar: home/wes/file changed as we read it: " +
+				"Cannot open: Permission denied",
+			want: false,
+		},
+		{
+			name: "genuine warning on a path containing the phrase",
+			stderr: "tar: home/file changed as we read it: " +
+				"file changed as we read it",
+			want: true,
+		},
+		{
+			name: "bsd delayed-exit summary with trailing period",
+			stderr: "tar: x.jsonl: file changed as we read it\n" +
+				"tar: Error exit delayed from previous errors.",
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
