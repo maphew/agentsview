@@ -15,12 +15,27 @@ function gitCommit(): string {
 const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 const apiTargetOrigin = new URL(apiTarget).origin;
 
-function requestOriginMatchesDevServer(
+function isLoopbackHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" ||
+    lower === "127.0.0.1" ||
+    lower.startsWith("127.") ||
+    lower === "[::1]";
+}
+
+function requestOriginMatchesLoopbackDevServer(
   origin: string | undefined,
   host: string | undefined,
 ): boolean {
   if (!origin || !host) return false;
-  return origin === `http://${host}` || origin === `https://${host}`;
+  try {
+    const originURL = new URL(origin);
+    const hostURL = new URL(`${originURL.protocol}//${host}`);
+    return originURL.host === hostURL.host &&
+      isLoopbackHostname(originURL.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export default defineConfig({
@@ -43,7 +58,7 @@ export default defineConfig({
           proxy.on("proxyReq", (proxyReq, req) => {
             const origin = req.headers.origin;
             if (
-              requestOriginMatchesDevServer(
+              requestOriginMatchesLoopbackDevServer(
                 typeof origin === "string" ? origin : undefined,
                 req.headers.host,
               )
