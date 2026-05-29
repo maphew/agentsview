@@ -2,10 +2,10 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -64,12 +64,7 @@ func downloadAndExtract(
 	done := make(chan struct{})
 	go pr.printLoop(done)
 
-	extract := exec.CommandContext(
-		ctx, "tar", "xf", "-", "-C", tmpDir,
-	)
-	extract.Stdin = pr
-
-	extractErr := extract.Run()
+	skipped, extractErr := extractTarStream(ctx, pr, tmpDir)
 	close(done)
 	pr.printFinal()
 
@@ -79,13 +74,26 @@ func downloadAndExtract(
 		_ = cleanup()
 		return "", fmt.Errorf("extract tar: %w", extractErr)
 	}
+	if skipped > 0 {
+		fmt.Printf(
+			"  Skipped %d self-referential hardlink(s).\n",
+			skipped,
+		)
+	}
 
-	// stdout is consumed by tar; close it so the SSH
-	// process can exit cleanly.
+	// stdout is consumed by the extractor; close it so the SSH
+	// process can exit cleanly. A non-zero remote tar exit is
+	// fatal unless its stderr shows only benign warnings (files
+	// changing or vanishing as the remote read them).
 	stdout.Close()
 	if err := cleanup(); err != nil {
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("ssh tar: %w", err)
+		if !remoteTarStderrBenign(err) {
+			os.RemoveAll(tmpDir)
+			return "", fmt.Errorf("ssh tar: %w", err)
+		}
+		fmt.Printf(
+			"  Remote tar reported benign warnings; continuing.\n",
+		)
 	}
 	return tmpDir, nil
 }
@@ -167,4 +175,59 @@ func remappedDir(tempDir, remoteDir string) string {
 	return filepath.Join(
 		tempDir, strings.TrimPrefix(remoteDir, "/"),
 	)
+}
+
+// benignRemoteTarPrimary are remote tar (creation-side) stderr
+// messages we treat as non-fatal: a file mutated or vanished while it
+// was being archived. The resulting archive is still well-formed, and
+// the local extractor independently validates its integrity.
+var benignRemoteTarPrimary = []string{
+	"file changed as we read it",
+	"file removed before we read it",
+}
+
+// benignRemoteTarFallout are the summary lines tar prints after a
+// non-zero exit. They are tolerated only alongside a primary benign
+// warning, never on their own.
+var benignRemoteTarFallout = []string{
+	"Exiting with failure status due to previous errors", // GNU tar
+	"Error exit delayed from previous errors",            // bsdtar
+}
+
+// remoteTarStderrBenign reports whether a non-nil cleanup() error from
+// the remote tar stream is safe to ignore. It is fail-closed: it
+// returns true only for a *commandError whose every stderr line is a
+// known-benign warning and which includes at least one primary
+// warning. Truncation, corrupt archives, permission errors, and
+// SSH-level failures are never benign, so they can never be persisted
+// to the skip cache as a successful sync.
+func remoteTarStderrBenign(err error) bool {
+	var ce *commandError
+	if !errors.As(err, &ce) {
+		return false
+	}
+	sawPrimary := false
+	for line := range strings.SplitSeq(ce.Stderr, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			continue
+		case lineContainsAny(line, benignRemoteTarPrimary):
+			sawPrimary = true
+		case lineContainsAny(line, benignRemoteTarFallout):
+			// Tolerated only as attached fallout.
+		default:
+			return false
+		}
+	}
+	return sawPrimary
+}
+
+func lineContainsAny(line string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(line, sub) {
+			return true
+		}
+	}
+	return false
 }
