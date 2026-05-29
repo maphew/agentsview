@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { isIP } from "node:net";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
@@ -17,10 +18,12 @@ const apiTargetOrigin = new URL(apiTarget).origin;
 
 function isLoopbackHostname(hostname: string): boolean {
   const lower = hostname.toLowerCase();
+  const unbracketed = lower.startsWith("[") && lower.endsWith("]")
+    ? lower.slice(1, -1)
+    : lower;
   return lower === "localhost" ||
-    lower === "127.0.0.1" ||
-    lower.startsWith("127.") ||
-    lower === "[::1]";
+    (isIP(unbracketed) === 4 && unbracketed.split(".")[0] === "127") ||
+    unbracketed === "::1";
 }
 
 function requestOriginMatchesLoopbackDevServer(
