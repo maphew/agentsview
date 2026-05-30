@@ -29,6 +29,30 @@ func TestFallbackPricing_Opus46Rates(t *testing.T) {
 	assert.Equal(t, want, *got)
 }
 
+func TestFallbackPricing_Opus47Rates(t *testing.T) {
+	prices := FallbackPricing()
+	var got *ModelPricing
+	for i := range prices {
+		if prices[i].ModelPattern == "claude-opus-4-7" {
+			got = &prices[i]
+			break
+		}
+	}
+	require.NotNil(t, got, "claude-opus-4-7 entry missing from FallbackPricing")
+
+	// Opus 4.7 shares the Opus 4.6/4.8 tier. LiteLLM already lists
+	// it, but the fallback ships it too so offline and fresh-seed
+	// pricing covers the whole current Opus generation.
+	want := ModelPricing{
+		ModelPattern:         "claude-opus-4-7",
+		InputPerMTok:         5.0,
+		OutputPerMTok:        25.0,
+		CacheCreationPerMTok: 6.25,
+		CacheReadPerMTok:     0.50,
+	}
+	assert.Equal(t, want, *got)
+}
+
 func TestFallbackPricing_Opus48Rates(t *testing.T) {
 	prices := FallbackPricing()
 	var got *ModelPricing

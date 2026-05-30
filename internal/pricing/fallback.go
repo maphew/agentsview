@@ -2,7 +2,7 @@ package pricing
 
 // FallbackVersion must be bumped whenever FallbackPricing
 // rates change so the startup seeder knows to re-upsert.
-const FallbackVersion = "2026-05-29"
+const FallbackVersion = "2026-05-30"
 
 // FallbackPricing returns hardcoded pricing for key Claude
 // models. Used when the LiteLLM fetch fails.
@@ -19,6 +19,13 @@ func FallbackPricing() []ModelPricing {
 		},
 		{
 			ModelPattern:         "claude-opus-4-6",
+			InputPerMTok:         5.0,
+			OutputPerMTok:        25.0,
+			CacheCreationPerMTok: 6.25,
+			CacheReadPerMTok:     0.50,
+		},
+		{
+			ModelPattern:         "claude-opus-4-7",
 			InputPerMTok:         5.0,
 			OutputPerMTok:        25.0,
 			CacheCreationPerMTok: 6.25,
