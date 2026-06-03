@@ -123,6 +123,90 @@ func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
 	assert.Greater(t, day.TotalCost, 0.0)
 }
 
+func TestStoreGetSessionUsagePricedModel(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_priced_test")
+
+	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `
+		INSERT INTO model_pricing (
+			model_pattern, input_per_mtok, output_per_mtok,
+			cache_creation_per_mtok, cache_read_per_mtok, updated_at
+		) VALUES ('gpt-5.1', 3, 15, 3.75, 0.30, 'seed')`)
+	require.NoError(t, err, "insert pricing")
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, machine, project, agent, started_at,
+			message_count, user_message_count,
+			total_output_tokens, peak_context_tokens,
+			has_total_output_tokens, has_peak_context_tokens
+		) VALUES (
+			'codex:usage-priced', 'test-machine', 'my-project', 'codex',
+			'2026-03-12T10:00:00Z'::timestamptz, 2, 1,
+			1234, 56789, true, true
+		)`)
+	require.NoError(t, err, "insert session")
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO messages (
+			session_id, ordinal, role, content, timestamp, content_length,
+			model, token_usage
+		) VALUES (
+			'codex:usage-priced', 1, 'assistant', 'done',
+			'2026-03-12T10:01:00Z'::timestamptz, 4,
+			'gpt-5.1',
+			'{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}'
+		)`)
+	require.NoError(t, err, "insert message")
+
+	got, err := store.GetSessionUsage(ctx, "codex:usage-priced")
+	require.NoError(t, err, "GetSessionUsage")
+	require.NotNil(t, got, "GetSessionUsage result")
+	assert.Equal(t, "codex:usage-priced", got.SessionID)
+	assert.Equal(t, "codex", got.Agent)
+	assert.Equal(t, "my-project", got.Project)
+	assert.Equal(t, 1234, got.TotalOutputTokens)
+	assert.Equal(t, 56789, got.PeakContextTokens)
+	assert.True(t, got.HasTokenData)
+	assert.True(t, got.HasCost)
+	assert.InDelta(t, 0.01134, got.CostUSD, 1e-9)
+	assert.Equal(t, []string{"gpt-5.1"}, got.Models)
+	assert.Empty(t, got.UnpricedModels)
+}
+
+func TestStoreGetSessionUsageNoTokenRowsKeepsMetadata(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_empty_test")
+
+	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, machine, project, agent, started_at,
+			message_count, user_message_count
+		) VALUES (
+			'codex:usage-empty', 'test-machine', 'quiet-project', 'codex',
+			'2026-03-12T10:00:00Z'::timestamptz, 1, 1
+		)`)
+	require.NoError(t, err, "insert session")
+
+	got, err := store.GetSessionUsage(ctx, "codex:usage-empty")
+	require.NoError(t, err, "GetSessionUsage")
+	require.NotNil(t, got, "GetSessionUsage result")
+	assert.Equal(t, "codex:usage-empty", got.SessionID)
+	assert.Equal(t, "codex", got.Agent)
+	assert.Equal(t, "quiet-project", got.Project)
+	assert.False(t, got.HasTokenData)
+	assert.False(t, got.HasCost)
+	assert.Zero(t, got.CostUSD)
+	assert.Empty(t, got.Models)
+	assert.Empty(t, got.UnpricedModels)
+}
+
+func TestStoreGetSessionUsageNotFound(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_missing_test")
+
+	got, err := store.GetSessionUsage(context.Background(), "missing")
+	require.NoError(t, err, "GetSessionUsage")
+	assert.Nil(t, got, "GetSessionUsage")
+}
+
 func TestStoreGetTopSessionsByCostDedupesClaudeKeys(t *testing.T) {
 	_, store := prepareUsageSchema(t, "agentsview_usage_top_test")
 

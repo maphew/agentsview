@@ -152,6 +152,18 @@ agentsview session usage <id>
 agentsview session usage <id> --format json
 ```
 
+The same per-session usage data is available from the REST API:
+
+```bash
+GET /api/v1/sessions/{id}/usage
+```
+
+The response includes the `session_id`, `agent`, `project`,
+`total_output_tokens`, `peak_context_tokens`, `has_token_data`, `cost_usd`,
+`has_cost`, `models`, and `unpriced_models` fields from the CLI JSON schema.
+HTTP responses also include `server_running: true`. Existing sessions return
+`200` even when token or cost data is absent; missing sessions return `404`.
+
 The deprecated alias `agentsview token-use <id>` remains available for
 compatibility and now also reports cost estimates.
 

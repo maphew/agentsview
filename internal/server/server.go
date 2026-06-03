@@ -224,6 +224,9 @@ func (s *Server) routes() {
 	s.mux.Handle(
 		"GET /api/v1/sessions/{id}/timing", s.withTimeout(s.handleSessionTiming),
 	)
+	s.mux.Handle(
+		"GET /api/v1/sessions/{id}/usage", s.withTimeout(s.handleSessionUsage),
+	)
 	// SSE: Do not use timeout, as this is a long-lived connection.
 	s.mux.HandleFunc(
 		"GET /api/v1/sessions/{id}/watch", s.handleWatchSession,

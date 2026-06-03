@@ -280,6 +280,40 @@ func pgUsageAmounts(
 	return
 }
 
+func pgSessionRowCost(
+	r pgUsageScanRow, pricing map[string]modelRates,
+) (cost float64, priced, contributes bool) {
+	var inTok, outTok, crTok, rdTok int
+	if r.usageSource == "message" {
+		usage := gjson.Parse(r.tokenJSON)
+		inTok = int(usage.Get("input_tokens").Int())
+		outTok = int(usage.Get("output_tokens").Int())
+		crTok = int(usage.Get("cache_creation_input_tokens").Int())
+		rdTok = int(usage.Get("cache_read_input_tokens").Int())
+	} else {
+		inTok = r.inputTokens
+		outTok = r.outputTokens
+		crTok = r.cacheCreationInputTokens
+		rdTok = r.cacheReadInputTokens
+	}
+
+	if r.costUSD.Valid {
+		return r.costUSD.Float64, true, true
+	}
+	if inTok == 0 && outTok == 0 && crTok == 0 && rdTok == 0 {
+		return 0, true, false
+	}
+	rates, ok := pricing[r.model]
+	if !ok {
+		return 0, false, true
+	}
+	cost = (float64(inTok)*rates.input +
+		float64(outTok)*rates.output +
+		float64(crTok)*rates.cacheCreation +
+		float64(rdTok)*rates.cacheRead) / 1_000_000
+	return cost, true, true
+}
+
 func usageDate(ts sql.NullTime, loc *time.Location) string {
 	if !ts.Valid {
 		return ""
@@ -292,6 +326,118 @@ func startedAtString(ts sql.NullTime) string {
 		return ""
 	}
 	return FormatISO8601(ts.Time)
+}
+
+// GetSessionUsage returns one session's token totals and cost
+// estimate from the PostgreSQL session store.
+func (s *Store) GetSessionUsage(
+	ctx context.Context, sessionID string,
+) (*db.SessionUsage, error) {
+	sess, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, nil
+	}
+
+	pricing, err := s.loadPricingMap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loading pg pricing: %w", err)
+	}
+
+	pb := &paramBuilder{}
+	query := pgUsageRowSelect() + " AND u.session_id = " +
+		pb.add(sessionID) + ` ORDER BY u.ts ASC, u.session_id ASC,
+		COALESCE(u.message_ordinal, -1) ASC`
+	rows, err := s.pg.QueryContext(ctx, query, pb.args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying pg session usage: %w", err)
+	}
+	defer rows.Close()
+
+	var cost float64
+	contributing := false
+	allPriced := true
+	modelsSet := make(map[string]struct{})
+	unpricedSet := make(map[string]struct{})
+
+	type dedupKey struct {
+		msgID string
+		reqID string
+	}
+	seen := make(map[dedupKey]struct{})
+
+	for rows.Next() {
+		r, scanErr := scanPGUsageRow(rows)
+		if scanErr != nil {
+			return nil,
+				fmt.Errorf("scanning pg session usage row: %w", scanErr)
+		}
+		if r.claudeMessageID != "" && r.claudeRequestID != "" {
+			key := dedupKey{
+				msgID: r.claudeMessageID,
+				reqID: r.claudeRequestID,
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		} else if r.usageDedupKey != "" {
+			key := dedupKey{
+				msgID: "usage",
+				reqID: r.usageDedupKey,
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+
+		c, priced, contributes := pgSessionRowCost(r, pricing)
+		if !contributes {
+			continue
+		}
+		contributing = true
+		modelsSet[r.model] = struct{}{}
+		if priced {
+			cost += c
+		} else {
+			allPriced = false
+			unpricedSet[r.model] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating pg session usage rows: %w", err)
+	}
+
+	out := &db.SessionUsage{
+		SessionID:         sess.ID,
+		Agent:             sess.Agent,
+		Project:           sess.Project,
+		TotalOutputTokens: sess.TotalOutputTokens,
+		PeakContextTokens: sess.PeakContextTokens,
+		HasTokenData: sess.HasTotalOutputTokens ||
+			sess.HasPeakContextTokens,
+		Models:  sortedStringSetKeys(modelsSet),
+		HasCost: contributing && allPriced,
+	}
+	if out.HasCost {
+		out.CostUSD = cost
+	}
+	if len(unpricedSet) > 0 {
+		out.UnpricedModels = sortedStringSetKeys(unpricedSet)
+	}
+	return out, nil
+}
+
+func sortedStringSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetDailyUsage returns token usage and cost aggregated by day.
