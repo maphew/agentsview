@@ -61,7 +61,7 @@ func resolveService(
 			"loading config: %w", err,
 		)
 	}
-	tr, err := detectTransport(cfg.DataDir, 0)
+	tr, err := detectTransport(cfg.DataDir, cfg.AuthToken, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -71,9 +71,7 @@ func resolveService(
 // resolveWritableService constructs a write-capable SessionService:
 // HTTP when a writable daemon is reachable, otherwise a direct
 // backend wired with a real sync.Engine. It refuses read-only
-// daemons (pg serve) and daemons that are active but unreachable,
-// since writing in those cases would either fail or race the daemon
-// for SQLite write ownership. Callers MUST defer the returned
+// daemons (pg serve) and unreachable writable daemons. Callers MUST defer the returned
 // cleanup. Read-only commands should use resolveService instead.
 func resolveWritableService(
 	cmd *cobra.Command,
@@ -85,7 +83,7 @@ func resolveWritableService(
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
-	tr, err := detectTransport(cfg.DataDir, 0)
+	tr, err := detectTransport(cfg.DataDir, cfg.AuthToken, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -97,14 +95,10 @@ func resolveWritableService(
 		)
 	}
 	if tr.Mode == transportDirect && tr.DirectReadOnly {
-		// A daemon is active but its TCP probe failed. Opening a
-		// writable engine here would race the daemon for SQLite write
-		// ownership, so refuse rather than compete.
 		return nil, nil, errors.New(
-			"local daemon is active but not responding; refusing to " +
-				"write directly to avoid competing for write ownership. " +
-				"Retry once the daemon is reachable, or stop it to write " +
-				"locally",
+			"local daemon owns the SQLite archive but is not responding; " +
+				"refusing to write directly. Retry once the daemon is " +
+				"reachable, or stop it to write locally",
 		)
 	}
 	return syncService(cfg, tr)

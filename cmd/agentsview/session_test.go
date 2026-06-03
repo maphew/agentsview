@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
-	"go.kenn.io/agentsview/internal/server"
 )
 
 func TestSessionHelp_ShowsSubcommands(t *testing.T) {
@@ -478,19 +477,18 @@ func TestSessionSync_UnknownID_ReportsNoFilePath(t *testing.T) {
 
 // TestSessionSync_AgainstReadOnlyDaemon_Refuses verifies the CLI
 // refuses to sync when a pg serve (ReadOnly=true) daemon owns
-// the state file. The refusal must happen before we issue the
-// HTTP call, so the test only needs a live TCP listener — not a
-// real HTTP handler.
+// the runtime record. Discovery uses the shared daemon ping
+// endpoint, so the fixture must answer /api/ping.
 func TestSessionSync_AgainstReadOnlyDaemon_Refuses(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := daemonRuntimeDir(t)
 	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
 
-	_, port := freeTCPListener(t)
-	_, err := server.WriteStateFile(
-		dataDir, "127.0.0.1", port, "test", true,
+	host, port := freeHTTPDaemon(t)
+	_, err := WriteDaemonRuntime(
+		dataDir, host, port, "test", true,
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { server.RemoveStateFile(dataDir, port) })
+	t.Cleanup(func() { RemoveDaemonRuntime(dataDir) })
 
 	_, err = executeCommand(newRootCommand(),
 		"session", "sync", "some-id")
@@ -499,13 +497,10 @@ func TestSessionSync_AgainstReadOnlyDaemon_Refuses(t *testing.T) {
 		"should refuse against pg serve daemon")
 }
 
-// TestSessionSync_WhenDaemonActiveButUnreachable_Refuses verifies
-// that `session sync` refuses to open a writable engine when the
-// detected transport is DirectReadOnly (live state file + PID, but
-// TCP probe failing). Falling through would race the daemon for
-// SQLite write ownership.
-func TestSessionSync_WhenDaemonActiveButUnreachable_Refuses(t *testing.T) {
-	dataDir := t.TempDir()
+// TestSessionSync_WhenDaemonRuntimeUnprobeable_Refuses verifies that
+// an unprobeable writable runtime record still suppresses direct writes.
+func TestSessionSync_WhenDaemonRuntimeUnprobeable_Refuses(t *testing.T) {
+	dataDir := daemonRuntimeDir(t)
 	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
 
 	// Bind then immediately close so the port is guaranteed
@@ -513,11 +508,11 @@ func TestSessionSync_WhenDaemonActiveButUnreachable_Refuses(t *testing.T) {
 	ln, port := freeTCPListener(t)
 	ln.Close()
 
-	_, err := server.WriteStateFile(
+	_, err := WriteDaemonRuntime(
 		dataDir, "127.0.0.1", port, "test", false,
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { server.RemoveStateFile(dataDir, port) })
+	t.Cleanup(func() { RemoveDaemonRuntime(dataDir) })
 
 	_, err = executeCommand(newRootCommand(),
 		"session", "sync", "some-id")

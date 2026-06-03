@@ -21,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/web"
+	"go.kenn.io/kit/daemon"
 )
 
 // VersionInfo holds build-time version metadata.
@@ -30,6 +31,8 @@ type VersionInfo struct {
 	BuildDate string `json:"build_date"`
 	ReadOnly  bool   `json:"read_only,omitempty"`
 }
+
+const daemonService = "agentsview"
 
 // Server is the HTTP server that serves the SPA and REST API.
 type Server struct {
@@ -202,6 +205,11 @@ func WithGenerateStreamFunc(f insight.GenerateStreamFunc) Option {
 }
 
 func (s *Server) routes() {
+	s.mux.Handle("GET /api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{
+		Service: daemonService,
+		Version: s.version.Version,
+	}))
+
 	// API v1 routes
 	s.mux.Handle("GET /api/v1/sessions", s.withTimeout(s.handleListSessions))
 	s.mux.Handle(
@@ -842,7 +850,23 @@ func (s *Server) ListenAndServe() error {
 	s.httpSrv = srv
 	s.mu.Unlock()
 	log.Printf("Starting server at http://%s", addr)
-	return srv.ListenAndServe()
+
+	listenCtx := context.Background()
+	if s.baseCtx != nil {
+		listenCtx = s.baseCtx
+	}
+	ln, err := daemon.Listen(
+		listenCtx,
+		daemon.Endpoint{
+			Network: daemon.NetworkTCP,
+			Address: addr,
+		},
+		daemon.WithRuntimeStore(daemon.RuntimeStore{Dir: s.dataDir}),
+	)
+	if err != nil {
+		return err
+	}
+	return srv.Serve(ln)
 }
 
 // Shutdown gracefully shuts down the HTTP server.

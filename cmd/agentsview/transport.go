@@ -1,6 +1,6 @@
 // ABOUTME: detectTransport picks between the HTTP and direct-DB
 // ABOUTME: SessionService backends based on whether a running
-// ABOUTME: agentsview daemon is discoverable via its state file.
+// ABOUTME: agentsview daemon is discoverable via its kit runtime record.
 package main
 
 import (
@@ -12,7 +12,6 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/service"
 )
 
@@ -24,78 +23,68 @@ const (
 )
 
 // transport captures how to reach the session-data layer from a
-// CLI subcommand. Either the HTTP daemon (URL set) or the local
-// DB (DirectReadOnly indicates whether the daemon was starting up
-// and we should read without writes).
+// CLI subcommand. Either the HTTP daemon (URL set) or the local DB.
 type transport struct {
 	Mode           transportMode
 	URL            string
-	ReadOnly       bool // state-file ReadOnly flag (true for pg serve)
-	DirectReadOnly bool // daemon is active but TCP probe failed; read DB only
+	ReadOnly       bool // daemon runtime ReadOnly flag (true for pg serve)
+	DirectReadOnly bool // writable daemon owns DB but is not reachable
 }
 
 // detectTransport picks the transport mode:
-//  1. If a state file points to a live listening daemon, use HTTP.
-//  2. If a startup lock exists, wait up to waitTimeout for the
+//  1. If a kit runtime record points to a live daemon, use HTTP.
+//  2. If a daemon start lock exists, wait up to waitTimeout for the
 //     daemon to become ready, then try again.
-//  3. If a server is active but not yet listening, fall back to
-//     read-only direct access (don't compete with the daemon for
-//     write ownership).
-//  4. Otherwise use full direct access.
+//  3. If a writable local daemon owns the SQLite archive but is not
+//     reachable by ping, use direct read-only access.
+//  4. Otherwise use direct access.
 func detectTransport(
-	dataDir string, waitTimeout time.Duration,
+	dataDir string, authToken string, waitTimeout time.Duration,
 ) (transport, error) {
-	if sf := server.FindRunningServer(dataDir); sf != nil {
+	if sf := FindDaemonRuntime(dataDir, authToken); sf != nil {
 		return transport{
 			Mode:     transportHTTP,
-			URL:      urlFromStateFile(sf),
+			URL:      urlFromDaemonRuntime(sf),
 			ReadOnly: sf.ReadOnly,
 		}, nil
 	}
-	if server.IsStartupLocked(dataDir) {
+	if IsDaemonStarting(dataDir) {
 		fmt.Fprintln(os.Stderr,
 			"server is starting up, waiting...")
 		if waitTimeout <= 0 {
 			waitTimeout = startupWaitTimeout
 		}
-		server.WaitForStartup(dataDir, waitTimeout)
-		if sf := server.FindRunningServer(dataDir); sf != nil {
+		WaitForDaemonStartup(dataDir, waitTimeout, authToken)
+		if sf := FindDaemonRuntime(dataDir, authToken); sf != nil {
 			return transport{
 				Mode:     transportHTTP,
-				URL:      urlFromStateFile(sf),
+				URL:      urlFromDaemonRuntime(sf),
 				ReadOnly: sf.ReadOnly,
 			}, nil
 		}
 	}
-	if server.IsLocalServerActive(dataDir) {
-		// A writable local daemon owns the SQLite archive but
-		// its TCP probe transiently failed. Don't compete for
-		// write ownership — read only via direct DB.
+	if IsLocalDaemonActive(dataDir, authToken) {
 		return transport{
 			Mode:           transportDirect,
 			DirectReadOnly: true,
 		}, nil
 	}
-	// IsServerActive is true but IsLocalServerActive is false —
-	// i.e. only a pg serve (read-only) daemon is live and its
-	// TCP probe failed. pg serve does not touch the local
-	// SQLite archive, so direct reads AND writes are safe.
 	return transport{Mode: transportDirect}, nil
 }
 
-// urlFromStateFile returns the HTTP URL a CLI client should use
-// to reach the daemon described by sf. Bind-all addresses are
+// urlFromDaemonRuntime returns the HTTP URL a CLI client should use
+// to reach the daemon described by rt. Bind-all addresses are
 // mapped to loopback. IPv6 hosts are bracketed via
 // net.JoinHostPort so the URL is well-formed.
-func urlFromStateFile(sf *server.StateFile) string {
-	host := sf.Host
+func urlFromDaemonRuntime(rt *DaemonRuntime) string {
+	host := rt.Host
 	switch host {
 	case "", "0.0.0.0":
 		host = "127.0.0.1"
 	case "::":
 		host = "::1"
 	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(sf.Port))
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(rt.Port))
 }
 
 // newService builds the SessionService matching the detected

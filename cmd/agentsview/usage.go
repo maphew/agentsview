@@ -14,7 +14,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/pricing"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -173,7 +172,7 @@ func openUsageDB() (*db.DB, config.Config) {
 // Decision tree:
 //  1. If the stored data version is stale (parser changes on
 //     upgrade), run a full resync.
-//  2. If a server process is active (via state file), trust
+//  2. If a server process is active (via kit runtime record), trust
 //     its file watcher and skip on-demand sync. This avoids
 //     duplicate work and write contention.
 //  3. Otherwise, run a quick incremental sync scoped to files
@@ -216,7 +215,7 @@ func ensureFreshData(
 	// already keeping the SQLite archive fresh. pg serve daemons
 	// (read-only) do not sync the local DB, so we still want to
 	// run our own sync when only one of those is present.
-	if server.IsLocalServerActive(appCfg.DataDir) {
+	if IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken) {
 		return
 	}
 

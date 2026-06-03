@@ -2155,6 +2155,24 @@ func TestAuthRequiredButNoToken(t *testing.T) {
 	}
 }
 
+func TestAuthRequiredProtectsPing(t *testing.T) {
+	te := setup(t, func(c *config.Config) {
+		c.RequireAuth = true
+		c.AuthToken = "secret-token"
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	w := httptest.NewRecorder()
+	te.srv.Handler().ServeHTTP(w, req)
+	assertStatus(t, w, http.StatusUnauthorized)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w = httptest.NewRecorder()
+	te.srv.Handler().ServeHTTP(w, req)
+	assertStatus(t, w, http.StatusOK)
+}
+
 func TestGetGithubConfig(t *testing.T) {
 	te := setup(t)
 

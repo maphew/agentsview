@@ -140,7 +140,7 @@ func TestClassifierRebuildRefusesOnDirectReadOnly(t *testing.T) {
 }
 
 func TestClassifierRebuildAllowsDirectWritable(t *testing.T) {
-	tr := transport{Mode: transportDirect, DirectReadOnly: false}
+	tr := transport{Mode: transportDirect}
 	assert.NoError(t, guardClassifierRebuild(tr))
 }
 

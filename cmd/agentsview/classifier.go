@@ -55,7 +55,7 @@ func newClassifierRebuildCommand() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			applyClassifierConfig(cfg)
-			tr, err := detectTransport(cfg.DataDir, 0)
+			tr, err := detectTransport(cfg.DataDir, cfg.AuthToken, 0)
 			if err != nil {
 				return err
 			}
@@ -82,9 +82,9 @@ func guardClassifierRebuild(tr transport) error {
 	}
 	if tr.Mode == transportDirect && tr.DirectReadOnly {
 		return errors.New(
-			"local daemon is active but not responding; " +
-				"refusing to rebuild to avoid competing for " +
-				"write ownership; stop the daemon first",
+			"local daemon owns the SQLite archive but is not responding; " +
+				"refusing to rebuild to avoid competing for write ownership; " +
+				"stop the daemon first",
 		)
 	}
 	return nil

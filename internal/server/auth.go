@@ -60,9 +60,9 @@ func hasForwardingHeader(r *http.Request) bool {
 		r.Header.Get("Forwarded") != ""
 }
 
-// authMiddleware enforces Bearer token authentication when
-// require_auth is enabled. Non-API routes (static assets) are
-// never gated.
+// authMiddleware enforces Bearer token authentication for /api/ routes,
+// including /api/ping, when require_auth is enabled. Non-API routes
+// such as static assets are never gated.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only gate /api/ routes — static assets are always served.

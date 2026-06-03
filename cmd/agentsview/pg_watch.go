@@ -6,15 +6,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/gofrs/flock"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
-	"go.kenn.io/agentsview/internal/pidlock"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/kit/daemon"
 )
 
 // pgTarget is the subset of *postgres.Sync the pusher needs. It is an
@@ -141,13 +141,23 @@ func runPGPushWatch(cfg PGPushConfig) {
 	}
 
 	// Single-instance guard: only one watcher per data dir.
-	lockPath := filepath.Join(appCfg.DataDir, "pg-watch.lock")
-	lock, err := pidlock.Acquire(lockPath)
+	lockPath, err := (daemon.RuntimeStore{
+		Dir:    appCfg.DataDir,
+		Prefix: "pg-watch",
+	}).LockPath()
 	if err != nil {
 		fatal("pg push --watch: %v", err)
 	}
+	lock := flock.New(lockPath)
+	locked, err := lock.TryLock()
+	if err != nil {
+		fatal("pg push --watch: locking %s: %v", lockPath, err)
+	}
+	if !locked {
+		fatal("pg push --watch: already locked (%s)", lockPath)
+	}
 	defer func() {
-		if rerr := lock.Release(); rerr != nil {
+		if rerr := lock.Unlock(); rerr != nil {
 			log.Printf("pg watch: releasing lock: %v", rerr)
 		}
 	}()
