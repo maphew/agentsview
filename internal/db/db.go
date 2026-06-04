@@ -28,12 +28,20 @@ import (
 // trigger a non-destructive re-sync (mtime reset + skip cache
 // clear) so existing session data is preserved.
 //
-// Bumped to 32: Antigravity DB parsers now filter internal
-// protocol strings from visible message content, remove raw step
-// headers, prefer prompt-like user text, and merge matching
-// Antigravity CLI history prompts when DB decoding drops short user
-// turns. Existing Antigravity DB rows need re-parsing so previously
-// indexed noisy or assistant-only transcripts are rewritten.
+// Bumped to 33: Claude parser now skips content-free /usage probe
+// sessions (the only user turn is the /usage command), and the Codex
+// parser drops the initial user prompt when Codex re-emits it verbatim
+// while continuing a task across turns. Existing rows need re-parsing
+// so /usage probe sessions are dropped from the archive and Codex
+// code-review sessions are recounted to a single user turn and
+// re-flagged as automated.
+//
+// (32: Antigravity DB parsers now filter internal protocol strings
+// from visible message content, remove raw step headers, prefer
+// prompt-like user text, and merge matching Antigravity CLI history
+// prompts when DB decoding drops short user turns. Existing Antigravity
+// DB rows need re-parsing so previously indexed noisy or assistant-only
+// transcripts are rewritten.)
 //
 // (31: Copilot shutdown usage events use positional DedupKey to
 // handle multi-segment sessions correctly.)
@@ -112,7 +120,7 @@ import (
 //
 // (17: Codex <skill> template filtering.)
 // (16: <turn_aborted> system messages.)
-const dataVersion = 32
+const dataVersion = 33
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 
