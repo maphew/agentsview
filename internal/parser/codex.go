@@ -35,7 +35,6 @@ var errCodexIncrementalNeedsFullParse = errors.New(
 type codexSessionBuilder struct {
 	messages             []ParsedMessage
 	firstMessage         string
-	firstUserContent     string
 	sawDistinctUserTurn  bool
 	startedAt            time.Time
 	endedAt              time.Time
@@ -167,20 +166,21 @@ func (b *codexSessionBuilder) handleResponseItem(
 	}
 
 	if role == "user" {
+		preview := FirstMessagePreview(content)
 		switch {
-		case b.firstUserContent == "":
-			b.firstUserContent = content
-			b.firstMessage = truncate(
-				strings.ReplaceAll(content, "\n", " "), 300,
-			)
-		case content == b.firstUserContent:
+		case b.firstMessage == "":
+			b.firstMessage = preview
+		case preview == b.firstMessage:
 			if !b.sawDistinctUserTurn {
 				// Codex re-emits the initial prompt verbatim when
 				// it continues a task across turns (after tool use
 				// or a turn_aborted). Drop the replay so it is not
 				// counted as a second user turn. A later identical
 				// message that follows a distinct user turn is a
-				// deliberate repeat and is kept.
+				// deliberate repeat and is kept. Dedup compares the
+				// preview form (not full content) so the state is a
+				// single value the incremental parser can rebuild by
+				// re-previewing the file prefix (seedCodexUserDedup).
 				return
 			}
 		default:
@@ -1284,6 +1284,65 @@ func readCodexModelAtOffset(
 	return model
 }
 
+// FirstMessagePreview normalizes message content into the stored
+// first_message preview form: newlines collapsed to spaces, trimmed,
+// and truncated to 300 runes. Exposed so the incremental Codex parser
+// can match a re-emitted prompt against the persisted preview when it
+// seeds dedup state.
+func FirstMessagePreview(content string) string {
+	return truncate(strings.ReplaceAll(content, "\n", " "), 300)
+}
+
+// seedCodexUserDedup scans a Codex JSONL prefix [0, offset) to recover
+// the state the re-emitted-prompt dedup needs when resuming an
+// incremental parse: the preview of the first real user message and
+// whether a second, distinct user turn already occurred. It mirrors
+// handleResponseItem's user-message filtering so the incremental path
+// dedups re-emitted prompts identically to a full parse, and
+// early-exits once a distinct turn is found.
+func seedCodexUserDedup(
+	path string, offset int64,
+) (firstPreview string, sawDistinct bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	lr := newLineReader(io.LimitReader(f, offset), maxLineSize)
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		if !gjson.Valid(line) {
+			continue
+		}
+		if gjson.Get(line, "type").Str != codexTypeResponseItem {
+			continue
+		}
+		payload := gjson.Get(line, "payload")
+		if payload.Get("role").Str != "user" {
+			continue
+		}
+		content := extractCodexContent(payload)
+		// isCodexSystemMessage already covers subagent
+		// notifications, so empty + system is the full set
+		// handleResponseItem skips before its dedup switch.
+		if strings.TrimSpace(content) == "" ||
+			isCodexSystemMessage(content) {
+			continue
+		}
+		preview := FirstMessagePreview(content)
+		if firstPreview == "" {
+			firstPreview = preview
+		} else if preview != firstPreview {
+			return firstPreview, true
+		}
+	}
+	return firstPreview, false
+}
+
 // ParseCodexSessionFrom parses only new lines from a Codex
 // JSONL file starting at the given byte offset. Returns only
 // the newly parsed messages (with ordinals starting at
@@ -1298,6 +1357,12 @@ func ParseCodexSessionFrom(
 	b := newCodexSessionBuilder(includeExec)
 	b.ordinal = startOrdinal
 	b.currentModel = readCodexModelAtOffset(path, offset)
+	// Recover the re-emitted-prompt dedup state from the already-parsed
+	// prefix so a replay appended across syncs is dropped just as a
+	// full parse would.
+	b.firstMessage, b.sawDistinctUserTurn = seedCodexUserDedup(
+		path, offset,
+	)
 	var fallbackErr error
 
 	consumed, err := readJSONLFrom(

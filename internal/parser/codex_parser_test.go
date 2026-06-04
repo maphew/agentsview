@@ -1369,6 +1369,80 @@ func TestParseCodexSessionFrom_Incremental(t *testing.T) {
 	assert.False(t, endedAt.IsZero())
 }
 
+// TestParseCodexSessionFrom_DedupsReemittedPrompt covers the
+// incremental-sync case of the re-emitted-prompt dedup: when Codex
+// appends a verbatim replay of the initial prompt after the session
+// was already synced, the incremental parser must recover the prior
+// context (first-prompt preview, whether a distinct turn occurred) and
+// drop the replay, mirroring a full parse.
+func TestParseCodexSessionFrom_DedupsReemittedPrompt(t *testing.T) {
+	const prompt = "You are a code reviewer. Review the code changes shown below."
+
+	appendLines := func(t *testing.T, path, content string) {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		require.NoError(t, err)
+		_, err = f.WriteString(content)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+
+	t.Run("drops a re-emitted prompt appended after first sync", func(t *testing.T) {
+		initial := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("inc-rev", "/tmp", "codex_cli_rs", tsEarly),
+			testjsonl.CodexMsgJSON("user", prompt, tsEarlyS1),
+			testjsonl.CodexMsgJSON("assistant", "looking", tsEarlyS5),
+		)
+		path := createTestFile(t, "incremental.jsonl", initial)
+		sess, msgs, err := ParseCodexSession(path, "local", false)
+		require.NoError(t, err)
+		require.Equal(t, 1, sess.UserMessageCount)
+		require.Len(t, msgs, 2)
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		offset := info.Size()
+
+		appendLines(t, path, testjsonl.JoinJSONL(
+			testjsonl.CodexMsgJSON("user", prompt, tsLate),
+			testjsonl.CodexMsgJSON("assistant", "No issues found.", tsLateS5),
+		))
+
+		newMsgs, _, _, err := ParseCodexSessionFrom(path, offset, len(msgs), false)
+		require.NoError(t, err)
+		require.Len(t, newMsgs, 1)
+		assert.Equal(t, RoleAssistant, newMsgs[0].Role)
+		assert.Contains(t, newMsgs[0].Content, "No issues found.")
+		assert.Equal(t, len(msgs), newMsgs[0].Ordinal,
+			"kept message must keep contiguous ordinals (no gap from the dropped replay)")
+	})
+
+	t.Run("keeps a re-emitted prompt when the prefix already had a distinct turn", func(t *testing.T) {
+		initial := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("inc-chat", "/tmp", "codex_cli_rs", tsEarly),
+			testjsonl.CodexMsgJSON("user", prompt, tsEarlyS1),
+			testjsonl.CodexMsgJSON("assistant", "ok", "2024-01-01T10:00:02Z"),
+			testjsonl.CodexMsgJSON("user", "something else entirely", "2024-01-01T10:00:03Z"),
+		)
+		path := createTestFile(t, "incremental.jsonl", initial)
+		sess, msgs, err := ParseCodexSession(path, "local", false)
+		require.NoError(t, err)
+		require.Equal(t, 2, sess.UserMessageCount)
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		offset := info.Size()
+
+		appendLines(t, path, testjsonl.CodexMsgJSON("user", prompt, tsLate))
+
+		newMsgs, _, _, err := ParseCodexSessionFrom(path, offset, len(msgs), false)
+		require.NoError(t, err)
+		require.Len(t, newMsgs, 1)
+		assert.Equal(t, RoleUser, newMsgs[0].Role)
+		assert.Equal(t, prompt, newMsgs[0].Content)
+	})
+}
+
 func TestParseCodexSessionFrom_SkipsSessionMeta(t *testing.T) {
 	t.Parallel()
 
