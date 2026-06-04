@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	gitrepo "go.kenn.io/kit/git/repo"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -419,7 +420,6 @@ func findGitRepoRoot(ctx context.Context, cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	_ = ctx
 
 	dir := cwd
 	cwdMissing := false
@@ -435,6 +435,7 @@ func findGitRepoRoot(ctx context.Context, cwd string) string {
 		cwdMissing = true
 		dir = filepath.Dir(dir)
 	}
+	startDir := dir
 
 	// When the original path is gone, walk up to the first
 	// existing ancestor and check its children for worktree
@@ -458,6 +459,16 @@ func findGitRepoRoot(ctx context.Context, cwd string) string {
 		}
 	}
 
+	if root := findGitRepoRootLocal(dir); root != "" {
+		return root
+	}
+	if !cwdMissing {
+		return gitMainRoot(ctx, startDir)
+	}
+	return ""
+}
+
+func findGitRepoRootLocal(dir string) string {
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		info, err := osStat(gitPath)
@@ -481,6 +492,19 @@ func findGitRepoRoot(ctx context.Context, cwd string) string {
 		}
 		dir = parent
 	}
+}
+
+func gitMainRoot(ctx context.Context, dir string) string {
+	if ctx == nil || dir == "" {
+		return ""
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	root, err := gitrepo.MainRoot(opCtx, dir)
+	if err != nil {
+		return ""
+	}
+	return root
 }
 
 // repoRootFromSiblings checks child directories of dir for

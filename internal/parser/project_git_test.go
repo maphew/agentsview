@@ -129,6 +129,36 @@ func TestExtractProjectFromCwdPlainRepoDoesNotInvokeGit(t *testing.T) {
 	assert.NoFileExists(t, marker, "plain .git directory should resolve without invoking git")
 }
 
+func TestExtractProjectFromCwdFallsBackToGitWhenLocalWalkMisses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell git shim")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	mustMkdirAll(t, binDir)
+	gitLog := filepath.Join(root, "git-log")
+	repo := filepath.Join(root, "virtual-repo")
+	cwd := filepath.Join(repo, "internal", "parser")
+	mustMkdirAll(t, cwd)
+
+	fakeGit := filepath.Join(binDir, "git")
+	mustWriteFile(t, fakeGit, "#!/bin/sh\n"+
+		"echo \"$*\" >> "+shellQuote(gitLog)+"\n"+
+		"case \"$*\" in\n"+
+		"  'rev-parse --git-dir') echo .git ;;\n"+
+		"  'rev-parse --git-common-dir') echo .git ;;\n"+
+		"  'rev-parse --show-toplevel') echo "+shellQuote(repo)+" ;;\n"+
+		"  *) exit 1 ;;\n"+
+		"esac\n")
+	require.NoError(t, os.Chmod(fakeGit, 0o755), "chmod fake git")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assert.Equal(t, "virtual_repo",
+		ExtractProjectFromCwdWithBranchContext(context.Background(), cwd, ""))
+	assert.FileExists(t, gitLog, "git fallback should be used when local walk misses")
+}
+
 func TestExtractProjectFromCwd_DeletedNestedWorktree(t *testing.T) {
 	// Simulates a nested worktree layout where the session's
 	// worktree has been deleted but a sibling worktree still
