@@ -1406,11 +1406,17 @@ func (e *Engine) ResyncAll(
 		stats.TotalSessions > 0 &&
 		stats.Failed == 0 &&
 		(oldFileSessions == 0 || trashedCopied > 0)
+	excludedOnly := stats.Synced == 0 &&
+		stats.TotalSessions > 0 &&
+		stats.Failed == 0 &&
+		stats.parserExcludedFiles > 0 &&
+		stats.filesOK == stats.parserExcludedFiles
 	abortSwap := stats.Aborted ||
 		emptyDiscovery ||
 		(stats.Synced == 0 &&
 			stats.TotalSessions > 0 &&
-			!preservedOnly) ||
+			!preservedOnly &&
+			!excludedOnly) ||
 		(stats.Failed > 0 && stats.Failed > stats.filesOK)
 	if abortSwap {
 		log.Printf(
@@ -1496,7 +1502,9 @@ func (e *Engine) ResyncAll(
 	// Copy orphaned sessions (source files gone) from the
 	// old DB so archived data is preserved. Failure aborts
 	// the swap to avoid losing archived sessions.
-	orphaned, err := newDB.CopyOrphanedDataFrom(origPath)
+	orphaned, err := newDB.CopyOrphanedDataFromExcluding(
+		origPath, stats.parserExcludedIDs,
+	)
 	if err != nil {
 		log.Printf("resync: copy orphaned sessions: %v", err)
 		stats.Aborted = true
@@ -2652,7 +2660,24 @@ func (e *Engine) collectAndBatch(
 			}
 			continue
 		}
+		if len(r.excludedSessionIDs) > 0 {
+			if _, err := e.db.DeleteParserExcludedSessions(
+				r.excludedSessionIDs,
+			); err != nil {
+				log.Printf("delete parser-excluded sessions: %v", err)
+				stats.RecordFailed()
+				continue
+			}
+			stats.parserExcludedIDs = append(
+				stats.parserExcludedIDs,
+				r.excludedSessionIDs...,
+			)
+		}
 		if len(r.results) == 0 && r.incremental == nil {
+			if len(r.excludedSessionIDs) > 0 {
+				stats.filesOK++
+				stats.parserExcludedFiles++
+			}
 			if r.cacheSkip {
 				e.cacheSkip(r.path, r.mtime)
 			}
@@ -2758,13 +2783,14 @@ type incrementalUpdate struct {
 }
 
 type processResult struct {
-	results     []parser.ParseResult
-	skip        bool
-	mtime       int64
-	err         error
-	incremental *incrementalUpdate
-	cacheSkip   bool
-	needsRetry  bool
+	results            []parser.ParseResult
+	excludedSessionIDs []string
+	skip               bool
+	mtime              int64
+	err                error
+	incremental        *incrementalUpdate
+	cacheSkip          bool
+	needsRetry         bool
 	// forceReplace requests full message replacement on write,
 	// even when the existing rows would otherwise be left in
 	// place. Set when a fall-through to full parse is recovering
@@ -3098,7 +3124,7 @@ func (e *Engine) processClaude(
 		}
 	}
 
-	results, err := parser.ParseClaudeSession(
+	results, excludedIDs, err := parser.ParseClaudeSessionWithExclusions(
 		file.Path, project, e.machine,
 	)
 	if err != nil {
@@ -3120,7 +3146,11 @@ func (e *Engine) processClaude(
 
 	parser.InferRelationshipTypes(results)
 
-	return processResult{results: results, forceReplace: forceReplace}
+	return processResult{
+		results:            results,
+		excludedSessionIDs: excludedIDs,
+		forceReplace:       forceReplace,
+	}
 }
 
 // incrementalParseFunc reads new JSONL lines from a file

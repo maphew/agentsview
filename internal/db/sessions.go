@@ -878,6 +878,46 @@ func (db *DB) PurgeExcludedSessions() error {
 	return err
 }
 
+// DeleteParserExcludedSessions removes rows that the current parser
+// deliberately excludes, without recording a permanent user deletion
+// in excluded_sessions. If the source file later becomes a real
+// conversation, sync may import it again.
+func (db *DB) DeleteParserExcludedSessions(ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.getWriter().Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin parser-excluded delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	deleted := int64(0)
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		res, err := tx.Exec(
+			"DELETE FROM sessions WHERE id = ?", id,
+		)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"deleting parser-excluded session %s: %w",
+				id, err,
+			)
+		}
+		n, _ := res.RowsAffected()
+		deleted += n
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit parser-excluded delete: %w", err)
+	}
+	return int(deleted), nil
+}
+
 const upsertSessionSQL = `
 		INSERT INTO sessions (
 			id, project, machine, agent, first_message, display_name,

@@ -46,9 +46,11 @@ type SyncStats struct {
 	Warnings       []string `json:"warnings,omitempty"`
 	Aborted        bool     `json:"aborted,omitempty"`
 
-	filesOK         int // unexported: file-level success counter
-	filesDiscovered int // file-based total, excludes DB-backed agents
-	messagesIndexed int // unexported: progress message counter
+	filesOK             int // unexported: file-level success counter
+	filesDiscovered     int // file-based total, excludes DB-backed agents
+	messagesIndexed     int // unexported: progress message counter
+	parserExcludedFiles int // file-level intentional parser exclusions
+	parserExcludedIDs   []string
 }
 
 // RecordSkip increments the skipped session counter.

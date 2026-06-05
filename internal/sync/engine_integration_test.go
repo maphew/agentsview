@@ -974,6 +974,52 @@ func TestResyncAllAppliesWorktreeProjectMappingDuringBulkWrites(
 	)
 }
 
+func TestResyncAllExcludesExistingClaudeUsageProbe(t *testing.T) {
+	env := setupTestEnv(t)
+
+	const sessionID = "usage-probe"
+	usageCmd := "<command-name>/usage</command-name>\n" +
+		"            <command-message>usage</command-message>\n" +
+		"            <command-args></command-args>"
+	content := testjsonl.ClaudeUserJSON(usageCmd, tsEarly)
+	path := env.writeClaudeSession(
+		t, "ClaudeProbe", sessionID+".jsonl", content,
+	)
+
+	size := int64(len(content))
+	mtime := time.Now().Add(-time.Hour).UnixNano()
+	firstMessage := "/usage"
+	startedAt := tsEarly
+	require.NoError(t, env.db.UpsertSession(db.Session{
+		ID:               sessionID,
+		Project:          "ClaudeProbe",
+		Machine:          "local",
+		Agent:            string(parser.AgentClaude),
+		FirstMessage:     &firstMessage,
+		StartedAt:        &startedAt,
+		EndedAt:          &startedAt,
+		MessageCount:     1,
+		UserMessageCount: 1,
+		FilePath:         &path,
+		FileSize:         &size,
+		FileMtime:        &mtime,
+	}), "seed stale /usage probe row")
+	require.NoError(t, env.db.SetSessionDataVersion(
+		sessionID, db.CurrentDataVersion()-1,
+	), "seed stale data_version")
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	assert.Equal(t, 0, stats.OrphanedCopied,
+		"usage probe must not be copied back as an orphan")
+
+	got, err := env.db.GetSession(context.Background(), sessionID)
+	require.NoError(t, err, "GetSession after ResyncAll")
+	assert.Nil(t, got, "stale /usage probe row must be excluded")
+	assert.False(t, env.db.IsSessionExcluded(sessionID),
+		"parser exclusions must not become permanent user deletions")
+}
+
 func TestSyncEngineCodex(t *testing.T) {
 	env := setupTestEnv(t)
 
