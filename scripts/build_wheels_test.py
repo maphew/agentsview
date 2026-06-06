@@ -31,6 +31,7 @@ class TestPlatformMap:
             "darwin_amd64",
             "darwin_arm64",
             "windows_amd64",
+            "windows_arm64",
         }
         assert set(PLATFORM_MAP.keys()) == required
 
@@ -48,6 +49,7 @@ class TestPlatformMap:
 
     def test_windows_binary_has_exe_extension(self) -> None:
         assert PLATFORM_MAP["windows_amd64"]["binary_name"] == "agentsview.exe"
+        assert PLATFORM_MAP["windows_arm64"]["binary_name"] == "agentsview.exe"
 
     def test_unix_binaries_have_no_extension(self) -> None:
         for key in ("linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"):
@@ -63,6 +65,7 @@ class TestPlatformMap:
 
     def test_windows_wheel_tag(self) -> None:
         assert PLATFORM_MAP["windows_amd64"]["wheel_tag"] == "win_amd64"
+        assert PLATFORM_MAP["windows_arm64"]["wheel_tag"] == "win_arm64"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,10 @@ class TestParseArchiveFilename:
     def test_parse_windows_amd64_zip(self) -> None:
         result = parse_archive_filename("agentsview_0.15.0_windows_amd64.zip")
         assert result == ("windows_amd64", "0.15.0")
+
+    def test_parse_windows_arm64_zip(self) -> None:
+        result = parse_archive_filename("agentsview_0.15.0_windows_arm64.zip")
+        assert result == ("windows_arm64", "0.15.0")
 
     def test_parse_darwin_amd64_tar_gz(self) -> None:
         result = parse_archive_filename("agentsview_2.0.0_darwin_amd64.tar.gz")
@@ -303,13 +310,14 @@ class TestBuildWheel:
 
 class TestBuildAllWheels:
     def _make_fake_archives(self, input_dir: Path, version: str) -> None:
-        """Create fake release archives for all 5 platforms."""
+        """Create fake release archives for every supported platform."""
         platforms = [
             ("linux_amd64", "agentsview", ".tar.gz"),
             ("linux_arm64", "agentsview", ".tar.gz"),
             ("darwin_amd64", "agentsview", ".tar.gz"),
             ("darwin_arm64", "agentsview", ".tar.gz"),
             ("windows_amd64", "agentsview.exe", ".zip"),
+            ("windows_arm64", "agentsview.exe", ".zip"),
         ]
         for platform_key, binary_name, ext in platforms:
             content = f"binary-for-{platform_key}".encode()
@@ -322,13 +330,13 @@ class TestBuildAllWheels:
         # Also add a SHA256SUMS file that should be skipped
         (input_dir / f"agentsview_{version}_SHA256SUMS").write_text("checksums here")
 
-    def test_produces_five_wheels(self, tmp_path: Path) -> None:
+    def test_produces_a_wheel_per_platform(self, tmp_path: Path) -> None:
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
         input_dir.mkdir()
         self._make_fake_archives(input_dir, "0.15.0")
         wheels = build_all_wheels(input_dir, output_dir, "0.15.0")
-        assert len(wheels) == 5
+        assert len(wheels) == len(PLATFORM_MAP)
 
     def test_correct_wheel_names(self, tmp_path: Path) -> None:
         input_dir = tmp_path / "input"
@@ -343,6 +351,7 @@ class TestBuildAllWheels:
             "agentsview-0.15.0-py3-none-macosx_11_0_x86_64.whl",
             "agentsview-0.15.0-py3-none-macosx_11_0_arm64.whl",
             "agentsview-0.15.0-py3-none-win_amd64.whl",
+            "agentsview-0.15.0-py3-none-win_arm64.whl",
         }
         assert names == expected
 
@@ -355,7 +364,7 @@ class TestBuildAllWheels:
         unknown = input_dir / "agentsview_0.15.0_freebsd_amd64.tar.gz"
         unknown.write_bytes(_make_targz("agentsview", b"fake"))
         wheels = build_all_wheels(input_dir, output_dir, "0.15.0")
-        assert len(wheels) == 5  # still only 5
+        assert len(wheels) == len(PLATFORM_MAP)  # unknown skipped
 
     def test_output_dir_created_if_missing(self, tmp_path: Path) -> None:
         input_dir = tmp_path / "input"
@@ -403,4 +412,4 @@ class TestBuildAllWheels:
         wheels = build_all_wheels(
             input_dir, output_dir, "1.0.0", require_all=True
         )
-        assert len(wheels) == 5
+        assert len(wheels) == len(PLATFORM_MAP)

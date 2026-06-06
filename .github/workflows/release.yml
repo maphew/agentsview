@@ -98,6 +98,9 @@ jobs:
           - os: windows-latest
             goos: windows
             goarch: amd64
+          - os: windows-11-arm
+            goos: windows
+            goarch: arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -123,14 +126,38 @@ jobs:
           rm -rf internal/web/dist
           cp -r frontend/dist internal/web/dist
 
-      - name: Setup MinGW (Windows)
-        if: matrix.goos == 'windows'
+      - name: Setup MinGW (Windows amd64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c  # v2
         with:
           msystem: MINGW64
           update: false
           install: mingw-w64-x86_64-gcc
           path-type: inherit
+
+      - name: Setup llvm-mingw (Windows arm64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        env:
+          # Self-contained aarch64 mingw clang toolchain (clang + runtime +
+          # lld). cgo (mattn/go-sqlite3) needs a C compiler; no Visual
+          # Studio / Windows SDK required. Pinned for reproducibility.
+          LLVM_MINGW_VERSION: "20260602"
+          LLVM_MINGW_NAME: llvm-mingw-20260602-ucrt-aarch64
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$env:LLVM_MINGW_VERSION/$env:LLVM_MINGW_NAME.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          # 7-Zip is preinstalled on the runner image and extracts faster
+          # than Expand-Archive for this many files.
+          7z x $zip -o"$env:RUNNER_TEMP" | Out-Null
+          $bin = Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW_NAME\bin"
+          $cc = Join-Path $bin 'aarch64-w64-mingw32-clang.exe'
+          if (-not (Test-Path $cc)) { throw "CC not found at $cc" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "CC=$cc"
 
       - name: Build
         shell: bash
