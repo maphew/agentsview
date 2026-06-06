@@ -484,30 +484,60 @@ func TestOpenAPIEndpointDocumentsEnumsAndRequestBodies(t *testing.T) {
 	var spec map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &spec))
 
-	assertQueryEnum(t, spec,
-		"/api/v1/sessions/{id}/messages", "get", "direction",
-		[]string{"asc", "desc"},
-	)
-	assertQueryEnum(t, spec,
-		"/api/v1/search", "get", "sort",
-		[]string{"relevance", "recency"},
-	)
-	assertQueryEnum(t, spec,
-		"/api/v1/search/content", "get", "mode",
-		[]string{"substring", "regex", "fts"},
-	)
-	assertQueryEnum(t, spec,
-		"/api/v1/sessions/{id}/md", "get", "depth",
-		[]string{"1", "all"},
-	)
-	assertQueryEnum(t, spec,
-		"/api/v1/analytics/activity", "get", "granularity",
-		[]string{"day", "week", "month"},
-	)
-	assertQueryEnum(t, spec,
-		"/api/v1/analytics/heatmap", "get", "metric",
-		[]string{"messages", "sessions", "output_tokens"},
-	)
+	for _, tt := range []struct {
+		path   string
+		method string
+		name   string
+		want   []string
+	}{
+		{
+			path:   "/api/v1/sessions/{id}/messages",
+			method: "get",
+			name:   "direction",
+			want:   []string{"asc", "desc"},
+		},
+		{
+			path:   "/api/v1/search",
+			method: "get",
+			name:   "sort",
+			want:   []string{"relevance", "recency"},
+		},
+		{
+			path:   "/api/v1/search/content",
+			method: "get",
+			name:   "mode",
+			want:   []string{"substring", "regex", "fts"},
+		},
+		{
+			path:   "/api/v1/sessions/{id}/md",
+			method: "get",
+			name:   "depth",
+			want:   []string{"1", "all"},
+		},
+		{
+			path:   "/api/v1/analytics/activity",
+			method: "get",
+			name:   "granularity",
+			want:   []string{"day", "week", "month"},
+		},
+		{
+			path:   "/api/v1/analytics/heatmap",
+			method: "get",
+			name:   "metric",
+			want:   []string{"messages", "sessions", "output_tokens"},
+		},
+	} {
+		param := findOpenAPIParameter(t, spec, tt.path, tt.method, tt.name, "query")
+		schema, ok := param["schema"].(map[string]any)
+		require.True(t, ok, "%s %s %s missing schema", tt.method, tt.path, tt.name)
+		rawEnum, ok := schema["enum"].([]any)
+		require.True(t, ok, "%s %s %s missing enum", tt.method, tt.path, tt.name)
+		got := make([]string, 0, len(rawEnum))
+		for _, v := range rawEnum {
+			got = append(got, fmt.Sprint(v))
+		}
+		assert.Equal(t, tt.want, got)
+	}
 
 	requireRequestProperty(t, spec,
 		"/api/v1/sessions/{id}/rename", "patch", "display_name",
@@ -522,27 +552,6 @@ func TestOpenAPIEndpointDocumentsEnumsAndRequestBodies(t *testing.T) {
 		"/api/v1/config/terminal", "post", "mode",
 		[]string{"auto", "custom", "clipboard"},
 	)
-}
-
-func assertQueryEnum(
-	t *testing.T,
-	spec map[string]any,
-	path string,
-	method string,
-	name string,
-	want []string,
-) {
-	t.Helper()
-	param := findOpenAPIParameter(t, spec, path, method, name, "query")
-	schema, ok := param["schema"].(map[string]any)
-	require.True(t, ok, "%s %s %s missing schema", method, path, name)
-	rawEnum, ok := schema["enum"].([]any)
-	require.True(t, ok, "%s %s %s missing enum", method, path, name)
-	got := make([]string, 0, len(rawEnum))
-	for _, v := range rawEnum {
-		got = append(got, fmt.Sprint(v))
-	}
-	assert.Equal(t, want, got)
 }
 
 func findOpenAPIParameter(
