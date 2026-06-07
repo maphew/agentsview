@@ -53,17 +53,7 @@ func (s *Server) registerSessionRoutes() {
 
 type messageDirection string
 
-const (
-	messageDirectionAsc  messageDirection = "asc"
-	messageDirectionDesc messageDirection = "desc"
-)
-
 type markdownDepth string
-
-const (
-	markdownDepthOne markdownDepth = "1"
-	markdownDepthAll markdownDepth = "all"
-)
 
 type sessionFilterInput struct {
 	Project          string           `query:"project" doc:"Filter by project"`
@@ -402,6 +392,10 @@ type publishResponse struct {
 type renameSessionInput struct {
 	ID   string `path:"id" required:"true" doc:"Session ID"`
 	Body renameRequest
+}
+
+type renameRequest struct {
+	DisplayName *string `json:"display_name"`
 }
 
 type trashResponse struct {

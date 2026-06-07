@@ -19,18 +19,7 @@ func (s *Server) registerSearchRoutes() {
 
 type searchSort string
 
-const (
-	searchSortRelevance searchSort = "relevance"
-	searchSortRecency   searchSort = "recency"
-)
-
 type contentSearchMode string
-
-const (
-	contentSearchModeSubstring contentSearchMode = "substring"
-	contentSearchModeRegex     contentSearchMode = "regex"
-	contentSearchModeFTS       contentSearchMode = "fts"
-)
 
 type searchInput struct {
 	Query   string     `query:"q" required:"true" doc:"Search query"`

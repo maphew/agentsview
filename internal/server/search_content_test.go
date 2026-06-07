@@ -35,7 +35,11 @@ func TestHandleSearchContentInvalidParams(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			srv := &Server{cfg: config.Config{Host: "127.0.0.1"}}
+			srv := &Server{
+				cfg: config.Config{Host: "127.0.0.1"},
+				mux: http.NewServeMux(),
+			}
+			srv.routes()
 			req := httptest.NewRequest(http.MethodGet,
 				"/api/v1/search/content?"+tt.query, nil)
 			req.RemoteAddr = tt.remoteAddr
@@ -43,7 +47,7 @@ func TestHandleSearchContentInvalidParams(t *testing.T) {
 				req.Header.Set("X-Forwarded-For", tt.xff)
 			}
 			w := httptest.NewRecorder()
-			srv.handleSearchContent(w, req)
+			srv.mux.ServeHTTP(w, req)
 			assert.Equal(t, tt.wantStatus, w.Code, "body: %s", w.Body.String())
 		})
 	}

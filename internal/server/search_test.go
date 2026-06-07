@@ -13,27 +13,6 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 )
 
-func TestValidateSort(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		sortParam string
-		wantSort  string
-	}{
-		{"recency accepted", "recency", "recency"},
-		{"relevance accepted", "relevance", "relevance"},
-		{"empty defaults to relevance", "", "relevance"},
-		{"invalid defaults to relevance", "injection", "relevance"},
-		{"SQL injection attempt defaults to relevance", "'; DROP TABLE sessions; --", "relevance"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.wantSort, validateSort(tt.sortParam))
-		})
-	}
-}
-
 func TestPrepareFTSQuery(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -89,13 +68,15 @@ func TestHandleSearchSortParam(t *testing.T) {
 			srv := &Server{
 				cfg: config.Config{Host: "127.0.0.1"},
 				db:  spy,
+				mux: http.NewServeMux(),
 			}
+			srv.routes()
 			req := httptest.NewRequest(
 				http.MethodGet,
 				"/api/v1/search?"+tt.query, nil,
 			)
 			w := httptest.NewRecorder()
-			srv.handleSearch(w, req)
+			srv.mux.ServeHTTP(w, req)
 			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 			assert.Equal(t, tt.wantSort, spy.filter.Sort)
 		})

@@ -109,7 +109,7 @@ type optionalIntParam struct {
 }
 
 func (p optionalIntParam) Schema(r huma.Registry) *huma.Schema {
-	return huma.SchemaFromType(r, reflect.TypeOf(p.Value))
+	return huma.SchemaFromType(r, reflect.TypeFor[int]())
 }
 
 func (p *optionalIntParam) Receiver() reflect.Value {
@@ -323,6 +323,9 @@ func streamJSONResponse() func(*huma.Operation) {
 func (s *Server) humaTimeout() func(*huma.Operation) {
 	return func(op *huma.Operation) {
 		op.Middlewares = append(op.Middlewares, func(ctx huma.Context, next func(huma.Context)) {
+			if errors.Is(ctx.Context().Err(), context.Canceled) {
+				return
+			}
 			if s.handlerDelay > 0 {
 				timer := time.NewTimer(s.cfg.WriteTimeout)
 				defer timer.Stop()
@@ -367,6 +370,9 @@ func handleHumaReadOnly(err error) error {
 }
 
 func serverError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
 	if handled := handleHumaContextError(err); handled != nil {
 		return handled
 	}
@@ -374,6 +380,9 @@ func serverError(err error) error {
 }
 
 func internalError(logPrefix string, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
 	if handled := handleHumaContextError(err); handled != nil {
 		return handled
 	}
@@ -394,11 +403,6 @@ type intIDPathInput struct {
 type messagePathInput struct {
 	ID        string `path:"id" required:"true" doc:"Session ID"`
 	MessageID int64  `path:"messageId" required:"true" doc:"Message ordinal"`
-}
-
-type paginationInput struct {
-	Limit  int `query:"limit" minimum:"0" doc:"Maximum number of results"`
-	Cursor int `query:"cursor" minimum:"0" doc:"Pagination cursor"`
 }
 
 type BoolIncludeInput struct {

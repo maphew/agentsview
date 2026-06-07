@@ -10,16 +10,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 )
 
-func TestHandleScanSecretsReadOnly(t *testing.T) {
-	t.Parallel()
-	srv := &Server{cfg: config.Config{Host: "127.0.0.1"}} // nil engine
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets/scan", nil)
-	req.RemoteAddr = "127.0.0.1:1234"
-	w := httptest.NewRecorder()
-	srv.handleScanSecrets(w, req)
-	assert.Equal(t, http.StatusNotImplemented, w.Code, "body: %s", w.Body.String())
-}
-
 func TestHumaScanSecretsReadOnly(t *testing.T) {
 	t.Parallel()
 	srv := &Server{cfg: config.Config{Host: "127.0.0.1"}} // nil engine
@@ -59,7 +49,11 @@ func TestHandleListSecretsRevealGate(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			srv := &Server{cfg: config.Config{Host: "127.0.0.1"}}
+			srv := &Server{
+				cfg: config.Config{Host: "127.0.0.1"},
+				mux: http.NewServeMux(),
+			}
+			srv.routes()
 			req := httptest.NewRequest(http.MethodGet,
 				"/api/v1/secrets?"+tt.query, nil)
 			req.RemoteAddr = tt.remoteAddr
@@ -67,7 +61,7 @@ func TestHandleListSecretsRevealGate(t *testing.T) {
 				req.Header.Set("X-Forwarded-For", tt.xff)
 			}
 			w := httptest.NewRecorder()
-			srv.handleListSecrets(w, req)
+			srv.mux.ServeHTTP(w, req)
 			assert.Equal(t, tt.wantStatus, w.Code, "body: %s", w.Body.String())
 		})
 	}

@@ -242,12 +242,6 @@ func (s *Server) routes() {
 	s.mux.Handle("/", http.HandlerFunc(s.handleSPA))
 }
 
-func (s *Server) handleGetVersion(
-	w http.ResponseWriter, _ *http.Request,
-) {
-	writeJSON(w, http.StatusOK, s.version)
-}
-
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	// Try to serve the exact file
 	path := strings.TrimPrefix(r.URL.Path, "/")

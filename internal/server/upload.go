@@ -4,9 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"mime/multipart"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,13 +12,6 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
-
-type uploadRequest struct {
-	project  string
-	machine  string
-	file     multipart.File
-	filename string
-}
 
 type stagedUpload struct {
 	tempPath  string
@@ -34,53 +24,6 @@ type committedUpload struct {
 	backupPath  string
 	hadPrevious bool
 	movedFinal  bool
-}
-
-// parseUploadRequest extracts and validates query params and
-// the multipart file from an upload request. The caller must
-// close req.file when done.
-func parseUploadRequest(
-	r *http.Request,
-) (*uploadRequest, string) {
-	project := strings.TrimSpace(
-		r.URL.Query().Get("project"),
-	)
-	if project == "" {
-		return nil, "project required"
-	}
-	if !isSafeName(project) {
-		return nil, "invalid project name"
-	}
-
-	machine := r.URL.Query().Get("machine")
-	if machine == "" {
-		machine = "remote"
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		return nil, "file field required"
-	}
-
-	if !strings.HasSuffix(header.Filename, ".jsonl") {
-		file.Close()
-		return nil, "file must be .jsonl"
-	}
-
-	safeName := filepath.Base(header.Filename)
-	if safeName != header.Filename || !isSafeName(
-		strings.TrimSuffix(safeName, ".jsonl"),
-	) {
-		file.Close()
-		return nil, "invalid filename"
-	}
-
-	return &uploadRequest{
-		project:  project,
-		machine:  machine,
-		file:     file,
-		filename: safeName,
-	}, ""
 }
 
 // stageUpload writes the uploaded file to a temporary path in
@@ -288,115 +231,6 @@ func sessionBatchWriteFromParsed(
 		Messages:        dbMsgs,
 		ReplaceMessages: true,
 	}
-}
-
-func (s *Server) handleUploadSession(
-	w http.ResponseWriter, r *http.Request,
-) {
-	if s.db.ReadOnly() {
-		writeError(w, http.StatusNotImplemented,
-			"uploads are not available in read-only mode")
-		return
-	}
-
-	req, errMsg := parseUploadRequest(r)
-	if errMsg != "" {
-		writeError(w, http.StatusBadRequest, errMsg)
-		return
-	}
-	if req == nil {
-		writeError(w, http.StatusBadRequest, "invalid upload request")
-		return
-	}
-	defer req.file.Close()
-
-	upload, err := s.stageUpload(
-		req.project, req.filename, req.file,
-	)
-	if err != nil {
-		log.Printf("Error saving upload: %v", err)
-		writeError(w, http.StatusInternalServerError,
-			"failed to save upload")
-		return
-	}
-	defer func() {
-		_ = os.RemoveAll(upload.tempDir)
-	}()
-
-	results, err := parser.ParseClaudeSession(
-		upload.tempPath, req.project, req.machine,
-	)
-	if err != nil {
-		writeError(w, http.StatusBadRequest,
-			fmt.Sprintf("parsing session: %v", err))
-		return
-	}
-	if len(results) == 0 {
-		writeError(w, http.StatusBadRequest,
-			"no sessions parsed from upload")
-		return
-	}
-
-	parser.InferRelationshipTypes(results)
-	for i := range results {
-		results[i].Session.File.Path = upload.finalPath
-	}
-
-	writes := make([]db.SessionBatchWrite, len(results))
-	for i, pr := range results {
-		writes[i] = sessionBatchWriteFromParsed(
-			pr.Session, pr.Messages,
-		)
-	}
-	var commitErr error
-	var uploadCommit committedUpload
-	_, err = s.db.WriteSessionBatchAtomic(writes, func() error {
-		uploadCommit, commitErr = commitUpload(upload)
-		return commitErr
-	})
-	if err != nil {
-		if commitErr != nil {
-			log.Printf("Error committing upload: %v", commitErr)
-			writeError(w, http.StatusInternalServerError,
-				"failed to save upload")
-			return
-		}
-		if uploadCommit.movedFinal {
-			if rbErr := rollbackCommittedUpload(uploadCommit); rbErr != nil {
-				log.Printf(
-					"Error rolling back upload after DB failure: %v",
-					rbErr,
-				)
-				writeError(w, http.StatusInternalServerError,
-					"failed to save upload")
-				return
-			}
-			cleanupCommittedUpload(uploadCommit)
-		}
-		if handleReadOnly(w, err) {
-			return
-		}
-		if errors.Is(err, db.ErrSessionExcluded) ||
-			errors.Is(err, db.ErrSessionTrashed) {
-			writeError(w, http.StatusConflict,
-				"session upload rejected: session is excluded or trashed")
-			return
-		}
-		log.Printf("Error saving session to DB: %v", err)
-		writeError(w, http.StatusInternalServerError,
-			"failed to save session to database")
-		return
-	}
-	cleanupCommittedUpload(uploadCommit)
-
-	main := results[0]
-	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id": main.Session.ID,
-		"project":    req.project,
-		"machine":    req.machine,
-		"messages":   len(main.Messages),
-		"sessions":   len(results),
-	})
 }
 
 // isSafeName rejects names containing path separators, "..",

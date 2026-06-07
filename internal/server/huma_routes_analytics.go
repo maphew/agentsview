@@ -26,27 +26,9 @@ func (s *Server) registerAnalyticsRoutes() {
 
 type analyticsGranularity string
 
-const (
-	analyticsGranularityDay   analyticsGranularity = "day"
-	analyticsGranularityWeek  analyticsGranularity = "week"
-	analyticsGranularityMonth analyticsGranularity = "month"
-)
-
 type heatmapMetric string
 
-const (
-	heatmapMetricMessages     heatmapMetric = "messages"
-	heatmapMetricSessions     heatmapMetric = "sessions"
-	heatmapMetricOutputTokens heatmapMetric = "output_tokens"
-)
-
 type topSessionMetric string
-
-const (
-	topSessionMetricMessages     topSessionMetric = "messages"
-	topSessionMetricDuration     topSessionMetric = "duration"
-	topSessionMetricOutputTokens topSessionMetric = "output_tokens"
-)
 
 type AnalyticsFilterInput struct {
 	From             string           `query:"from" format:"date" doc:"Range start date"`

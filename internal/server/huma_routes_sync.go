@@ -26,8 +26,6 @@ type syncStatusResponse struct {
 	Stats    *syncpkg.SyncStats `json:"stats"`
 }
 
-type syncStatsResponse = syncpkg.SyncStats
-
 type sessionSyncInput struct {
 	Body service.SyncInput
 }

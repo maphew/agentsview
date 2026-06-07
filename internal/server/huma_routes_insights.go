@@ -26,11 +26,6 @@ func (s *Server) registerInsightsRoutes() {
 
 type insightType string
 
-const (
-	insightTypeDailyActivity insightType = "daily_activity"
-	insightTypeAgentAnalysis insightType = "agent_analysis"
-)
-
 type insightsInput struct {
 	Type    insightType `query:"type" enum:"daily_activity,agent_analysis" doc:"Insight type"`
 	Project string      `query:"project" doc:"Filter by project"`

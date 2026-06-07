@@ -26,17 +26,17 @@ func TestHandlers_Internal_DeadlineExceeded(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		handler     func(http.ResponseWriter, *http.Request)
+		path        string
 		requiresFTS bool
 	}{
-		{"ListSessions", s.handleListSessions, false},
-		{"GetSession", s.handleGetSession, false},
-		{"GetMessages", s.handleGetMessages, false},
-		{"GetStats", s.handleGetStats, false},
-		{"ListProjects", s.handleListProjects, false},
-		{"ListMachines", s.handleListMachines, false},
-		{"Search", s.handleSearch, true},
-		{"GetSessionActivity", s.handleGetSessionActivity, false},
+		{"ListSessions", "/api/v1/sessions", false},
+		{"GetSession", "/api/v1/sessions/s1", false},
+		{"GetMessages", "/api/v1/sessions/s1/messages", false},
+		{"GetStats", "/api/v1/stats", false},
+		{"ListProjects", "/api/v1/projects", false},
+		{"ListMachines", "/api/v1/machines", false},
+		{"Search", "/api/v1/search?q=test", true},
+		{"GetSessionActivity", "/api/v1/sessions/s1/activity", false},
 	}
 
 	for _, tt := range tests {
@@ -48,15 +48,12 @@ func TestHandlers_Internal_DeadlineExceeded(t *testing.T) {
 			ctx, cancel := expiredCtx(t)
 			defer cancel()
 
-			req := httptest.NewRequest(http.MethodGet, "/?q=test", nil)
-			req.SetPathValue("id", "s1")
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
 
-			// Call handler directly, bypassing middleware.
-			// handleContextError writes 504 for deadline exceeded.
-			tt.handler(w, req)
+			s.mux.ServeHTTP(w, req)
 
 			assertRecorderStatus(t, w, http.StatusGatewayTimeout)
 			assertContentType(t, w, "application/json")

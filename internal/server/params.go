@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-
-	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 // parseIntParam reads an integer query parameter from r.
@@ -56,29 +54,6 @@ func parseNonNegativeIntParam(
 // Pass "" for any param an endpoint does not accept. Centralizing this keeps
 // malformed dates out of the query layer, where they would otherwise reach the
 // DB and surface as a 500 (e.g. PostgreSQL casting to date/timestamptz).
-func validateDateFilters(
-	w http.ResponseWriter, date, dateFrom, dateTo, activeSince string,
-) bool {
-	for _, d := range []string{date, dateFrom, dateTo} {
-		if d != "" && !timeutil.IsValidDate(d) {
-			writeError(w, http.StatusBadRequest,
-				"invalid date format: use YYYY-MM-DD")
-			return false
-		}
-	}
-	if dateFrom != "" && dateTo != "" && dateFrom > dateTo {
-		writeError(w, http.StatusBadRequest,
-			"date_from must not be after date_to")
-		return false
-	}
-	if activeSince != "" && !timeutil.IsValidTimestamp(activeSince) {
-		writeError(w, http.StatusBadRequest,
-			"invalid active_since: use RFC3339 timestamp")
-		return false
-	}
-	return true
-}
-
 // clampLimit applies a default and upper bound to a limit value.
 func clampLimit(limit, defaultLimit, maxLimit int) int {
 	if limit <= 0 {

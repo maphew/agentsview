@@ -94,6 +94,9 @@ func TestServerTimeouts(t *testing.T) {
 				return
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			t.Logf("reading watch stream: %v", err)
+		}
 		close(readCh)
 	}()
 
