@@ -15,8 +15,28 @@ import {
 } from "./sessions.svelte.js";
 import type { Filters } from "./sessions.svelte.js";
 import type { Session } from "../api/types.js";
-import * as api from "../api/client.js";
-import type { ListSessionsParams } from "../api/client.js";
+
+const api = vi.hoisted(() => ({
+  listSessions: vi.fn(),
+  getSidebarSessionIndex: vi.fn(),
+  getSession: vi.fn(),
+  getProjects: vi.fn(),
+  getAgents: vi.fn(),
+  getMachines: vi.fn(),
+  deleteSession: vi.fn(),
+  restoreSession: vi.fn(),
+  renameSession: vi.fn(),
+  getStats: vi.fn().mockResolvedValue({
+    session_count: 0,
+    message_count: 0,
+    project_count: 0,
+    machine_count: 0,
+    earliest_session: null,
+  }),
+  watchEvents: vi.fn(() => ({ close: () => {} })),
+}));
+
+type ListSessionsParams = Parameters<typeof api.listSessions>[0];
 
 // Install a minimal localStorage mock for the test environment.
 const storageData = new Map<string, string>();
@@ -32,29 +52,33 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 vi.mock("../api/client.js", () => ({
-  listSessions: vi.fn(),
-  getSidebarSessionIndex: vi.fn(),
-  getSession: vi.fn(),
-  getProjects: vi.fn(),
-  getAgents: vi.fn(),
-  getMachines: vi.fn(),
-  deleteSession: vi.fn(),
-  restoreSession: vi.fn(),
-  renameSession: vi.fn(),
-  // invalidateFilterCaches() triggers sync.loadStats() which calls
-  // getStats(). Provide a default so the stale-state guards we
-  // exercise don't trip noisy "no export" stderr from the mock.
-  getStats: vi.fn().mockResolvedValue({
-    session_count: 0,
-    message_count: 0,
-    project_count: 0,
-    machine_count: 0,
-    earliest_session: null,
-  }),
-  // Live-refresh subscription opens an EventSource via watchEvents.
-  // Stub it so the mocked client doesn't blow up when the store
-  // calls events.subscribeDebounced() during load().
-  watchEvents: vi.fn(() => ({ close: () => {} })),
+  watchEvents: api.watchEvents,
+}));
+
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+}));
+
+vi.mock("../api/generated/index", () => ({
+  SessionsService: {
+    getApiV1Sessions: vi.fn((params) => api.listSessions(params)),
+    getApiV1SessionsSidebarIndex: vi.fn((params) =>
+      api.getSidebarSessionIndex(params)
+    ),
+    getApiV1SessionsId: vi.fn(({ id }) => api.getSession(id)),
+    deleteApiV1SessionsId: vi.fn(({ id }) => api.deleteSession(id)),
+    postApiV1SessionsIdRestore: vi.fn(({ id }) => api.restoreSession(id)),
+    patchApiV1SessionsIdRename: vi.fn(({ id, requestBody }) =>
+      api.renameSession(id, requestBody.display_name)
+    ),
+    getApiV1SessionsIdChildren: vi.fn().mockResolvedValue([]),
+  },
+  MetadataService: {
+    getApiV1Projects: vi.fn((params) => api.getProjects(params)),
+    getApiV1Agents: vi.fn((params) => api.getAgents(params)),
+    getApiV1Machines: vi.fn((params) => api.getMachines(params)),
+    getApiV1Stats: vi.fn((params) => api.getStats(params)),
+  },
 }));
 
 function mockListSessions(
@@ -122,7 +146,7 @@ function expectListSessionsCalledWith(
   expected: Partial<ListSessionsParams>,
 ) {
   expect((api as any).getSidebarSessionIndex).toHaveBeenLastCalledWith(
-    expect.objectContaining(expected),
+    expect.objectContaining(generatedParams(expected)),
   );
 }
 
@@ -130,7 +154,32 @@ function expectPaginatedListSessionsCalledWith(
   expected: Partial<ListSessionsParams>,
 ) {
   expect(api.listSessions).toHaveBeenLastCalledWith(
-    expect.objectContaining(expected),
+    expect.objectContaining(generatedParams(expected)),
+  );
+}
+
+function generatedParams(
+  params: Partial<Record<string, unknown>>,
+): Record<string, unknown> {
+  const names: Record<string, string> = {
+    active_since: "activeSince",
+    date_from: "dateFrom",
+    date_to: "dateTo",
+    exclude_project: "excludeProject",
+    health_grade: "healthGrade",
+    include_automated: "includeAutomated",
+    include_children: "includeChildren",
+    include_one_shot: "includeOneShot",
+    max_messages: "maxMessages",
+    min_messages: "minMessages",
+    min_tool_failures: "minToolFailures",
+    min_user_messages: "minUserMessages",
+  };
+  return Object.fromEntries(
+    Object.entries(params).map(([key, value]) => [
+      names[key] ?? key,
+      value,
+    ]),
   );
 }
 
@@ -262,19 +311,19 @@ describe("SessionsStore", () => {
         .mock.calls[0]![0];
       expect(params).toMatchObject({
         project: "proj",
-        exclude_project: "unknown",
+        excludeProject: "unknown",
         machine: "host-a",
         agent: "codex",
         date: "2026-05-23",
-        date_from: "2026-05-01",
-        date_to: "2026-05-31",
-        min_messages: 2,
-        max_messages: 20,
-        min_user_messages: 1,
-        include_one_shot: undefined,
-        include_automated: true,
+        dateFrom: "2026-05-01",
+        dateTo: "2026-05-31",
+        minMessages: 2,
+        maxMessages: 20,
+        minUserMessages: 1,
+        includeOneShot: undefined,
+        includeAutomated: true,
       });
-      expect(typeof params.active_since).toBe("string");
+      expect(typeof params.activeSince).toBe("string");
       expect(params.cursor).toBeUndefined();
       expect(params.limit).toBeUndefined();
       expect(params.include_children).toBeUndefined();
@@ -882,8 +931,8 @@ describe("SessionsStore", () => {
       const first = vi.mocked((api as any).getSidebarSessionIndex)
         .mock.calls[0]?.[0];
 
-      expect(first?.min_messages).toBe(10);
-      expect(first?.max_messages).toBe(50);
+      expect(first?.minMessages).toBe(10);
+      expect(first?.maxMessages).toBe(50);
       expect(first?.cursor).toBeUndefined();
 
       expect(sessions.sessions).toHaveLength(2);

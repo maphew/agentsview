@@ -1,4 +1,4 @@
-import { getAuthToken, isRemoteConnection } from "../api/client.js";
+import { getAuthToken, isRemoteConnection } from "../api/runtime.js";
 
 const DEBOUNCE_MS = 5_000;
 const TIMEOUT_MS = 3_000;

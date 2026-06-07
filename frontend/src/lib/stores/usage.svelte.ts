@@ -3,7 +3,7 @@ import type {
   TopUsageSessionsResponse,
 } from "../api/types/usage.js";
 import { UsageService } from "../api/generated/index";
-import { configureGeneratedClient } from "../api/client.js";
+import { configureGeneratedClient } from "../api/runtime.js";
 import { sessions } from "./sessions.svelte.js";
 
 type UsageParams = Parameters<typeof UsageService.getApiV1UsageSummary>[0];

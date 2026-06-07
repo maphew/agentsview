@@ -1,6 +1,13 @@
-import * as api from "../api/client.js";
+import { SearchService } from "../api/generated/index";
+import {
+  configureGeneratedClient,
+  withAbort,
+} from "../api/runtime.js";
 import { debounce } from "../utils/debounce.js";
-import type { SearchResult } from "../api/types.js";
+import type {
+  SearchResponse,
+  SearchResult,
+} from "../api/types.js";
 
 class SearchStore {
   query: string = $state("");
@@ -66,10 +73,15 @@ class SearchStore {
 
     this.isSearching = true;
     try {
-      const res = await api.search(
-        q,
-        { project: project || undefined, limit: 30, sort: this.sort },
-        { signal },
+      configureGeneratedClient();
+      const res = await withAbort(
+        SearchService.getApiV1Search({
+          q,
+          project: project || undefined,
+          limit: 30,
+          sort: this.sort,
+        }) as unknown as Promise<SearchResponse>,
+        signal,
       );
       this.results = res.results ?? [];
     } catch (error: unknown) {

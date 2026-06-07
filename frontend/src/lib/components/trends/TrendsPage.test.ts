@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   getApiV1TrendsTerms: vi.fn(),
 }));
 
-vi.mock("../../api/client.js", () => ({
+vi.mock("../../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
 }));
 

@@ -31,7 +31,7 @@
   import { starred } from "./lib/stores/starred.svelte.js";
   import { pins } from "./lib/stores/pins.svelte.js";
   import { settings } from "./lib/stores/settings.svelte.js";
-  import { setAuthToken, getAuthToken, setServerUrl, getBase } from "./lib/api/client.js";
+  import { setAuthToken, getAuthToken, setServerUrl, getBase } from "./lib/api/runtime.js";
   import { setupVisibilityHealthCheck } from "./lib/utils/health.js";
   import { registerShortcuts } from "./lib/utils/keyboard.js";
   import { shouldAutoSwitchTranscriptModeToNormal } from "./lib/utils/transcript-mode.js";

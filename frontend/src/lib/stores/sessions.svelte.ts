@@ -1,13 +1,25 @@
-import * as api from "../api/client.js";
 import type { DataChangedEvent } from "../api/client.js";
+import {
+  MetadataService,
+  SessionsService,
+} from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
 import type {
   Session,
   ProjectInfo,
   AgentInfo,
+  SidebarSessionIndexResponse,
   SidebarSessionIndexRow,
 } from "../api/types.js";
 import { sync } from "./sync.svelte.js";
 import { events } from "./events.svelte.js";
+
+type SessionListParams = Parameters<
+  typeof SessionsService.getApiV1Sessions
+>[0];
+type MetadataParams = Parameters<
+  typeof MetadataService.getApiV1Projects
+>[0];
 
 const SESSION_PAGE_SIZE = 500;
 const SIDEBAR_HYDRATION_CONCURRENCY = 6;
@@ -255,7 +267,7 @@ class SessionsStore {
     return buildSessionGroups(this.sessions);
   }
 
-  private get apiParams() {
+  private get apiParams(): SessionListParams {
     const f = this.filters;
     // Don't exclude "unknown" when explicitly viewing it.
     const exclude =
@@ -264,26 +276,26 @@ class SessionsStore {
         : undefined;
     return {
       project: f.project || undefined,
-      exclude_project: exclude,
+      excludeProject: exclude,
       machine: f.machine || undefined,
       agent: f.agent || undefined,
       termination: f.termination || undefined,
       date: f.date || undefined,
-      date_from: f.dateFrom || undefined,
-      date_to: f.dateTo || undefined,
-      active_since: f.recentlyActive
+      dateFrom: f.dateFrom || undefined,
+      dateTo: f.dateTo || undefined,
+      activeSince: f.recentlyActive
         ? new Date(
             Date.now() - 24 * 60 * 60 * 1000,
           ).toISOString()
         : undefined,
-      min_messages:
+      minMessages:
         f.minMessages > 0 ? f.minMessages : undefined,
-      max_messages:
+      maxMessages:
         f.maxMessages > 0 ? f.maxMessages : undefined,
-      min_user_messages:
+      minUserMessages:
         f.minUserMessages > 0 ? f.minUserMessages : undefined,
-      include_one_shot: f.includeOneShot || undefined,
-      include_automated: f.includeAutomated || undefined,
+      includeOneShot: f.includeOneShot || undefined,
+      includeAutomated: f.includeAutomated || undefined,
     };
   }
 
@@ -323,7 +335,10 @@ class SessionsStore {
       total: this.total,
     };
     try {
-      const index = await api.getSidebarSessionIndex(this.apiParams);
+      configureGeneratedClient();
+      const index = await SessionsService.getApiV1SessionsSidebarIndex(
+        this.apiParams,
+      ) as unknown as SidebarSessionIndexResponse;
       if (this.loadVersion !== version) return;
 
       this.sidebarIndexVersion = indexVersion;
@@ -393,7 +408,10 @@ class SessionsStore {
 
       const promise = this.runSidebarHydration(async () => {
         try {
-          const hydrated = await api.getSession(id);
+          configureGeneratedClient();
+          const hydrated = await SessionsService.getApiV1SessionsId({
+            id,
+          }) as unknown as Session;
           if (
             version !== this.sidebarIndexVersion ||
             epoch !== (this.sidebarHydrationEpochByVersion.get(version) ?? 0)
@@ -460,11 +478,16 @@ class SessionsStore {
     const version = ++this.loadVersion;
     this.loading = true;
     try {
-      const page = await api.listSessions({
+      configureGeneratedClient();
+      const page = await SessionsService.getApiV1Sessions({
         ...this.apiParams,
         cursor: this.nextCursor,
         limit: SESSION_PAGE_SIZE,
-      });
+      }) as unknown as {
+        sessions: Session[];
+        next_cursor?: string | null;
+        total: number;
+      };
       if (this.loadVersion !== version) return;
       this.sessions.push(...page.sessions);
       this.nextCursor = page.next_cursor ?? null;
@@ -506,7 +529,10 @@ class SessionsStore {
     const ver = this.projectsVersion;
     this.projectsPromise = (async () => {
       try {
-        const res = await api.getProjects(this.metadataParams);
+        configureGeneratedClient();
+        const res = await MetadataService.getApiV1Projects(
+          this.metadataParams,
+        ) as unknown as { projects: ProjectInfo[] };
         if (ver === this.projectsVersion) {
           this.projects = res.projects;
           this.projectsLoaded = true;
@@ -528,7 +554,10 @@ class SessionsStore {
     const ver = this.agentsVersion;
     this.agentsPromise = (async () => {
       try {
-        const res = await api.getAgents(this.metadataParams);
+        configureGeneratedClient();
+        const res = await MetadataService.getApiV1Agents(
+          this.metadataParams,
+        ) as unknown as { agents: AgentInfo[] };
         if (ver === this.agentsVersion) {
           this.agents = res.agents;
           this.agentsLoaded = true;
@@ -550,7 +579,10 @@ class SessionsStore {
     const ver = this.machinesVersion;
     this.machinesPromise = (async () => {
       try {
-        const res = await api.getMachines(this.metadataParams);
+        configureGeneratedClient();
+        const res = await MetadataService.getApiV1Machines(
+          this.metadataParams,
+        ) as unknown as { machines: string[] };
         if (ver === this.machinesVersion) {
           this.machines = res.machines;
           this.machinesLoaded = true;
@@ -590,7 +622,10 @@ class SessionsStore {
       return;
     }
     try {
-      const session = await api.getSession(id);
+      configureGeneratedClient();
+      const session = await SessionsService.getApiV1SessionsId({
+        id,
+      }) as unknown as Session;
       if (this.activeSessionId === id) {
         const idx = this.sessions.findIndex((s) => s.id === id);
         if (idx >= 0) {
@@ -620,7 +655,10 @@ class SessionsStore {
     if (!id) return;
     const version = ++this.refreshVersion;
     try {
-      const session = await api.getSession(id);
+      configureGeneratedClient();
+      const session = await SessionsService.getApiV1SessionsId({
+        id,
+      }) as unknown as Session;
       if (
         this.refreshVersion !== version ||
         this.activeSessionId !== id
@@ -639,7 +677,10 @@ class SessionsStore {
   async loadChildSessions(parentId: string) {
     const version = ++this.childSessionsVersion;
     try {
-      const children = await api.getChildSessions(parentId);
+      configureGeneratedClient();
+      const children = await SessionsService.getApiV1SessionsIdChildren({
+        id: parentId,
+      }) as unknown as Session[];
       if (
         this.childSessionsVersion !== version ||
         this.activeSessionId !== parentId
@@ -681,7 +722,10 @@ class SessionsStore {
   private async doFetchSignalDetail(id: string) {
     this.signalDetailLoading = true;
     try {
-      const session = await api.getSession(id);
+      configureGeneratedClient();
+      const session = await SessionsService.getApiV1SessionsId({
+        id,
+      }) as unknown as Session;
       this.signalDetailCache.set(id, {
         basis: session.health_score_basis ?? null,
         penalties: session.health_penalties ?? null,
@@ -917,7 +961,8 @@ class SessionsStore {
     $state([]);
 
   async deleteSession(id: string) {
-    await api.deleteSession(id);
+    configureGeneratedClient();
+    await SessionsService.deleteApiV1SessionsId({ id });
     const before = this.sessions.length;
     this.sessions = this.sessions.filter((s) => s.id !== id);
     const removed = before - this.sessions.length;
@@ -937,16 +982,17 @@ class SessionsStore {
   }
 
   async restoreSession(id: string) {
-    await api.restoreSession(id);
+    configureGeneratedClient();
+    await SessionsService.postApiV1SessionsIdRestore({ id });
     this.clearRecentlyDeleted(id);
     this.invalidateFilterCaches();
     await this.load();
   }
 
-  private get metadataParams() {
+  private get metadataParams(): MetadataParams {
     return {
-      include_one_shot: this.filters.includeOneShot || undefined,
-      include_automated: this.filters.includeAutomated || undefined,
+      includeOneShot: this.filters.includeOneShot || undefined,
+      includeAutomated: this.filters.includeAutomated || undefined,
     };
   }
 
@@ -983,7 +1029,11 @@ class SessionsStore {
   }
 
   async renameSession(id: string, displayName: string | null) {
-    const updated = await api.renameSession(id, displayName);
+    configureGeneratedClient();
+    const updated = await SessionsService.patchApiV1SessionsIdRename({
+      id,
+      requestBody: { display_name: displayName },
+    }) as unknown as Session;
     const idx = this.sessions.findIndex((s) => s.id === id);
     if (idx !== -1) {
       this.sessions[idx] = { ...this.sessions[idx]!, ...updated };

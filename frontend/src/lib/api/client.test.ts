@@ -1,15 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   triggerSync,
-  listSessions,
-  search,
   watchEvents,
   WATCH_EVENTS_MAX_CONSECUTIVE_ERRORS,
   watchSession,
   WATCH_SESSION_MAX_CONSECUTIVE_ERRORS,
-  ApiError,
 } from "./client.js";
 import type { SyncHandle } from "./client.js";
+import { ApiError } from "./runtime.js";
 import type { SyncProgress } from "./types.js";
 
 /**
@@ -41,31 +39,6 @@ function mockFetchWithStream(
     ok: true,
     body: stream,
   }));
-}
-
-function mockJSONResponse(body: unknown = {}, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: "",
-    headers: new Headers({ "Content-Type": "application/json" }),
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-  };
-}
-
-function mockTextResponse(
-  text: string,
-  status: number,
-  ok = false,
-) {
-  return {
-    ok,
-    status,
-    statusText: "",
-    headers: new Headers({ "Content-Type": "text/plain" }),
-    text: () => Promise.resolve(text),
-  };
 }
 
 describe("triggerSync SSE parsing", () => {
@@ -177,153 +150,6 @@ describe("triggerSync SSE parsing", () => {
 
     expect(progress.length).toBe(1);
     expect(progress[0]!.phase).toBe("scanning");
-  });
-});
-
-describe("deleteInsight", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("sends DELETE request to correct endpoint", async () => {
-    fetchSpy.mockResolvedValue(mockJSONResponse());
-    const { deleteInsight } = await import("./client.js");
-    await deleteInsight(42);
-
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/api/v1/insights/42",
-      expect.objectContaining({ method: "DELETE" }),
-    );
-  });
-
-  it("throws ApiError with status on non-ok response", async () => {
-    fetchSpy.mockResolvedValue(mockTextResponse("not found", 404));
-    const { deleteInsight } = await import("./client.js");
-
-    try {
-      await deleteInsight(99);
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      expect((e as InstanceType<typeof ApiError>).status).toBe(404);
-    }
-  });
-
-  it("throws ApiError with 500 status on server error", async () => {
-    fetchSpy.mockResolvedValue(mockTextResponse("internal error", 500));
-    const { deleteInsight } = await import("./client.js");
-
-    try {
-      await deleteInsight(1);
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      expect((e as InstanceType<typeof ApiError>).status).toBe(500);
-    }
-  });
-});
-
-describe("generated client error handling", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("throws ApiError with status on non-ok response", async () => {
-    fetchSpy.mockResolvedValue(mockTextResponse("bad gateway", 502));
-    const { listInsights } = await import("./client.js");
-
-    try {
-      await listInsights();
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      expect((e as InstanceType<typeof ApiError>).status).toBe(502);
-      expect((e as InstanceType<typeof ApiError>).message).toBe(
-        "bad gateway",
-      );
-    }
-  });
-
-  it("falls back to 'API <status>' when body is empty", async () => {
-    fetchSpy.mockResolvedValue(mockTextResponse("", 500));
-    const { listInsights } = await import("./client.js");
-
-    try {
-      await listInsights();
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      expect((e as InstanceType<typeof ApiError>).message).toBe(
-        "API 500",
-      );
-    }
-  });
-});
-
-describe("insights query serialization", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.fn().mockResolvedValue(mockJSONResponse());
-    vi.stubGlobal("fetch", fetchSpy);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  function lastUrl(): string {
-    const call = fetchSpy.mock.calls[0] as [
-      string,
-      ...unknown[],
-    ];
-    return call[0];
-  }
-
-  it("lists insights with no filters", async () => {
-    const { listInsights } = await import("./client.js");
-    await listInsights();
-    expect(lastUrl()).toBe("/api/v1/insights");
-  });
-
-  it("lists insights with type and project", async () => {
-    const { listInsights } = await import("./client.js");
-    await listInsights({
-      type: "daily_activity",
-      project: "my-app",
-    });
-    expect(lastUrl()).toBe(
-      "/api/v1/insights?type=daily_activity&project=my-app",
-    );
-  });
-
-  it("omits empty string filters", async () => {
-    const { listInsights } = await import("./client.js");
-    await listInsights({
-      type: "",
-      project: "",
-    });
-    expect(lastUrl()).toBe("/api/v1/insights");
-  });
-
-  it("gets single insight by id", async () => {
-    const { getInsight } = await import("./client.js");
-    await getInsight(42);
-    expect(lastUrl()).toBe("/api/v1/insights/42");
   });
 });
 
@@ -542,125 +368,6 @@ describe("generateInsight SSE parsing", () => {
       );
     }
   });
-});
-
-describe("query serialization", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.fn().mockResolvedValue(mockJSONResponse());
-    vi.stubGlobal("fetch", fetchSpy);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  function lastUrl(): string {
-    const call = fetchSpy.mock.calls[0] as [string, ...unknown[]];
-    return call[0];
-  }
-
-  describe("buildQuery edge cases via listSessions", () => {
-    const cases: {
-      name: string;
-      params: Record<string, string | number | undefined>;
-      expected: string;
-    }[] = [
-      {
-        name: "omits undefined values",
-        params: {
-          project: undefined,
-          machine: "m1",
-        },
-        expected: "/api/v1/sessions?machine=m1",
-      },
-      {
-        name: "omits empty string values",
-        params: { project: "", machine: "m1" },
-        expected: "/api/v1/sessions?machine=m1",
-      },
-      {
-        name: "includes numeric zero",
-        params: { min_messages: 0 },
-        expected: "/api/v1/sessions?min_messages=0",
-      },
-      {
-        name: "includes positive numbers",
-        params: { limit: 25, min_messages: 5 },
-        expected:
-          "/api/v1/sessions?min_messages=5&limit=25",
-      },
-      {
-        name: "produces no query string when all empty",
-        params: {
-          project: "",
-          machine: "",
-          agent: "",
-        },
-        expected: "/api/v1/sessions",
-      },
-      {
-        name: "produces no query string when all undefined",
-        params: {
-          project: undefined,
-          machine: undefined,
-        },
-        expected: "/api/v1/sessions",
-      },
-      {
-        name: "preserves comma-separated machine filters",
-        params: {
-          machine: "host-a,host-b,host-c",
-        },
-        expected:
-          "/api/v1/sessions?machine=host-a%2Chost-b%2Chost-c",
-      },
-    ];
-
-    for (const { name, params, expected } of cases) {
-      it(name, async () => {
-        await listSessions(params);
-        expect(lastUrl()).toBe(expected);
-      });
-    }
-  });
-
-  describe("search query serialization", () => {
-    it("includes query and non-empty params", async () => {
-      await search("hello", { project: "proj1", limit: 10 });
-      expect(lastUrl()).toBe(
-        "/api/v1/search?q=hello&project=proj1&sort=relevance&limit=10",
-      );
-    });
-
-    it("omits empty project filter", async () => {
-      await search("hello", { project: "" });
-      expect(lastUrl()).toBe(
-        "/api/v1/search?q=hello&sort=relevance",
-      );
-    });
-
-    it("includes sort param when provided", async () => {
-      await search("hello", { sort: "recency" });
-      expect(lastUrl()).toBe("/api/v1/search?q=hello&sort=recency");
-    });
-
-    it("serializes generated default sort when not provided", async () => {
-      await search("hello");
-      expect(lastUrl()).toBe(
-        "/api/v1/search?q=hello&sort=relevance",
-      );
-    });
-
-    it("rejects empty query string", () => {
-      expect(() => search("")).toThrow(
-        "search query must not be empty",
-      );
-      expect(fetchSpy).not.toHaveBeenCalled();
-    });
-  });
-
 });
 
 describe("watchEvents", () => {

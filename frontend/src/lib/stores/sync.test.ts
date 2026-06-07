@@ -6,18 +6,39 @@ import {
   beforeEach,
 } from "vitest";
 import { commitsDisagree, sync } from "./sync.svelte.js";
-import * as api from "../api/client.js";
 import type { SyncStats, UpdateCheck } from "../api/types.js";
 
-vi.mock("../api/client.js", () => ({
+const api = vi.hoisted(() => ({
   triggerSync: vi.fn(),
   triggerResync: vi.fn(),
+  watchSession: vi.fn(),
   getSyncStatus: vi.fn(),
   getStats: vi.fn(),
   getVersion: vi.fn(),
-  watchSession: vi.fn(),
   checkForUpdate: vi.fn(),
   isRemoteConnection: vi.fn(),
+}));
+
+vi.mock("../api/client.js", () => ({
+  triggerSync: api.triggerSync,
+  triggerResync: api.triggerResync,
+  watchSession: api.watchSession,
+}));
+
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  isRemoteConnection: api.isRemoteConnection,
+}));
+
+vi.mock("../api/generated/index", () => ({
+  MetadataService: {
+    getApiV1Stats: vi.fn((params) => api.getStats(params)),
+    getApiV1Version: vi.fn(() => api.getVersion()),
+    getApiV1UpdateCheck: vi.fn(() => api.checkForUpdate()),
+  },
+  SyncService: {
+    getApiV1SyncStatus: vi.fn(() => api.getSyncStatus()),
+  },
 }));
 
 const MOCK_STATS: SyncStats = {
@@ -129,7 +150,7 @@ describe("SyncStore.loadStats", () => {
       );
 
     // Start first request (include one-shot).
-    const p1 = sync.loadStats({ include_one_shot: true });
+    const p1 = sync.loadStats({ includeOneShot: true });
     // Start second request (exclude one-shot) before first resolves.
     const p2 = sync.loadStats({});
 

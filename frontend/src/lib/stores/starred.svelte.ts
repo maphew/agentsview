@@ -1,4 +1,9 @@
-import * as api from "../api/client.js";
+import { StarredService } from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
+
+interface StarredResponse {
+  session_ids: string[];
+}
 
 const STORAGE_KEY = "agentsview-starred-sessions";
 
@@ -32,7 +37,9 @@ class StarredStore {
     const mutVer = this.mutationVersion;
     const rid = ++this.refreshId;
     try {
-      const res = await api.listStarred();
+      configureGeneratedClient();
+      const res =
+        await StarredService.getApiV1Starred() as unknown as StarredResponse;
       if (this.mutationVersion === mutVer && this.refreshId === rid) {
         this.ids = new Set(res.session_ids);
       }
@@ -97,7 +104,10 @@ class StarredStore {
       const mutVer = this.mutationVersion;
       const rid = ++this.refreshId;
       try {
-        await api.bulkStarSessions(toMigrate);
+        configureGeneratedClient();
+        await StarredService.postApiV1StarredBulk({
+          requestBody: { session_ids: toMigrate },
+        });
       } catch {
         // Bulk star failed — merge into memory and preserve
         // localStorage for retry on next page reload.
@@ -110,7 +120,9 @@ class StarredStore {
       // stale IDs are never re-migrated on a later reload.
       clearLocalStorage();
       try {
-        const refreshed = await api.listStarred();
+        configureGeneratedClient();
+        const refreshed =
+          await StarredService.getApiV1Starred() as unknown as StarredResponse;
         if (this.mutationVersion === mutVer && this.refreshId === rid) {
           this.ids = new Set(refreshed.session_ids);
         }
@@ -146,7 +158,12 @@ class StarredStore {
     next.add(sessionId);
     this.ids = next;
     this.mutationVersion++;
-    this.enqueue(sessionId, () => api.starSession(sessionId));
+    this.enqueue(sessionId, () => {
+      configureGeneratedClient();
+      return StarredService.putApiV1SessionsIdStar({
+        id: sessionId,
+      });
+    });
   }
 
   unstar(sessionId: string) {
@@ -158,7 +175,12 @@ class StarredStore {
     // Mirror into localStorage while the legacy key exists so
     // a migration retry doesn't re-star this session.
     removeFromLocalStorage(sessionId);
-    this.enqueue(sessionId, () => api.unstarSession(sessionId));
+    this.enqueue(sessionId, () => {
+      configureGeneratedClient();
+      return StarredService.deleteApiV1SessionsIdStar({
+        id: sessionId,
+      });
+    });
   }
 
   private enqueue(
@@ -188,9 +210,10 @@ class StarredStore {
     if (this.queues.size > 0) return;
     const mutVer = this.mutationVersion;
     const rid = ++this.refreshId;
-    api.listStarred().then((res) => {
+    configureGeneratedClient();
+    StarredService.getApiV1Starred().then((res) => {
       if (this.mutationVersion === mutVer && this.refreshId === rid) {
-        this.ids = new Set(res.session_ids);
+        this.ids = new Set((res as unknown as StarredResponse).session_ids);
       }
     }).catch(() => {
       // Server unavailable; keep optimistic state.
@@ -212,12 +235,13 @@ class StarredStore {
       this.reconcileTimer = null;
       const mutVer = this.mutationVersion;
       const rid = ++this.refreshId;
-      api.listStarred().then((res) => {
+      configureGeneratedClient();
+      StarredService.getApiV1Starred().then((res) => {
         if (
           this.mutationVersion === mutVer &&
           this.refreshId === rid
         ) {
-          this.ids = new Set(res.session_ids);
+          this.ids = new Set((res as unknown as StarredResponse).session_ids);
         }
         this.reconcileRetries = 0;
       }).catch(() => {

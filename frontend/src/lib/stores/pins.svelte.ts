@@ -1,5 +1,14 @@
 import type { PinnedMessage } from "../api/types.js";
-import * as api from "../api/client.js";
+import { PinsService } from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
+
+interface PinsResponse {
+  pins: PinnedMessage[];
+}
+
+interface PinMessageResponse {
+  id: number;
+}
 
 class PinsStore {
   /** All pins across all sessions (loaded for pinned tab). */
@@ -30,7 +39,10 @@ class PinsStore {
     const loadVer = ++this.#loadAllVersion;
     const mutVer = this.#mutationVersion;
     try {
-      const res = await api.listPins(project);
+      configureGeneratedClient();
+      const res = await PinsService.getApiV1Pins({
+        project,
+      }) as unknown as PinsResponse;
       // Apply only if this is the latest load AND no mutation
       // occurred since the request started (which would make
       // this response stale relative to the optimistic state).
@@ -58,7 +70,11 @@ class PinsStore {
       this.sessionPinIds = new Set();
     }
     try {
-      const res = await api.listSessionPins(sessionId);
+      configureGeneratedClient();
+      const res =
+        await PinsService.getApiV1SessionsIdPins({
+          id: sessionId,
+        }) as unknown as PinsResponse;
       if (this.#loadVersion === loadVer && this.#mutationVersion === mutVer) {
         this.sessionPinIds = new Set(
           res.pins.map((p) => p.message_id),
@@ -90,7 +106,11 @@ class PinsStore {
     this.#inflight.add(messageId);
     this.#mutationVersion++;
     try {
-      await api.unpinMessage(sessionId, messageId);
+      configureGeneratedClient();
+      await PinsService.deleteApiV1SessionsIdMessagesMessageidPin({
+        id: sessionId,
+        messageId,
+      });
       // Only update sessionPinIds if still viewing the same session.
       if (this.#currentSessionId === sessionId) {
         const next = new Set(this.sessionPinIds);
@@ -124,7 +144,13 @@ class PinsStore {
       this.#inflight.add(messageId);
       this.#mutationVersion++;
       try {
-        const result = await api.pinMessage(sessionId, messageId);
+        configureGeneratedClient();
+        const result =
+          await PinsService.postApiV1SessionsIdMessagesMessageidPin({
+            id: sessionId,
+            messageId,
+            requestBody: {},
+          }) as unknown as PinMessageResponse;
         // Only update sessionPinIds if still viewing the same session.
         if (this.#currentSessionId === sessionId) {
           const next = new Set(this.sessionPinIds);

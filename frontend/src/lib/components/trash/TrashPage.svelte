@@ -2,7 +2,8 @@
   import { TrashIcon } from "../../icons.js";
   import { onMount } from "svelte";
   import type { Session } from "../../api/types.js";
-  import * as api from "../../api/client.js";
+  import { SessionsService } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { formatRelativeTime, truncate } from "../../utils/format.js";
   import { normalizeMessagePreview } from "../../utils/messages.js";
@@ -11,6 +12,10 @@
   let loading = $state(true);
   let emptying = $state(false);
 
+  interface TrashResponse {
+    sessions: Session[];
+  }
+
   onMount(() => {
     loadTrash();
   });
@@ -18,7 +23,9 @@
   async function loadTrash() {
     loading = true;
     try {
-      const res = await api.listTrash();
+      configureGeneratedClient();
+      const res =
+        await SessionsService.getApiV1Trash() as unknown as TrashResponse;
       trashedSessions = res.sessions ?? [];
     } catch {
       // Silently ignore — page will show empty state.
@@ -29,7 +36,8 @@
 
   async function restoreSession(id: string) {
     try {
-      await api.restoreSession(id);
+      configureGeneratedClient();
+      await SessionsService.postApiV1SessionsIdRestore({ id });
       trashedSessions = trashedSessions.filter((s) => s.id !== id);
       sessions.clearRecentlyDeleted(id);
       sessions.invalidateFilterCaches();
@@ -41,7 +49,8 @@
 
   async function permanentDelete(id: string) {
     try {
-      await api.permanentDeleteSession(id);
+      configureGeneratedClient();
+      await SessionsService.deleteApiV1SessionsIdPermanent({ id });
       trashedSessions = trashedSessions.filter((s) => s.id !== id);
       sessions.clearRecentlyDeleted(id);
       sessions.invalidateFilterCaches();
@@ -53,7 +62,8 @@
   async function emptyAll() {
     emptying = true;
     try {
-      await api.emptyTrash();
+      configureGeneratedClient();
+      await SessionsService.deleteApiV1Trash();
       trashedSessions = [];
       sessions.clearRecentlyDeleted();
       sessions.invalidateFilterCaches();

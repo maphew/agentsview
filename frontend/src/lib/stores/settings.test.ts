@@ -6,20 +6,57 @@ import {
   vi,
 } from "vitest";
 import { settings } from "./settings.svelte.js";
-import * as api from "../api/client.js";
-import { ApiError } from "../api/client.js";
+import {
+  ApiError,
+  SettingsService,
+} from "../api/generated/index";
 
-vi.mock("../api/client.js", async (importOriginal) => {
+const runtime = vi.hoisted(() => ({
+  setAuthToken: vi.fn(),
+  isRemoteConnection: vi.fn(),
+}));
+
+vi.mock("../api/runtime.js", async (importOriginal) => {
   const orig =
-    await importOriginal<typeof import("../api/client.js")>();
+    await importOriginal<typeof import("../api/runtime.js")>();
   return {
     ...orig,
-    getSettings: vi.fn(),
-    updateSettings: vi.fn(),
-    setAuthToken: vi.fn(),
-    isRemoteConnection: vi.fn(),
+    configureGeneratedClient: vi.fn(),
+    setAuthToken: runtime.setAuthToken,
+    isRemoteConnection: runtime.isRemoteConnection,
   };
 });
+
+vi.mock("../api/generated/index", async (importOriginal) => {
+  const orig =
+    await importOriginal<typeof import("../api/generated/index")>();
+  return {
+    ...orig,
+    SettingsService: {
+      getApiV1Settings: vi.fn(),
+      putApiV1Settings: vi.fn(),
+    },
+  };
+});
+
+const settingsService = SettingsService as unknown as {
+  getApiV1Settings: ReturnType<typeof vi.fn>;
+  putApiV1Settings: ReturnType<typeof vi.fn>;
+};
+
+function apiError(status: number, message: string): ApiError {
+  return new ApiError(
+    { method: "GET", url: "/api/v1/settings" },
+    {
+      url: "/api/v1/settings",
+      ok: false,
+      status,
+      statusText: message,
+      body: message,
+    },
+    message,
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -38,8 +75,8 @@ beforeEach(() => {
 
 describe("SettingsStore.load auth handling", () => {
   it("prompts for a token on 401 responses", async () => {
-    vi.mocked(api.getSettings).mockRejectedValue(
-      new ApiError(401, "Unauthorized"),
+    settingsService.getApiV1Settings.mockRejectedValue(
+      apiError(401, "Unauthorized"),
     );
 
     await settings.load();
@@ -49,8 +86,8 @@ describe("SettingsStore.load auth handling", () => {
   });
 
   it("surfaces an actionable hint on a bare 403", async () => {
-    vi.mocked(api.getSettings).mockRejectedValue(
-      new ApiError(403, "Forbidden"),
+    settingsService.getApiV1Settings.mockRejectedValue(
+      apiError(403, "Forbidden"),
     );
 
     await settings.load();
@@ -64,8 +101,8 @@ describe("SettingsStore.load auth handling", () => {
       'Forbidden: request Host "127.0.0.1:18080" is not in the ' +
       "allowed set [127.0.0.1:8080 localhost:8080]. restart with " +
       "--public-url http://127.0.0.1:18080.";
-    vi.mocked(api.getSettings).mockRejectedValue(
-      new ApiError(403, detail),
+    settingsService.getApiV1Settings.mockRejectedValue(
+      apiError(403, detail),
     );
 
     await settings.load();

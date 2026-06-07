@@ -20,7 +20,7 @@ import type {
   TopSessionsResponse,
 } from "../api/types.js";
 
-vi.mock("../api/client.js", () => ({
+vi.mock("../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
 }));
 

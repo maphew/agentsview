@@ -1,6 +1,14 @@
 import { messages } from "./messages.svelte.js";
 import { ui } from "./ui.svelte.js";
-import * as api from "../api/client.js";
+import { SessionsService } from "../api/generated/index";
+import {
+  configureGeneratedClient,
+  withAbort,
+} from "../api/runtime.js";
+
+interface OrdinalsResponse {
+  ordinals: number[];
+}
 
 export interface SessionMatch {
   ordinal: number;
@@ -90,9 +98,14 @@ class InSessionSearchStore {
     const prevOrdinal = this.currentOrdinal;
 
     try {
-      const res = await api.searchSession(sessionId, q, {
-        signal: ac.signal,
-      });
+      configureGeneratedClient();
+      const res = await withAbort(
+        SessionsService.getApiV1SessionsIdSearch({
+          id: sessionId,
+          q,
+        }) as unknown as Promise<OrdinalsResponse>,
+        ac.signal,
+      );
       if (ac.signal.aborted) return;
 
       const found: SessionMatch[] = res.ordinals.map((ord) => ({

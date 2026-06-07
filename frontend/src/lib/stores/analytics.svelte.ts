@@ -11,7 +11,7 @@ import type {
   SignalsAnalyticsResponse,
 } from "../api/types.js";
 import { AnalyticsService } from "../api/generated/index";
-import { configureGeneratedClient } from "../api/client.js";
+import { configureGeneratedClient } from "../api/runtime.js";
 import { sessions } from "./sessions.svelte.js";
 
 type AnalyticsParams = Parameters<

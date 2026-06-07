@@ -1,16 +1,20 @@
 <script lang="ts">
   import SettingsSection from "./SettingsSection.svelte";
   import {
-    applyWorktreeMappings,
-    createWorktreeMapping,
-    deleteWorktreeMapping,
-    getWorktreeMappings,
-    updateWorktreeMapping,
-    type WorktreeProjectMapping,
-  } from "../../api/client.js";
+    SettingsService,
+    type ApplyWorktreeMappingsResponse,
+    type DbWorktreeProjectMapping,
+    type WorktreeMappingRequest,
+  } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
+
+  interface WorktreeMappingsResponse {
+    machine: string;
+    mappings: DbWorktreeProjectMapping[];
+  }
 
   let machine = $state("");
-  let mappings: WorktreeProjectMapping[] = $state([]);
+  let mappings: DbWorktreeProjectMapping[] = $state([]);
   let loading = $state(true);
   let saving = $state(false);
   let applying = $state(false);
@@ -29,7 +33,9 @@
     loading = true;
     error = "";
     try {
-      const res = await getWorktreeMappings();
+      configureGeneratedClient();
+      const res =
+        await SettingsService.getApiV1SettingsWorktreeMappings() as unknown as WorktreeMappingsResponse;
       machine = res.machine;
       mappings = res.mappings;
     } catch (err) {
@@ -46,7 +52,7 @@
     enabled = true;
   }
 
-  function editMapping(mapping: WorktreeProjectMapping) {
+  function editMapping(mapping: DbWorktreeProjectMapping) {
     editingId = mapping.id;
     pathPrefix = mapping.path_prefix;
     project = mapping.project;
@@ -60,7 +66,7 @@
       path_prefix: pathPrefix.trim(),
       project: project.trim(),
       enabled,
-    };
+    } satisfies WorktreeMappingRequest;
     if (!input.path_prefix || !input.project) return;
 
     saving = true;
@@ -68,9 +74,16 @@
     applyMessage = "";
     try {
       if (editingId == null) {
-        await createWorktreeMapping(input);
+        configureGeneratedClient();
+        await SettingsService.postApiV1SettingsWorktreeMappings({
+          requestBody: input,
+        });
       } else {
-        await updateWorktreeMapping(editingId, input);
+        configureGeneratedClient();
+        await SettingsService.putApiV1SettingsWorktreeMappingsId({
+          id: String(editingId),
+          requestBody: input,
+        });
       }
       resetForm();
       await loadMappings();
@@ -86,7 +99,10 @@
     error = "";
     applyMessage = "";
     try {
-      await deleteWorktreeMapping(id);
+      configureGeneratedClient();
+      await SettingsService.deleteApiV1SettingsWorktreeMappingsId({
+        id: String(id),
+      });
       if (editingId === id) resetForm();
       await loadMappings();
     } catch (err) {
@@ -101,7 +117,9 @@
     error = "";
     applyMessage = "";
     try {
-      const res = await applyWorktreeMappings();
+      configureGeneratedClient();
+      const res =
+        await SettingsService.postApiV1SettingsWorktreeMappingsApply() as ApplyWorktreeMappingsResponse;
       applyMessage = `${res.updated_sessions} updated, ${res.matched_sessions} matched`;
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to apply mappings";

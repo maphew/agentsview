@@ -3,7 +3,7 @@ import { trends } from "./trends.svelte.js";
 import { TrendsService } from "../api/generated/index";
 import type { TrendsTermsResponse } from "../api/types.js";
 
-vi.mock("../api/client.js", () => ({
+vi.mock("../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
 }));
 

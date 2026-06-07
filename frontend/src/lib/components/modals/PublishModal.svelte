@@ -2,10 +2,10 @@
   import { ui } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import {
-    getGithubConfig,
-    setGithubConfig,
-    publishSession,
-  } from "../../api/client.js";
+    ConfigService,
+    SessionsService,
+  } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
   import type { PublishResponse } from "../../api/types.js";
 
   type View = "setup" | "progress" | "success" | "error";
@@ -17,7 +17,8 @@
 
   async function init() {
     try {
-      const config = await getGithubConfig();
+      configureGeneratedClient();
+      const config = await ConfigService.getApiV1ConfigGithub();
       if (config.configured) {
         await doPublish();
       } else {
@@ -34,7 +35,10 @@
 
     view = "progress";
     try {
-      await setGithubConfig(token);
+      configureGeneratedClient();
+      await ConfigService.postApiV1ConfigGithub({
+        requestBody: { token },
+      });
       await doPublish();
     } catch (err) {
       errorMessage =
@@ -53,7 +57,11 @@
 
     view = "progress";
     try {
-      result = await publishSession(id);
+      configureGeneratedClient();
+      result =
+        await SessionsService.postApiV1SessionsIdPublish({
+          id,
+        }) as unknown as PublishResponse;
       view = "success";
     } catch (err) {
       errorMessage =

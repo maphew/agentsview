@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { settings } from "../../stores/settings.svelte.js";
   import { ui } from "../../stores/ui.svelte.js";
-  import { setAuthToken, getAuthToken, setServerUrl, isRemoteConnection } from "../../api/client.js";
+  import { setAuthToken, getAuthToken, setServerUrl, isRemoteConnection } from "../../api/runtime.js";
   import AppearanceSettings from "./AppearanceSettings.svelte";
   import AgentDirSettings from "./AgentDirSettings.svelte";
   import TerminalSettings from "./TerminalSettings.svelte";

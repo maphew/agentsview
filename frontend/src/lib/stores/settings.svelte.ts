@@ -1,11 +1,25 @@
 import {
-  getSettings,
-  updateSettings,
-  type AppSettings,
-  ApiError,
+  ApiError as GeneratedApiError,
+  SettingsService,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+  type TerminalResponse,
+} from "../api/generated/index";
+import {
+  configureGeneratedClient,
+  generatedErrorMessage,
   setAuthToken,
   isRemoteConnection,
-} from "../api/client.js";
+} from "../api/runtime.js";
+
+type TerminalConfig = TerminalResponse & {
+  mode: "auto" | "custom" | "clipboard";
+};
+
+interface AppSettings extends Omit<SettingsResponse, "terminal" | "agent_dirs"> {
+  agent_dirs: Record<string, string[]>;
+  terminal: TerminalConfig;
+}
 
 /** Build an actionable message for a 403 from the settings API. A
  *  403 means the server rejected the request origin/Host (not that a
@@ -48,7 +62,9 @@ class SettingsStore {
     this.error = null;
     this.needsAuth = false;
     try {
-      const data = await getSettings();
+      configureGeneratedClient();
+      const data =
+        await SettingsService.getApiV1Settings() as unknown as AppSettings;
       this.agentDirs = data.agent_dirs;
       this.githubConfigured = data.github_configured;
       this.terminal = data.terminal;
@@ -63,10 +79,10 @@ class SettingsStore {
         setAuthToken(data.auth_token);
       }
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
+      if (e instanceof GeneratedApiError && e.status === 401) {
         this.needsAuth = true;
-      } else if (e instanceof ApiError && e.status === 403) {
-        this.error = forbiddenMessage(e.message);
+      } else if (e instanceof GeneratedApiError && e.status === 403) {
+        this.error = forbiddenMessage(generatedErrorMessage(e));
       } else {
         this.error =
           e instanceof Error ? e.message : "Failed to load settings";
@@ -80,7 +96,11 @@ class SettingsStore {
     this.saving = true;
     this.error = null;
     try {
-      const data = await updateSettings(patch);
+      configureGeneratedClient();
+      const data =
+        await SettingsService.putApiV1Settings({
+          requestBody: patch as SettingsUpdateRequest,
+        }) as unknown as AppSettings;
       this.agentDirs = data.agent_dirs;
       this.githubConfigured = data.github_configured;
       this.terminal = data.terminal;

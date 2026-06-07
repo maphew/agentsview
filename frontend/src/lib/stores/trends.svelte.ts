@@ -2,7 +2,7 @@ import {
   TrendsService,
 } from "../api/generated/index";
 import type { TrendsTermsResponse } from "../api/types.js";
-import { configureGeneratedClient } from "../api/client.js";
+import { configureGeneratedClient } from "../api/runtime.js";
 import { daysAgo, today } from "../utils/dates.js";
 
 type TrendsTermsParams = Parameters<

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { setupVisibilityHealthCheck } from "./health.js";
-import { setAuthToken, setServerUrl } from "../api/client.js";
+import { setAuthToken, setServerUrl } from "../api/runtime.js";
 
 describe("setupVisibilityHealthCheck", () => {
   let originalFetch: typeof globalThis.fetch;

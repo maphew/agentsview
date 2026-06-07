@@ -16,12 +16,12 @@
   import { onMount } from "svelte";
   import type { Session } from "../../api/types.js";
   import {
-    resumeSession,
-    openSession,
-    getSessionDirectory,
-    listOpeners,
-    type Opener,
-  } from "../../api/client.js";
+    OpenersService,
+    SessionsService,
+    type ResumeRequest,
+    type ResumeResponse,
+  } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
   import { copyToClipboard } from "../../utils/clipboard.js";
   import { agentColor, agentLabel } from "../../utils/agents.js";
   import { formatTokenUsage } from "../../utils/format.js";
@@ -59,9 +59,27 @@
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
   let sessionDir = $state<string | null>(null);
 
+  interface Opener {
+    id: string;
+    name: string;
+    kind: "editor" | "terminal" | "files" | "action";
+    bin: string;
+  }
+
+  interface OpenersResponse {
+    openers: Opener[];
+  }
+
+  interface SessionDirectoryResponse {
+    path: string;
+  }
+
   onMount(() => {
-    listOpeners()
-      .then((res) => { openers = res.openers; })
+    configureGeneratedClient();
+    OpenersService.getApiV1Openers()
+      .then((res) => {
+        openers = (res as unknown as OpenersResponse).openers;
+      })
       .catch(() => {});
   });
 
@@ -75,10 +93,11 @@
     const id = session.id;
     if (id === resolvedSessionDirId) return;
     sessionDir = null;
-    getSessionDirectory(id)
+    configureGeneratedClient();
+    SessionsService.getApiV1SessionsIdDirectory({ id })
       .then(({ path }) => {
         if (session?.id === id) {
-          sessionDir = path || null;
+          sessionDir = (path as SessionDirectoryResponse["path"]) || null;
           resolvedSessionDirId = id;
         }
       })
@@ -215,9 +234,14 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, {
-        opener_id: opener.id,
-      });
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: {
+            opener_id: opener.id,
+          } satisfies ResumeRequest,
+        }) as ResumeResponse;
       if (resp.launched) {
         showFeedback(`Resumed in ${resp.terminal ?? opener.name}`);
         return;
@@ -245,7 +269,12 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, { command_only: true });
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: { command_only: true } satisfies ResumeRequest,
+        }) as ResumeResponse;
       if (resp.command) {
         const cmd = formatResumeResponseCommand(session.agent, resp);
         const ok = cmd ? await copyToClipboard(cmd) : false;
@@ -278,7 +307,11 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      await openSession(session.id, opener.id);
+      configureGeneratedClient();
+      await SessionsService.postApiV1SessionsIdOpen({
+        id: session.id,
+        requestBody: { opener_id: opener.id },
+      });
       showFeedback(`Opened in ${opener.name}`);
     } catch {
       showFeedback("Failed to open");
@@ -289,7 +322,12 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, {});
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: {},
+        }) as ResumeResponse;
       if (resp.launched) {
         showFeedback(
           `Resumed in ${resp.terminal ?? "terminal"}`,

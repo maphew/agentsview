@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { messages } from './messages.svelte.js';
-import * as api from '../api/client.js';
 import { parseContent } from '../utils/content-parser.js';
 import type {
   Message,
@@ -8,10 +7,31 @@ import type {
   Session,
 } from '../api/types.js';
 
-// Mock the API client
-vi.mock('../api/client.js', () => ({
+const api = vi.hoisted(() => ({
   getMessages: vi.fn(),
   getSession: vi.fn(),
+}));
+
+vi.mock('../api/runtime.js', () => ({
+  configureGeneratedClient: vi.fn(),
+  withAbort: <T>(promise: Promise<T>) => promise,
+}));
+
+vi.mock('../api/generated/index', () => ({
+  SessionsService: {
+    getApiV1SessionsId: vi.fn(({ id }) => api.getSession(id)),
+    getApiV1SessionsIdMessages: vi.fn((params) =>
+      api.getMessages(
+        params.id,
+        {
+          from: params.from,
+          limit: params.limit,
+          direction: params.direction,
+        },
+        { signal: new AbortController().signal },
+      )
+    ),
+  },
 }));
 
 function createDeferred<T>() {

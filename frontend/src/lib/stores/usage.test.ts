@@ -39,7 +39,7 @@ const usageServiceMocks = vi.hoisted(() => ({
   getApiV1UsageTopSessions: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../api/client.js", () => ({
+vi.mock("../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
 }));
 
