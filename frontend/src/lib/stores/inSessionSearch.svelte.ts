@@ -3,6 +3,7 @@ import { ui } from "./ui.svelte.js";
 import { SessionsService } from "../api/generated/index";
 import {
   configureGeneratedClient,
+  isAbortError,
   withAbort,
 } from "../api/runtime.js";
 
@@ -134,7 +135,7 @@ class InSessionSearchStore {
         }
       }
     } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (isAbortError(err)) return;
       console.warn("Session search failed:", err);
     } finally {
       if (this.abortController === ac) {

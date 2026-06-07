@@ -1,5 +1,6 @@
 import {
   ApiError as GeneratedApiError,
+  CancelError,
   OpenAPI,
 } from "./generated/index";
 
@@ -149,6 +150,24 @@ export interface CancelableLike<T> extends Promise<T> {
 
 export function isCancelable<T>(value: Promise<T>): value is CancelableLike<T> {
   return typeof (value as { cancel?: unknown }).cancel === "function";
+}
+
+export function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    return true;
+  }
+  if (err instanceof CancelError) {
+    return true;
+  }
+  if (err === null || typeof err !== "object") {
+    return false;
+  }
+  const candidate = err as {
+    isCancelled?: unknown;
+    name?: unknown;
+  };
+  return candidate.isCancelled === true ||
+    candidate.name === "CancelError";
 }
 
 export function withAbort<T>(

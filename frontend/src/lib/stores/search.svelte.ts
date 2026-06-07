@@ -1,6 +1,7 @@
 import { SearchService } from "../api/generated/index";
 import {
   configureGeneratedClient,
+  isAbortError,
   withAbort,
 } from "../api/runtime.js";
 import { debounce } from "../utils/debounce.js";
@@ -85,8 +86,7 @@ class SearchStore {
       );
       this.results = res.results ?? [];
     } catch (error: unknown) {
-      if (error instanceof DOMException
-        && error.name === "AbortError") {
+      if (isAbortError(error)) {
         return;
       }
       this.results = [];

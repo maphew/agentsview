@@ -8,6 +8,7 @@ import type {
 } from "../api/types.js";
 import {
   configureGeneratedClient,
+  isAbortError,
   withAbort,
 } from "../api/runtime.js";
 import { clearContentCaches } from "../utils/content-parser.js";
@@ -544,12 +545,6 @@ class MessagesStore {
       }
     }
   }
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    err instanceof DOMException && err.name === "AbortError"
-  );
 }
 
 export const messages = new MessagesStore();

@@ -6,6 +6,20 @@ import type { SearchResponse } from "../api/types.js";
 vi.mock("../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
   callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+  isAbortError: (err: unknown) => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return true;
+    }
+    if (err === null || typeof err !== "object") {
+      return false;
+    }
+    const candidate = err as {
+      isCancelled?: unknown;
+      name?: unknown;
+    };
+    return candidate.isCancelled === true ||
+      candidate.name === "CancelError";
+  },
   withAbort: async <T>(promise: Promise<T> & { cancel?: () => void }, signal?: AbortSignal) => {
     if (signal) {
       if (signal.aborted) {
@@ -59,8 +73,13 @@ function makeSearchResponse(
   };
 }
 
-function abortError(): DOMException {
-  return new DOMException("The operation was aborted", "AbortError");
+function generatedCancelError(): Error & { isCancelled: true } {
+  const err = new Error("Request aborted") as Error & {
+    isCancelled: true;
+  };
+  err.name = "CancelError";
+  err.isCancelled = true;
+  return err;
 }
 
 function cancelableNever<T>(): Promise<T> & { cancel: () => void } {
@@ -68,7 +87,7 @@ function cancelableNever<T>(): Promise<T> & { cancel: () => void } {
   const promise = new Promise<T>((_resolve, r) => {
     reject = r;
   }) as Promise<T> & { cancel: () => void };
-  promise.cancel = () => reject(abortError());
+  promise.cancel = () => reject(generatedCancelError());
   return promise;
 }
 
@@ -199,6 +218,30 @@ describe("SearchStore", () => {
 
     expect(searchStore.isSearching).toBe(false);
     expect(searchStore.results.length).toBe(2);
+  });
+
+  it("should keep previous results when generated cancellation aborts stale search", async () => {
+    searchService.getApiV1Search.mockResolvedValueOnce(
+      makeSearchResponse("stable", 3),
+    );
+
+    searchStore.search("stable");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await vi.runAllTimersAsync();
+    await flushMicrotasks();
+
+    expect(searchStore.results.length).toBe(3);
+
+    searchService.getApiV1Search.mockReturnValueOnce(cancelableNever());
+
+    searchStore.search("slow");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await flushMicrotasks();
+
+    searchStore.search("next");
+    await flushMicrotasks();
+
+    expect(searchStore.results.length).toBe(3);
   });
 
   it("should discard results from request that resolves during debounce window", async () => {
