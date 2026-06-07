@@ -181,6 +181,7 @@ func (c *Config) IsUserConfigured(
 // offending entry, or nil when all entries are valid.
 func (c Config) ValidateRemoteHosts() error {
 	var problems []string
+	seen := make(map[string]int, len(c.RemoteHosts))
 	for i, h := range c.RemoteHosts {
 		if h.Host == "" {
 			problems = append(problems,
@@ -190,6 +191,19 @@ func (c Config) ValidateRemoteHosts() error {
 			problems = append(problems,
 				fmt.Sprintf("entry %d (%q): invalid port %d",
 					i+1, h.Host, h.Port))
+		}
+		// Remote sync namespaces sessions and the skip cache by
+		// host alone (see ssh.RemoteSync), so two entries sharing a
+		// host collide regardless of user/port. Reject duplicates
+		// rather than silently share or overwrite cached state.
+		if h.Host != "" {
+			if first, ok := seen[h.Host]; ok {
+				problems = append(problems,
+					fmt.Sprintf("entry %d: duplicate host %q (already at entry %d)",
+						i+1, h.Host, first))
+			} else {
+				seen[h.Host] = i + 1
+			}
 		}
 	}
 	if len(problems) > 0 {

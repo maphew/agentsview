@@ -988,6 +988,8 @@ func TestValidateRemoteHosts(t *testing.T) {
 		{"negative port", []RemoteHost{{Host: "a", Port: -1}}, []string{"invalid port"}},
 		{"port too large", []RemoteHost{{Host: "a", Port: 70000}}, []string{"invalid port"}},
 		{"aggregates both", []RemoteHost{{Host: ""}, {Host: "b", Port: 99999}}, []string{"host is required", "invalid port"}},
+		{"duplicate host", []RemoteHost{{Host: "a"}, {Host: "a"}}, []string{"duplicate host"}},
+		{"duplicate host different user or port", []RemoteHost{{Host: "box", User: "alice"}, {Host: "box", User: "bob", Port: 2222}}, []string{"duplicate host"}},
 		{"none configured", nil, nil},
 	}
 	for _, tt := range tests {

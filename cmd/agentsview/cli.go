@@ -498,6 +498,7 @@ func writeRootHelp(w io.Writer, root *cobra.Command) {
 	fmt.Fprintln(w, "  host = \"devbox1\"")
 	fmt.Fprintln(w, "  user = \"jesse\"  # optional")
 	fmt.Fprintln(w, "  port = 22        # optional")
+	fmt.Fprintln(w, "  Each host must be unique.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Data stored in ~/.agentsview/ by default.")
 }
