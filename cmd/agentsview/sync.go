@@ -31,6 +31,16 @@ type SyncConfig struct {
 }
 
 func runSync(cfg SyncConfig) {
+	if doSync(cfg) {
+		os.Exit(1)
+	}
+}
+
+// doSync performs the sync run and reports whether any configured
+// remote host failed. It owns the deferred cleanup (profile stop,
+// db close) so runSync can translate the result into a non-zero
+// exit code without skipping that cleanup.
+func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 	appCfg, err := config.LoadMinimal()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
@@ -64,26 +74,101 @@ func runSync(cfg SyncConfig) {
 
 	if cfg.Host != "" {
 		runRemoteSync(appCfg, database, cfg)
-		return
+		return false
+	}
+
+	if err := appCfg.ValidateRemoteHosts(); err != nil {
+		fatal("invalid remote_hosts config: %v", err)
 	}
 
 	runLocalSync(appCfg, database, cfg.Full)
+
+	failures := runRemoteHosts(
+		appCfg.RemoteHosts, cfg.Full,
+		func(rh config.RemoteHost, full bool) error {
+			return runRemoteSyncOnce(appCfg, database, rh, full)
+		},
+	)
+	reportRemoteFailures(failures)
+	return len(failures) > 0
 }
 
 func runRemoteSync(
 	appCfg config.Config, database *db.DB, cfg SyncConfig,
 ) {
+	rh := config.RemoteHost{
+		Host: cfg.Host,
+		User: cfg.User,
+		Port: cfg.Port,
+	}
+	if err := runRemoteSyncOnce(
+		appCfg, database, rh, cfg.Full,
+	); err != nil {
+		fatal("remote sync: %v", err)
+	}
+}
+
+// runRemoteSyncOnce syncs a single remote host and returns any
+// error instead of exiting, so it backs both the single-host
+// --host path and the configured-hosts fan-out.
+func runRemoteSyncOnce(
+	appCfg config.Config, database *db.DB,
+	rh config.RemoteHost, full bool,
+) error {
 	rs := &ssh.RemoteSync{
-		Host:                    cfg.Host,
-		User:                    cfg.User,
-		Port:                    cfg.Port,
-		Full:                    cfg.Full,
+		Host:                    rh.Host,
+		User:                    rh.User,
+		Port:                    rh.Port,
+		Full:                    full,
 		DB:                      database,
 		BlockedResultCategories: appCfg.ResultContentBlockedCategories,
 	}
-	ctx := context.Background()
-	if _, err := rs.Run(ctx); err != nil {
-		fatal("remote sync: %v", err)
+	_, err := rs.Run(context.Background())
+	return err
+}
+
+// remoteHostFailure records a configured remote host that failed
+// to sync. It keeps the full RemoteHost (not just the name) so
+// duplicate hostnames that differ by user/port stay distinct.
+type remoteHostFailure struct {
+	Host config.RemoteHost
+	Err  error
+}
+
+// runRemoteHosts syncs each configured host in declared order via
+// syncFn, continuing past failures, and returns the collected
+// failures. It performs no logging so it can be unit-tested
+// without capturing the global logger; callers own all output.
+func runRemoteHosts(
+	hosts []config.RemoteHost, full bool,
+	syncFn func(config.RemoteHost, bool) error,
+) []remoteHostFailure {
+	var failures []remoteHostFailure
+	for _, rh := range hosts {
+		if err := syncFn(rh, full); err != nil {
+			failures = append(failures, remoteHostFailure{
+				Host: rh,
+				Err:  err,
+			})
+		}
+	}
+	return failures
+}
+
+// reportRemoteFailures writes per-host failures to the debug log
+// and a summary to stderr, so unattended (cron) runs surface them
+// even though setupLogFile redirects log output to a file.
+func reportRemoteFailures(failures []remoteHostFailure) {
+	if len(failures) == 0 {
+		return
+	}
+	for _, f := range failures {
+		log.Printf("remote sync %s failed: %v", f.Host.Host, f.Err)
+	}
+	fmt.Fprintf(os.Stderr,
+		"sync: %d remote host(s) failed:\n", len(failures))
+	for _, f := range failures {
+		fmt.Fprintf(os.Stderr, "  %s: %v\n", f.Host.Host, f.Err)
 	}
 }
 
