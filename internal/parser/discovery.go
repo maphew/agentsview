@@ -344,7 +344,11 @@ func DiscoverClaudeProjects(projectsDir string) []DiscoveredFile {
 			})
 		}
 
-		// Scan session directories for subagent files
+		// Scan session directories for subagent files. Claude workflow
+		// tools group subagents under nested paths such as
+		// subagents/workflows/<workflow-id>/agent-<id>.jsonl, so walk the
+		// whole subagents tree instead of assuming transcripts are direct
+		// children of subagents/.
 		for _, sf := range sessionFiles {
 			if !sf.IsDir() {
 				continue
@@ -352,26 +356,27 @@ func DiscoverClaudeProjects(projectsDir string) []DiscoveredFile {
 			subagentsDir := filepath.Join(
 				projDir, sf.Name(), "subagents",
 			)
-			subFiles, err := os.ReadDir(subagentsDir)
+			err := filepath.WalkDir(
+				subagentsDir,
+				func(path string, sub os.DirEntry, err error) error {
+					if err != nil || sub.IsDir() {
+						return nil
+					}
+					name := sub.Name()
+					if !strings.HasPrefix(name, "agent-") ||
+						!strings.HasSuffix(name, ".jsonl") {
+						return nil
+					}
+					files = append(files, DiscoveredFile{
+						Path:    path,
+						Project: entry.Name(),
+						Agent:   AgentClaude,
+					})
+					return nil
+				},
+			)
 			if err != nil {
 				continue
-			}
-			for _, sub := range subFiles {
-				if sub.IsDir() {
-					continue
-				}
-				name := sub.Name()
-				if !strings.HasPrefix(name, "agent-") ||
-					!strings.HasSuffix(name, ".jsonl") {
-					continue
-				}
-				files = append(files, DiscoveredFile{
-					Path: filepath.Join(
-						subagentsDir, name,
-					),
-					Project: entry.Name(),
-					Agent:   AgentClaude,
-				})
 			}
 		}
 	}
