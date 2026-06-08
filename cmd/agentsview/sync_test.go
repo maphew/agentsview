@@ -42,3 +42,37 @@ func TestRunRemoteHosts_AllSucceedReturnsEmpty(t *testing.T) {
 	})
 	assert.Empty(t, failures)
 }
+
+func TestSyncLocalAndRemotes_ResyncForcesRemoteFull(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfgFull   bool
+		didResync bool
+		wantFull  bool
+	}{
+		{"no full, no resync", false, false, false},
+		{"automatic resync forces remote full", false, true, true},
+		{"cli --full", true, false, true},
+		{"both", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hosts := []config.RemoteHost{{Host: "alpha"}, {Host: "beta"}}
+			localCalled := false
+			var gotFull []bool
+			failures := syncLocalAndRemotes(hosts, tt.cfgFull,
+				func() bool { localCalled = true; return tt.didResync },
+				func(_ config.RemoteHost, full bool) error {
+					gotFull = append(gotFull, full)
+					return nil
+				})
+
+			require.True(t, localCalled, "local sync must run")
+			assert.Empty(t, failures)
+			require.Len(t, gotFull, len(hosts))
+			for _, full := range gotFull {
+				assert.Equal(t, tt.wantFull, full)
+			}
+		})
+	}
+}

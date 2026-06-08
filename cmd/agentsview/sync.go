@@ -81,16 +81,31 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 		fatal("invalid remote_hosts config: %v", err)
 	}
 
-	runLocalSync(appCfg, database, cfg.Full)
-
-	failures := runRemoteHosts(
+	failures := syncLocalAndRemotes(
 		appCfg.RemoteHosts, cfg.Full,
+		func() bool { return runLocalSync(appCfg, database, cfg.Full) },
 		func(rh config.RemoteHost, full bool) error {
 			return runRemoteSyncOnce(appCfg, database, rh, full)
 		},
 	)
 	reportRemoteFailures(failures)
 	return len(failures) > 0
+}
+
+// syncLocalAndRemotes runs the local sync, then the configured
+// remote hosts. A local resync (forced via --full or an automatic
+// data-version resync) forces every remote sync full as well, so
+// remote sessions are re-parsed rather than skipped via the remote
+// skip cache. localSync and remoteSync are injected for testing;
+// localSync returns whether a full resync was performed.
+func syncLocalAndRemotes(
+	hosts []config.RemoteHost, cfgFull bool,
+	localSync func() bool,
+	remoteSync func(config.RemoteHost, bool) error,
+) []remoteHostFailure {
+	didResync := localSync()
+	full := cfgFull || didResync
+	return runRemoteHosts(hosts, full, remoteSync)
 }
 
 func runRemoteSync(
