@@ -458,7 +458,7 @@ func (e *Engine) classifyOnePath(
 	}
 
 	// Claude: <claudeDir>/<project>/<session>.jsonl
-	//     or: <claudeDir>/<project>/<session>/subagents/agent-<id>.jsonl
+	//     or: <claudeDir>/<project>/<session>/subagents/**/agent-<id>.jsonl
 	for _, claudeDir := range e.agentDirs[parser.AgentClaude] {
 		if claudeDir == "" {
 			continue
@@ -484,10 +484,10 @@ func (e *Engine) classifyOnePath(
 				}, true
 			}
 
-			// Subagent: project/session/subagents/agent-*.jsonl
-			if len(parts) == 4 && parts[2] == "subagents" {
+			// Subagent: project/session/subagents/**/agent-*.jsonl
+			if len(parts) >= 4 && parts[2] == "subagents" {
 				stem := strings.TrimSuffix(
-					parts[3], ".jsonl",
+					parts[len(parts)-1], ".jsonl",
 				)
 				if !strings.HasPrefix(stem, "agent-") {
 					continue

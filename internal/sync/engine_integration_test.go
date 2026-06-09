@@ -2270,6 +2270,36 @@ func TestSyncPathsClaudeSubagent(t *testing.T) {
 	)
 }
 
+func TestSyncPathsClaudeNestedWorkflowSubagent(t *testing.T) {
+	env := setupTestEnv(t)
+
+	subagentContent := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithSessionID(
+			tsZero, "Deep research", "parent-sess",
+		).
+		AddClaudeAssistant(tsZeroS5, "Done.").
+		String()
+
+	subPath := env.writeSession(
+		t, env.claudeDir,
+		filepath.Join(
+			"test-proj", "parent-sess",
+			"subagents", "workflows", "wf-123",
+			"agent-deep.jsonl",
+		),
+		subagentContent,
+	)
+
+	env.engine.SyncPaths([]string{subPath})
+
+	assertSessionState(
+		t, env.db, "agent-deep",
+		func(sess *db.Session) {
+			assert.Equal(t, "claude", sess.Agent, "agent = %q, want claude", sess.Agent)
+		},
+	)
+}
+
 func TestSyncPathsClaudeRejectsNonAgentInSubagents(t *testing.T) {
 	env := setupTestEnv(t)
 

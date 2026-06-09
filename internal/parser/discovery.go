@@ -344,7 +344,11 @@ func DiscoverClaudeProjects(projectsDir string) []DiscoveredFile {
 			})
 		}
 
-		// Scan session directories for subagent files
+		// Scan session directories for subagent files. Claude workflow
+		// tools group subagents under nested paths such as
+		// subagents/workflows/<workflow-id>/agent-<id>.jsonl, so walk the
+		// whole subagents tree instead of assuming transcripts are direct
+		// children of subagents/.
 		for _, sf := range sessionFiles {
 			if !sf.IsDir() {
 				continue
@@ -352,27 +356,25 @@ func DiscoverClaudeProjects(projectsDir string) []DiscoveredFile {
 			subagentsDir := filepath.Join(
 				projDir, sf.Name(), "subagents",
 			)
-			subFiles, err := os.ReadDir(subagentsDir)
-			if err != nil {
-				continue
-			}
-			for _, sub := range subFiles {
-				if sub.IsDir() {
-					continue
-				}
-				name := sub.Name()
-				if !strings.HasPrefix(name, "agent-") ||
-					!strings.HasSuffix(name, ".jsonl") {
-					continue
-				}
-				files = append(files, DiscoveredFile{
-					Path: filepath.Join(
-						subagentsDir, name,
-					),
-					Project: entry.Name(),
-					Agent:   AgentClaude,
-				})
-			}
+			_ = filepath.WalkDir(
+				subagentsDir,
+				func(path string, sub os.DirEntry, err error) error {
+					if err != nil || sub.IsDir() {
+						return nil
+					}
+					name := sub.Name()
+					if !strings.HasPrefix(name, "agent-") ||
+						!strings.HasSuffix(name, ".jsonl") {
+						return nil
+					}
+					files = append(files, DiscoveredFile{
+						Path:    path,
+						Project: entry.Name(),
+						Agent:   AgentClaude,
+					})
+					return nil
+				},
+			)
 		}
 	}
 
@@ -458,7 +460,7 @@ func FindClaudeSourceFile(
 	}
 
 	// Subagent files live under session directories:
-	// <project>/<session>/subagents/agent-<id>.jsonl
+	// <project>/<session>/subagents/**/agent-<id>.jsonl
 	if strings.HasPrefix(sessionID, "agent-") {
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -475,12 +477,22 @@ func FindClaudeSourceFile(
 				if !sd.IsDir() {
 					continue
 				}
-				candidate := filepath.Join(
-					projDir, sd.Name(),
-					"subagents", target,
+				var found string
+				subagentsDir := filepath.Join(
+					projDir, sd.Name(), "subagents",
 				)
-				if _, err := os.Stat(candidate); err == nil {
-					return candidate
+				_ = filepath.WalkDir(
+					subagentsDir,
+					func(path string, d os.DirEntry, err error) error {
+						if err != nil || d.IsDir() || d.Name() != target {
+							return nil
+						}
+						found = path
+						return filepath.SkipAll
+					},
+				)
+				if found != "" {
+					return found
 				}
 			}
 		}

@@ -92,6 +92,19 @@ func TestDiscoverClaudeProjects(t *testing.T) {
 			},
 		},
 		{
+			name: "Nested workflow subagents",
+			files: map[string]string{
+				filepath.Join("project-a", "parent-session.jsonl"):                                                       "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "agent-deep.jsonl"):     "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "agent-deep.meta.json"): "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "not-agent.jsonl"):      "{}",
+			},
+			wantFiles: []string{
+				"parent-session.jsonl",
+				"agent-deep.jsonl",
+			},
+		},
+		{
 			name:      "Empty",
 			files:     map[string]string{},
 			wantFiles: nil,
@@ -234,6 +247,14 @@ func TestFindClaudeSourceFile(t *testing.T) {
 			},
 			targetID: "agent-sub1",
 			wantFile: filepath.Join("project-a", "parent-sess", "subagents", "agent-sub1.jsonl"),
+		},
+		{
+			name: "Nested workflow subagent",
+			files: map[string]string{
+				filepath.Join("project-a", "parent-sess", "subagents", "workflows", "wf-123", "agent-deep.jsonl"): "{}",
+			},
+			targetID: "agent-deep",
+			wantFile: filepath.Join("project-a", "parent-sess", "subagents", "workflows", "wf-123", "agent-deep.jsonl"),
 		},
 		{
 			name: "Nonexistent",
