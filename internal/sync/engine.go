@@ -458,7 +458,7 @@ func (e *Engine) classifyOnePath(
 	}
 
 	// Claude: <claudeDir>/<project>/<session>.jsonl
-	//     or: <claudeDir>/<project>/<session>/subagents/agent-<id>.jsonl
+	//     or: <claudeDir>/<project>/<session>/subagents/**/agent-<id>.jsonl
 	for _, claudeDir := range e.agentDirs[parser.AgentClaude] {
 		if claudeDir == "" {
 			continue
