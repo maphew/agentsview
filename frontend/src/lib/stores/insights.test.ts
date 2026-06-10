@@ -4,7 +4,7 @@ import {
   expect,
   vi,
   beforeEach,
-} from "vitest";
+} from "vite-plus/test";
 import { insights } from "./insights.svelte.js";
 import * as api from "../api/client.js";
 import { ApiError } from "../api/client.js";

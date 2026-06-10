@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import * as api from "../api/client.js";
 import { createPinsStore } from "./pins.svelte.js";
 

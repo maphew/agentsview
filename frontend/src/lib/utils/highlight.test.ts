@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vite-plus/test";
 import { applyHighlight, escapeHTML } from "./highlight.js";
 
 function makeDiv(html: string): HTMLElement {

@@ -5,7 +5,7 @@ import {
   vi,
   beforeEach,
   afterEach,
-} from "vitest";
+} from "vite-plus/test";
 import {
   getAnalyticsHeatmap,
   getAnalyticsTopSessions,

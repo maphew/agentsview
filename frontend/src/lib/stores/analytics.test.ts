@@ -5,7 +5,7 @@ import {
   vi,
   beforeEach,
   afterEach,
-} from "vitest";
+} from "vite-plus/test";
 import { analytics } from "./analytics.svelte.js";
 import * as api from "../api/client.js";
 import type {

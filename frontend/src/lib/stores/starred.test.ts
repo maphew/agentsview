@@ -5,7 +5,7 @@ import {
   beforeEach,
   afterEach,
   vi,
-} from "vitest";
+} from "vite-plus/test";
 import * as api from "../api/client.js";
 import { createStarredStore } from "./starred.svelte.js";
 

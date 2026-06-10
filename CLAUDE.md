@@ -43,7 +43,7 @@ CLI (agentsview) → Config → DB (SQLite/FTS5)
 - `internal/sync/` - Sync engine, file watcher, discovery, hashing
 - `internal/timeutil/` - Time parsing utilities
 - `internal/web/` - Embedded frontend (dist/ copied at build time)
-- `frontend/` - Svelte 5 SPA (Vite, TypeScript)
+- `frontend/` - Svelte 5 SPA (Vite+, TypeScript)
 - `scripts/` - Utility scripts (E2E server, changelog)
 
 ## Key Files
@@ -79,7 +79,7 @@ CLI (agentsview) → Config → DB (SQLite/FTS5)
 make build          # Build binary with embedded frontend
 make dev            # Run Go server in dev mode
 make frontend       # Build frontend SPA only
-make frontend-dev   # Run Vite dev server (use alongside make dev)
+make frontend-dev   # Run Vite+ dev server (use alongside make dev)
 make install        # Build and install to ~/.local/bin or GOPATH
 make install-hooks  # Install pre-commit git hooks
 ```

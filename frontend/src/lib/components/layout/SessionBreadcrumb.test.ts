@@ -6,7 +6,7 @@ import {
   vi,
   beforeEach,
   afterEach,
-} from "vitest";
+} from "vite-plus/test";
 import { mount, unmount, tick } from "svelte";
 // @ts-ignore
 import SessionBreadcrumb from "./SessionBreadcrumb.svelte";
