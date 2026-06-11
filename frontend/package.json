@@ -29,7 +29,7 @@
     "@types/dompurify": "3.2.0",
     "jsdom": "29.1.1",
     "openapi-typescript-codegen": "^0.30.0",
-    "svelte": "5.55.10",
+    "svelte": "5.56.3",
     "svelte-check": "4.6.0",
     "typescript": "6.0.3",
     "vite": "^8.0.14",
