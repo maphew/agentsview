@@ -43,6 +43,10 @@ PLATFORM_MAP: dict[str, dict[str, str]] = {
         "wheel_tag": "win_amd64",
         "binary_name": "agentsview.exe",
     },
+    "windows_arm64": {
+        "wheel_tag": "win_arm64",
+        "binary_name": "agentsview.exe",
+    },
 }
 
 _ARCHIVE_RE = re.compile(
@@ -242,8 +246,8 @@ def _build_metadata(version: str, readme: str | None) -> str:
         "Name: agentsview",
         f"Version: {version}",
         "Summary: Local web viewer for AI agent sessions",
-        "Home-page: https://github.com/wesm/agentsview",
-        "Author: Wes McKinney",
+        "Home-page: https://github.com/kenn-io/agentsview",
+        "Author: Kenn Software LLC",
         "License: MIT",
         "Requires-Python: >=3.9",
         "Classifier: License :: OSI Approved :: MIT License",

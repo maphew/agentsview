@@ -118,6 +118,9 @@ func filterToQuery(f ListFilter) url.Values {
 	if f.MinToolFailures != nil {
 		q.Set("min_tool_failures", strconv.Itoa(*f.MinToolFailures))
 	}
+	if f.HasSecret {
+		q.Set("has_secret", "true")
+	}
 	setIfNotEmpty("cursor", f.Cursor)
 	if f.Limit > 0 {
 		q.Set("limit", strconv.Itoa(f.Limit))
@@ -247,7 +250,10 @@ func (b *httpBackend) Watch(
 	go func() {
 		defer close(out)
 		defer resp.Body.Close()
-		parseSSE(resp.Body, func(ev Event) bool {
+		// A dropped live-watch stream is signalled to the consumer by
+		// closing out; there is no error channel, so a read error here
+		// is not actionable.
+		_ = parseSSE(resp.Body, func(ev Event) bool {
 			select {
 			case out <- ev:
 				return true
@@ -267,10 +273,183 @@ func (b *httpBackend) Stats(
 	return nil, errors.New("stats over HTTP backend: not yet implemented")
 }
 
+func (b *httpBackend) SearchContent(
+	ctx context.Context, req ContentSearchRequest,
+) (*ContentSearchResult, error) {
+	q := url.Values{}
+	q.Set("pattern", req.Pattern)
+	if req.Mode != "" {
+		q.Set("mode", req.Mode)
+	}
+	if len(req.Sources) > 0 {
+		q.Set("in", strings.Join(req.Sources, ","))
+	}
+	if req.ExcludeSystem {
+		q.Set("exclude_system", "true")
+	}
+	if req.Reveal {
+		q.Set("reveal", "true")
+	}
+	for k, v := range map[string]string{
+		"project":         req.Project,
+		"exclude_project": req.ExcludeProject,
+		"machine":         req.Machine,
+		"agent":           req.Agent,
+		"date":            req.Date,
+		"date_from":       req.DateFrom,
+		"date_to":         req.DateTo,
+		"active_since":    req.ActiveSince,
+	} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if req.IncludeChildren {
+		q.Set("include_children", "true")
+	}
+	if req.IncludeAutomated {
+		q.Set("include_automated", "true")
+	}
+	if req.IncludeOneShot {
+		q.Set("include_one_shot", "true")
+	}
+	if req.Limit > 0 {
+		q.Set("limit", strconv.Itoa(req.Limit))
+	}
+	if req.Cursor > 0 {
+		q.Set("cursor", strconv.Itoa(req.Cursor))
+	}
+	var out ContentSearchResult
+	if err := b.getJSON(ctx, "/api/v1/search/content?"+q.Encode(), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (b *httpBackend) ListSecrets(
+	ctx context.Context, f SecretListFilter,
+) (*SecretFindingList, error) {
+	q := url.Values{}
+	for k, v := range map[string]string{
+		"project": f.Project, "agent": f.Agent,
+		"date_from": f.DateFrom, "date_to": f.DateTo,
+		"rule": f.Rule, "confidence": f.Confidence,
+	} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if f.Reveal {
+		q.Set("reveal", "true")
+	}
+	if f.Limit > 0 {
+		q.Set("limit", strconv.Itoa(f.Limit))
+	}
+	if f.Cursor > 0 {
+		q.Set("cursor", strconv.Itoa(f.Cursor))
+	}
+	var out SecretFindingList
+	if err := b.getJSON(ctx, "/api/v1/secrets?"+q.Encode(), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (b *httpBackend) ScanSecrets(
+	ctx context.Context, in SecretScanInput,
+	progress func(SecretScanProgress),
+) (*SecretScanSummary, error) {
+	if b.readOnly {
+		return nil, fmt.Errorf("scan: daemon at %s is read-only: %w",
+			b.baseURL, db.ErrReadOnly)
+	}
+	q := url.Values{}
+	if in.Backfill {
+		q.Set("backfill", "true")
+	}
+	for k, v := range map[string]string{
+		"project": in.Project, "agent": in.Agent,
+		"date_from": in.DateFrom, "date_to": in.DateTo,
+	} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		b.baseURL+"/api/v1/secrets/scan?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Origin", b.baseURL)
+	b.addAuth(req)
+	resp, err := (&http.Client{Timeout: 0}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotImplemented {
+		return nil, fmt.Errorf("scan: daemon at %s: %w", b.baseURL, db.ErrReadOnly)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("scan: HTTP %d", resp.StatusCode)
+	}
+	return parseScanStream(resp.Body, progress)
+}
+
+// parseScanStream decodes the scan SSE stream: progress ticks invoke the
+// callback, the summary event is the result, and an error event becomes an
+// error. A stream that ends without a summary event (broken connection,
+// canceled context, daemon crash) is reported as an error rather than a
+// zero-value success.
+func parseScanStream(
+	r io.Reader, progress func(SecretScanProgress),
+) (*SecretScanSummary, error) {
+	var summary SecretScanSummary
+	var scanErr, decodeErr error
+	var gotSummary bool
+	readErr := parseSSE(r, func(ev Event) bool {
+		switch ev.Event {
+		case "progress":
+			var p SecretScanProgress
+			if json.Unmarshal([]byte(ev.Data), &p) == nil && progress != nil {
+				progress(p)
+			}
+		case "summary":
+			if err := json.Unmarshal([]byte(ev.Data), &summary); err != nil {
+				decodeErr = fmt.Errorf("scan: decoding summary: %w", err)
+			} else {
+				gotSummary = true
+			}
+		case "error":
+			scanErr = fmt.Errorf("scan: %s", ev.Data)
+		}
+		return true
+	})
+	switch {
+	case scanErr != nil:
+		// The server explicitly reported failure; prefer that over a
+		// trailing read error from the dropped connection.
+		return nil, scanErr
+	case gotSummary:
+		// A complete summary arrived; any post-summary read noise is
+		// irrelevant to the scan result.
+		return &summary, nil
+	case readErr != nil:
+		return nil, fmt.Errorf("scan: reading stream: %w", readErr)
+	case decodeErr != nil:
+		return nil, decodeErr
+	default:
+		return nil, errors.New("scan: stream ended before summary")
+	}
+}
+
 // parseSSE reads a Server-Sent Events stream and invokes emit for
 // each complete event. emit returns false to stop parsing (e.g. on
-// context cancel).
-func parseSSE(r io.Reader, emit func(Event) bool) {
+// context cancel). It returns any read error from the underlying
+// stream, so callers can tell a truncated/broken stream apart from a
+// clean end; a voluntary stop (emit returning false) returns nil.
+func parseSSE(r io.Reader, emit func(Event) bool) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	var event, data string
@@ -279,7 +458,7 @@ func parseSSE(r io.Reader, emit func(Event) bool) {
 		if line == "" {
 			if event != "" {
 				if !emit(Event{Event: event, Data: data}) {
-					return
+					return nil
 				}
 			}
 			event, data = "", ""
@@ -291,6 +470,7 @@ func parseSSE(r io.Reader, emit func(Event) bool) {
 			data = line[len("data: "):]
 		}
 	}
+	return scanner.Err()
 }
 
 // addAuth attaches the bearer token to req when the backend was

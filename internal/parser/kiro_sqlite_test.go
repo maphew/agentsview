@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const kiroSQLiteSchema = `
@@ -24,13 +26,10 @@ func newKiroSQLiteTestDB(t *testing.T) (string, *sql.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), kiroSQLiteDBName)
 	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("open kiro sqlite test db: %v", err)
-	}
+	require.NoError(t, err, "open kiro sqlite test db")
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(kiroSQLiteSchema); err != nil {
-		t.Fatalf("create kiro sqlite schema: %v", err)
-	}
+	_, err = db.Exec(kiroSQLiteSchema)
+	require.NoError(t, err, "create kiro sqlite schema")
 	return path, db
 }
 
@@ -39,9 +38,7 @@ func readKiroFixture(t *testing.T, name string) string {
 	data, err := os.ReadFile(filepath.Join(
 		"testdata", "kiro_sqlite", name,
 	))
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
+	require.NoError(t, err, "read fixture %s", name)
 	return string(data)
 }
 
@@ -50,14 +47,13 @@ func seedKiroSQLiteSession(
 	createdAt, updatedAt int64,
 ) {
 	t.Helper()
-	if _, err := db.Exec(
+	_, err := db.Exec(
 		`INSERT INTO conversations_v2
 			(key, conversation_id, value, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)`,
 		key, id, payload, createdAt, updatedAt,
-	); err != nil {
-		t.Fatalf("seed kiro sqlite session: %v", err)
-	}
+	)
+	require.NoError(t, err, "seed kiro sqlite session")
 }
 
 func TestParseKiroSQLiteSession(t *testing.T) {
@@ -71,31 +67,27 @@ func TestParseKiroSQLiteSession(t *testing.T) {
 	sess, msgs, err := ParseKiroSQLiteSession(
 		dbPath, "sqlite-session", "test-machine",
 	)
-	if err != nil {
-		t.Fatalf("ParseKiroSQLiteSession: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("expected session")
-	}
-	assertEq(t, "ID", sess.ID, "kiro:sqlite-session")
-	assertEq(t, "Agent", sess.Agent, AgentKiro)
-	assertEq(t, "Machine", sess.Machine, "test-machine")
-	assertEq(t, "Project", sess.Project, "kiro_app")
-	assertEq(t, "Cwd", sess.Cwd, "/home/user/code/kiro-app")
-	assertEq(t, "FirstMessage", sess.FirstMessage, "Build the Kiro parser")
-	assertEq(t, "MessageCount", sess.MessageCount, 4)
-	assertEq(t, "UserMessageCount", sess.UserMessageCount, 2)
-	assertEq(t, "File.Path", sess.File.Path, dbPath+"#sqlite-session")
-	assertEq(t, "File.Mtime", sess.File.Mtime, int64(1779012030000)*1_000_000)
+	require.NoError(t, err, "ParseKiroSQLiteSession")
+	require.NotNil(t, sess, "expected session")
+	assert.Equal(t, "kiro:sqlite-session", sess.ID, "ID")
+	assert.Equal(t, AgentKiro, sess.Agent, "Agent")
+	assert.Equal(t, "test-machine", sess.Machine, "Machine")
+	assert.Equal(t, "kiro_app", sess.Project, "Project")
+	assert.Equal(t, "/home/user/code/kiro-app", sess.Cwd, "Cwd")
+	assert.Equal(t, "Build the Kiro parser", sess.FirstMessage, "FirstMessage")
+	assert.Equal(t, 4, sess.MessageCount, "MessageCount")
+	assert.Equal(t, 2, sess.UserMessageCount, "UserMessageCount")
+	assert.Equal(t, dbPath+"#sqlite-session", sess.File.Path, "File.Path")
+	assert.Equal(t, int64(1779012030000)*1_000_000, sess.File.Mtime, "File.Mtime")
 
-	assertEq(t, "messages len", len(msgs), 4)
-	assertEq(t, "msg[0].Role", msgs[0].Role, RoleUser)
-	assertEq(t, "msg[0].Content", msgs[0].Content, "Build the Kiro parser")
-	assertEq(t, "msg[1].Role", msgs[1].Role, RoleAssistant)
-	assertEq(t, "msg[1].Content", msgs[1].Content, "I can do that.")
-	assertEq(t, "msg[3].HasToolUse", msgs[3].HasToolUse, true)
-	assertEq(t, "msg[3].ToolCalls len", len(msgs[3].ToolCalls), 1)
-	assertEq(t, "msg[3].ToolName", msgs[3].ToolCalls[0].ToolName, "execute_bash")
+	require.Len(t, msgs, 4, "messages len")
+	assert.Equal(t, RoleUser, msgs[0].Role, "msg[0].Role")
+	assert.Equal(t, "Build the Kiro parser", msgs[0].Content, "msg[0].Content")
+	assert.Equal(t, RoleAssistant, msgs[1].Role, "msg[1].Role")
+	assert.Equal(t, "I can do that.", msgs[1].Content, "msg[1].Content")
+	assert.True(t, msgs[3].HasToolUse, "msg[3].HasToolUse")
+	require.Len(t, msgs[3].ToolCalls, 1, "msg[3].ToolCalls len")
+	assert.Equal(t, "execute_bash", msgs[3].ToolCalls[0].ToolName, "msg[3].ToolName")
 }
 
 func TestListKiroSQLiteSessionMetaUsesNewestLogicalRow(t *testing.T) {
@@ -111,11 +103,9 @@ func TestListKiroSQLiteSessionMetaUsesNewestLogicalRow(t *testing.T) {
 	)
 
 	metas, err := ListKiroSQLiteSessionMeta(dbPath)
-	if err != nil {
-		t.Fatalf("ListKiroSQLiteSessionMeta: %v", err)
-	}
-	assertEq(t, "metas len", len(metas), 1)
-	assertEq(t, "meta mtime", metas[0].FileMtime, int64(9_000_000))
+	require.NoError(t, err, "ListKiroSQLiteSessionMeta")
+	require.Len(t, metas, 1, "metas len")
+	assert.Equal(t, int64(9_000_000), metas[0].FileMtime, "meta mtime")
 }
 
 func TestKiroSQLiteSourceMtime(t *testing.T) {
@@ -128,10 +118,8 @@ func TestKiroSQLiteSourceMtime(t *testing.T) {
 	mtime, err := KiroSQLiteSourceMtime(
 		KiroSQLiteVirtualPath(dbPath, "sqlite-session"),
 	)
-	if err != nil {
-		t.Fatalf("KiroSQLiteSourceMtime: %v", err)
-	}
-	assertEq(t, "mtime", mtime, int64(7_000_000))
+	require.NoError(t, err, "KiroSQLiteSourceMtime")
+	assert.Equal(t, int64(7_000_000), mtime, "mtime")
 }
 
 func TestParseKiroSQLiteVirtualPath(t *testing.T) {
@@ -157,11 +145,9 @@ func TestParseKiroSQLiteVirtualPath(t *testing.T) {
 			gotDB, gotID, ok := ParseKiroSQLiteVirtualPath(
 				KiroSQLiteVirtualPath(tt.dbPath, tt.sessionID),
 			)
-			if !ok {
-				t.Fatal("expected virtual path to parse")
-			}
-			assertEq(t, "dbPath", gotDB, tt.dbPath)
-			assertEq(t, "sessionID", gotID, tt.sessionID)
+			require.True(t, ok, "expected virtual path to parse")
+			assert.Equal(t, tt.dbPath, gotDB, "dbPath")
+			assert.Equal(t, tt.sessionID, gotID, "sessionID")
 		})
 	}
 }
@@ -173,9 +159,8 @@ func TestParseKiroSQLiteSessionRejectsMalformedPayload(t *testing.T) {
 		readKiroFixture(t, "malformed_payload.txt"),
 		1, 2,
 	)
-	if _, _, err := ParseKiroSQLiteSession(
+	_, _, err := ParseKiroSQLiteSession(
 		dbPath, "broken-session", "test-machine",
-	); err == nil {
-		t.Fatal("expected malformed payload error")
-	}
+	)
+	require.Error(t, err, "expected malformed payload error")
 }

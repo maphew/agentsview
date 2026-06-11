@@ -3,6 +3,8 @@ package postgres
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIsUndefinedTable(t *testing.T) {
@@ -40,13 +42,7 @@ func TestIsUndefinedTable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isUndefinedTable(tt.err)
-			if got != tt.want {
-				t.Errorf(
-					"isUndefinedTable(%v) = %v, want %v",
-					tt.err, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, isUndefinedTable(tt.err))
 		})
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -30,15 +33,11 @@ func TestStoreGetAnalyticsSessionShape_AutonomyExcludesSystemUsers(
 		"autonomy-test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := time.Now().UTC().Add(-1 * time.Hour).
 		Format(time.RFC3339)
@@ -52,9 +51,7 @@ func TestStoreGetAnalyticsSessionShape_AutonomyExcludesSystemUsers(
 		StartedAt:    &started,
 		MessageCount: 8,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 
 	msgs := []db.Message{
 		{
@@ -86,51 +83,35 @@ func TestStoreGetAnalyticsSessionShape_AutonomyExcludesSystemUsers(
 			Content:    "tool call",
 		})
 	}
-	if err := local.InsertMessages(msgs); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	require.NoError(t, local.InsertMessages(msgs), "insert messages")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	store, err := NewStore(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	resp, err := store.GetAnalyticsSessionShape(
 		ctx, db.AnalyticsFilter{},
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsSessionShape: %v", err)
-	}
+	require.NoError(t, err, "GetAnalyticsSessionShape")
 
 	// Promoted system rows must be excluded: ratio = 4/1 = 4.0 → "2-5".
 	// Regression case (counts all role='user'): 4/4 = 1.0 → "1-2".
 	want := map[string]int{"2-5": 1}
 	for label, got := range mapAutonomy(resp.AutonomyDistribution) {
-		if got != want[label] {
-			t.Errorf(
-				"AutonomyDistribution[%q] = %d, want %d (full: %+v)",
-				label, got, want[label], resp.AutonomyDistribution,
-			)
-		}
+		assert.Equal(t, want[label], got,
+			"AutonomyDistribution[%q] (full: %+v)",
+			label, resp.AutonomyDistribution)
 	}
-	if resp.AutonomyDistribution == nil ||
-		bucketCount(resp.AutonomyDistribution, "1-2") != 0 {
-		t.Errorf(
-			"expected zero sessions in '1-2' bucket; got %+v",
-			resp.AutonomyDistribution,
-		)
-	}
-	if bucketCount(resp.AutonomyDistribution, "2-5") != 1 {
-		t.Errorf(
-			"expected 1 session in '2-5' bucket; got %+v",
-			resp.AutonomyDistribution,
-		)
-	}
+	require.NotNil(t, resp.AutonomyDistribution)
+	assert.Equal(t, 0, bucketCount(resp.AutonomyDistribution, "1-2"),
+		"expected zero sessions in '1-2' bucket; got %+v",
+		resp.AutonomyDistribution)
+	assert.Equal(t, 1, bucketCount(resp.AutonomyDistribution, "2-5"),
+		"expected 1 session in '2-5' bucket; got %+v",
+		resp.AutonomyDistribution)
 }
 
 // mapAutonomy and bucketCount flatten the bucket slice so the

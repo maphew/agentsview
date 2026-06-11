@@ -6,34 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 )
-
-func TestValidateSort(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		sortParam string
-		wantSort  string
-	}{
-		{"recency accepted", "recency", "recency"},
-		{"relevance accepted", "relevance", "relevance"},
-		{"empty defaults to relevance", "", "relevance"},
-		{"invalid defaults to relevance", "injection", "relevance"},
-		{"SQL injection attempt defaults to relevance", "'; DROP TABLE sessions; --", "relevance"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := validateSort(tt.sortParam)
-			if got != tt.wantSort {
-				t.Errorf("validateSort(%q) = %q, want %q",
-					tt.sortParam, got, tt.wantSort)
-			}
-		})
-	}
-}
 
 func TestPrepareFTSQuery(t *testing.T) {
 	t.Parallel()
@@ -52,10 +30,7 @@ func TestPrepareFTSQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := prepareFTSQuery(tt.raw)
-			if got != tt.want {
-				t.Errorf("prepareFTSQuery(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
+			assert.Equal(t, tt.want, prepareFTSQuery(tt.raw))
 		})
 	}
 }
@@ -93,21 +68,17 @@ func TestHandleSearchSortParam(t *testing.T) {
 			srv := &Server{
 				cfg: config.Config{Host: "127.0.0.1"},
 				db:  spy,
+				mux: http.NewServeMux(),
 			}
+			srv.routes()
 			req := httptest.NewRequest(
 				http.MethodGet,
 				"/api/v1/search?"+tt.query, nil,
 			)
 			w := httptest.NewRecorder()
-			srv.handleSearch(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200: %s",
-					w.Code, w.Body.String())
-			}
-			if spy.filter.Sort != tt.wantSort {
-				t.Errorf("SearchFilter.Sort = %q, want %q",
-					spy.filter.Sort, tt.wantSort)
-			}
+			srv.mux.ServeHTTP(w, req)
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+			assert.Equal(t, tt.wantSort, spy.filter.Sort)
 		})
 	}
 }

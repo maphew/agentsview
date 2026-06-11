@@ -2,6 +2,9 @@ package db
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMigrationCreatesModelPricingTable(t *testing.T) {
@@ -11,11 +14,9 @@ func TestMigrationCreatesModelPricingTable(t *testing.T) {
 	err := d.getReader().QueryRow(
 		`SELECT count(*) FROM pragma_table_info('model_pricing')`,
 	).Scan(&count)
-	requireNoError(t, err, "pragma_table_info")
+	require.NoError(t, err, "pragma_table_info")
 
-	if count == 0 {
-		t.Fatal("model_pricing table not created by schema")
-	}
+	assert.NotZero(t, count, "model_pricing table not created by schema")
 }
 
 func TestUpsertModelPricing(t *testing.T) {
@@ -32,37 +33,18 @@ func TestUpsertModelPricing(t *testing.T) {
 	}
 
 	err := d.UpsertModelPricing(prices)
-	requireNoError(t, err, "UpsertModelPricing")
+	require.NoError(t, err, "UpsertModelPricing")
 
 	got, err := d.GetModelPricing("claude-sonnet-4")
-	requireNoError(t, err, "GetModelPricing")
+	require.NoError(t, err, "GetModelPricing")
+	require.NotNil(t, got, "expected pricing")
 
-	if got == nil {
-		t.Fatal("expected pricing, got nil")
-	}
-	if got.ModelPattern != "claude-sonnet-4" {
-		t.Errorf("ModelPattern = %q, want %q",
-			got.ModelPattern, "claude-sonnet-4")
-	}
-	if got.InputPerMTok != 3.0 {
-		t.Errorf("InputPerMTok = %v, want 3.0",
-			got.InputPerMTok)
-	}
-	if got.OutputPerMTok != 15.0 {
-		t.Errorf("OutputPerMTok = %v, want 15.0",
-			got.OutputPerMTok)
-	}
-	if got.CacheCreationPerMTok != 3.75 {
-		t.Errorf("CacheCreationPerMTok = %v, want 3.75",
-			got.CacheCreationPerMTok)
-	}
-	if got.CacheReadPerMTok != 0.30 {
-		t.Errorf("CacheReadPerMTok = %v, want 0.30",
-			got.CacheReadPerMTok)
-	}
-	if got.UpdatedAt == "" {
-		t.Error("expected UpdatedAt to be set")
-	}
+	assert.Equal(t, "claude-sonnet-4", got.ModelPattern)
+	assert.Equal(t, 3.0, got.InputPerMTok)
+	assert.Equal(t, 15.0, got.OutputPerMTok)
+	assert.Equal(t, 3.75, got.CacheCreationPerMTok)
+	assert.Equal(t, 0.30, got.CacheReadPerMTok)
+	assert.NotEmpty(t, got.UpdatedAt, "expected UpdatedAt to be set")
 }
 
 func TestUpsertModelPricingOverwrites(t *testing.T) {
@@ -78,7 +60,7 @@ func TestUpsertModelPricingOverwrites(t *testing.T) {
 		},
 	}
 	err := d.UpsertModelPricing(initial)
-	requireNoError(t, err, "UpsertModelPricing initial")
+	require.NoError(t, err, "UpsertModelPricing initial")
 
 	updated := []ModelPricing{
 		{
@@ -90,30 +72,91 @@ func TestUpsertModelPricingOverwrites(t *testing.T) {
 		},
 	}
 	err = d.UpsertModelPricing(updated)
-	requireNoError(t, err, "UpsertModelPricing updated")
+	require.NoError(t, err, "UpsertModelPricing updated")
 
 	got, err := d.GetModelPricing("claude-opus-4")
-	requireNoError(t, err, "GetModelPricing after update")
+	require.NoError(t, err, "GetModelPricing after update")
+	require.NotNil(t, got, "expected pricing")
 
-	if got == nil {
-		t.Fatal("expected pricing, got nil")
+	assert.Equal(t, 10.0, got.InputPerMTok)
+	assert.Equal(t, 50.0, got.OutputPerMTok)
+	assert.Equal(t, 12.50, got.CacheCreationPerMTok)
+	assert.Equal(t, 1.00, got.CacheReadPerMTok)
+}
+
+func TestFilterChangedModelPricingIgnoresUpdatedAtOnlyDifferences(t *testing.T) {
+	existing := []ModelPricing{
+		{
+			ModelPattern:         "_fallback_version",
+			InputPerMTok:         0,
+			OutputPerMTok:        0,
+			CacheCreationPerMTok: 0,
+			CacheReadPerMTok:     0,
+			UpdatedAt:            "v1",
+		},
+		{
+			ModelPattern:         "same-model",
+			InputPerMTok:         1,
+			OutputPerMTok:        2,
+			CacheCreationPerMTok: 3,
+			CacheReadPerMTok:     4,
+			UpdatedAt:            "old",
+		},
+		{
+			ModelPattern:         "changed-model",
+			InputPerMTok:         1,
+			OutputPerMTok:        2,
+			CacheCreationPerMTok: 3,
+			CacheReadPerMTok:     4,
+			UpdatedAt:            "old",
+		},
 	}
-	if got.InputPerMTok != 10.0 {
-		t.Errorf("InputPerMTok = %v, want 10.0",
-			got.InputPerMTok)
+	desired := []ModelPricing{
+		{
+			ModelPattern:         "_fallback_version",
+			InputPerMTok:         0,
+			OutputPerMTok:        0,
+			CacheCreationPerMTok: 0,
+			CacheReadPerMTok:     0,
+			UpdatedAt:            "v2",
+		},
+		{
+			ModelPattern:         "same-model",
+			InputPerMTok:         1,
+			OutputPerMTok:        2,
+			CacheCreationPerMTok: 3,
+			CacheReadPerMTok:     4,
+			UpdatedAt:            "new",
+		},
+		{
+			ModelPattern:         "changed-model",
+			InputPerMTok:         1,
+			OutputPerMTok:        9,
+			CacheCreationPerMTok: 3,
+			CacheReadPerMTok:     4,
+			UpdatedAt:            "new",
+		},
+		{
+			ModelPattern:         "missing-model",
+			InputPerMTok:         5,
+			OutputPerMTok:        6,
+			CacheCreationPerMTok: 7,
+			CacheReadPerMTok:     8,
+			UpdatedAt:            "new",
+		},
 	}
-	if got.OutputPerMTok != 50.0 {
-		t.Errorf("OutputPerMTok = %v, want 50.0",
-			got.OutputPerMTok)
-	}
-	if got.CacheCreationPerMTok != 12.50 {
-		t.Errorf("CacheCreationPerMTok = %v, want 12.50",
-			got.CacheCreationPerMTok)
-	}
-	if got.CacheReadPerMTok != 1.00 {
-		t.Errorf("CacheReadPerMTok = %v, want 1.00",
-			got.CacheReadPerMTok)
-	}
+
+	gotSummary, gotRows := FilterChangedModelPricing(existing, desired)
+
+	assert.Equal(t, PricingChangeSummary{
+		Total:     4,
+		Missing:   1,
+		Changed:   1,
+		Unchanged: 2,
+	}, gotSummary)
+	require.Len(t, gotRows, 2)
+	assert.Equal(t, "changed-model", gotRows[0].ModelPattern)
+	assert.Equal(t, "missing-model", gotRows[1].ModelPattern)
 }
 
 func TestPricingMeta(t *testing.T) {
@@ -121,36 +164,31 @@ func TestPricingMeta(t *testing.T) {
 
 	// Initially empty.
 	got, err := d.GetPricingMeta("_fallback_version")
-	requireNoError(t, err, "GetPricingMeta empty")
-	if got != "" {
-		t.Fatalf("expected empty, got %q", got)
-	}
+	require.NoError(t, err, "GetPricingMeta empty")
+	require.Empty(t, got)
 
 	// Set and read back.
-	requireNoError(t,
+	require.NoError(t,
 		d.SetPricingMeta("_fallback_version", "v1"),
 		"SetPricingMeta v1")
 	got, err = d.GetPricingMeta("_fallback_version")
-	requireNoError(t, err, "GetPricingMeta v1")
-	if got != "v1" {
-		t.Fatalf("expected %q, got %q", "v1", got)
-	}
+	require.NoError(t, err, "GetPricingMeta v1")
+	require.Equal(t, "v1", got)
 
 	// Update overwrites.
-	requireNoError(t,
+	require.NoError(t,
 		d.SetPricingMeta("_fallback_version", "v2"),
 		"SetPricingMeta v2")
 	got, err = d.GetPricingMeta("_fallback_version")
-	requireNoError(t, err, "GetPricingMeta v2")
-	if got != "v2" {
-		t.Fatalf("expected %q, got %q", "v2", got)
-	}
+	require.NoError(t, err, "GetPricingMeta v2")
+	require.Equal(t, "v2", got)
 
 	// Sentinel row does not interfere with model lookups.
 	p, err := d.GetModelPricing("_fallback_version")
-	requireNoError(t, err, "GetModelPricing sentinel")
-	if p != nil && p.InputPerMTok != 0 {
-		t.Errorf("sentinel should have zero pricing, got %+v", p)
+	require.NoError(t, err, "GetModelPricing sentinel")
+	if p != nil {
+		assert.Zero(t, p.InputPerMTok,
+			"sentinel should have zero pricing, got %+v", p)
 	}
 }
 
@@ -158,9 +196,38 @@ func TestGetModelPricingNotFound(t *testing.T) {
 	d := testDB(t)
 
 	got, err := d.GetModelPricing("nonexistent-model")
-	requireNoError(t, err, "GetModelPricing not found")
+	require.NoError(t, err, "GetModelPricing not found")
+	assert.Nil(t, got, "expected nil")
+}
 
-	if got != nil {
-		t.Fatalf("expected nil, got %+v", got)
-	}
+func TestInsertMissingModelPricing_DoesNotOverwrite(t *testing.T) {
+	d := testDB(t)
+
+	// Seed an existing row (simulating a LiteLLM rate already present).
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
+		ModelPattern:         "claude-opus-4-6",
+		InputPerMTok:         5.0,
+		OutputPerMTok:        25.0,
+		CacheCreationPerMTok: 6.25,
+		CacheReadPerMTok:     0.5,
+	}}), "UpsertModelPricing")
+
+	// Insert-missing with a DIFFERENT rate for the same pattern, plus a
+	// brand-new pattern.
+	err := d.InsertMissingModelPricing([]ModelPricing{
+		{ModelPattern: "claude-opus-4-6", InputPerMTok: 999.0, OutputPerMTok: 999.0},
+		{ModelPattern: "gpt-5.4", InputPerMTok: 2.5, OutputPerMTok: 15.0},
+	})
+	require.NoError(t, err, "InsertMissingModelPricing")
+
+	// Existing row is untouched.
+	opus, err := d.GetModelPricing("claude-opus-4-6")
+	require.NoError(t, err, "GetModelPricing opus")
+	require.NotNil(t, opus)
+	assert.Equal(t, 5.0, opus.InputPerMTok, "opus InputPerMTok not overwritten")
+	// New row was inserted.
+	gpt, err := d.GetModelPricing("gpt-5.4")
+	require.NoError(t, err, "GetModelPricing gpt")
+	require.NotNil(t, gpt)
+	assert.Equal(t, 2.5, gpt.InputPerMTok, "gpt-5.4 InputPerMTok inserted")
 }

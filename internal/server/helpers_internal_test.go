@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
@@ -29,9 +31,7 @@ func testServer(
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
 
 	cfg := config.Config{
@@ -64,39 +64,18 @@ func assertTimeoutResponse(
 	t *testing.T, resp *http.Response,
 ) {
 	t.Helper()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf(
-			"status = %d, want %d",
-			resp.StatusCode, http.StatusServiceUnavailable,
-		)
-	}
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("reading body: %v", err)
-	}
+	require.NoError(t, err)
 	resp.Body = struct {
 		io.Reader
 		io.Closer
 	}{bytes.NewReader(body), resp.Body}
 	var je jsonError
-	if err := json.Unmarshal(body, &je); err != nil {
-		t.Fatalf(
-			"body is not valid JSON: %v (body=%q)",
-			err, string(body),
-		)
-	}
-	if je.Error != "request timed out" {
-		t.Fatalf(
-			"error = %q, want %q",
-			je.Error, "request timed out",
-		)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
-		t.Fatalf(
-			"Content-Type = %q, want %q",
-			ct, "application/json",
-		)
-	}
+	require.NoError(t, json.Unmarshal(body, &je),
+		"body is not valid JSON; body=%q", string(body))
+	require.Equal(t, "request timed out", je.Error)
+	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 }
 
 // isTimeoutResponse returns true when the response is a 503
@@ -144,12 +123,7 @@ func assertRecorderStatus(
 	t *testing.T, w *httptest.ResponseRecorder, code int,
 ) {
 	t.Helper()
-	if w.Code != code {
-		t.Fatalf(
-			"expected status %d, got %d: %s",
-			code, w.Code, w.Body.String(),
-		)
-	}
+	require.Equal(t, code, w.Code, "body: %s", w.Body.String())
 }
 
 // assertContentType checks that the recorder has the expected
@@ -158,11 +132,7 @@ func assertContentType(
 	t *testing.T, w *httptest.ResponseRecorder, expected string,
 ) {
 	t.Helper()
-	if got := w.Header().Get("Content-Type"); got != expected {
-		t.Errorf(
-			"Content-Type = %q, want %q", got, expected,
-		)
-	}
+	assert.Equal(t, expected, w.Header().Get("Content-Type"))
 }
 
 // newTestServerMinimal creates a lightweight Server with only the
@@ -195,12 +165,7 @@ func assertContainsAll(
 ) {
 	t.Helper()
 	for _, want := range wants {
-		if !strings.Contains(got, want) {
-			t.Errorf(
-				"expected to contain %q, got:\n%s",
-				want, got,
-			)
-		}
+		assert.Contains(t, got, want)
 	}
 }
 
@@ -211,11 +176,6 @@ func assertContainsNone(
 ) {
 	t.Helper()
 	for _, bad := range bads {
-		if strings.Contains(got, bad) {
-			t.Errorf(
-				"expected NOT to contain %q, got:\n%s",
-				bad, got,
-			)
-		}
+		assert.NotContains(t, got, bad)
 	}
 }

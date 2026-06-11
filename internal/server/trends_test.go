@@ -6,6 +6,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -36,16 +39,11 @@ func TestTrendsTermsEndpoint(t *testing.T) {
 	}))
 	assertStatus(t, w, http.StatusOK)
 	resp := decode[db.TrendsTermsResponse](t, w)
-	if want := []string{"2024-05-27"}; !slices.Equal(trendBucketDates(resp.Buckets), want) {
-		t.Fatalf("bucket dates = %#v, want %#v", trendBucketDates(resp.Buckets), want)
-	}
+	require.True(t, slices.Equal(trendBucketDates(resp.Buckets), []string{"2024-05-27"}),
+		"bucket dates = %#v", trendBucketDates(resp.Buckets))
 	byTerm := trendSeriesByTerm(resp.Series)
-	if got := byTerm["load bearing"].Total; got != 2 {
-		t.Fatalf("load bearing total = %d, want 2", got)
-	}
-	if got := byTerm["seam"].Total; got != 2 {
-		t.Fatalf("seam total = %d, want 2", got)
-	}
+	assert.Equal(t, 2, byTerm["load bearing"].Total, "load bearing total")
+	assert.Equal(t, 2, byTerm["seam"].Total, "seam total")
 }
 
 func TestTrendsTermsValidation(t *testing.T) {
@@ -100,9 +98,7 @@ func TestTrendsTermsProjectFilter(t *testing.T) {
 	}))
 	assertStatus(t, w, http.StatusOK)
 	resp := decode[db.TrendsTermsResponse](t, w)
-	if got := trendSeriesByTerm(resp.Series)["seam"].Total; got != 1 {
-		t.Fatalf("project-filtered total = %d, want 1", got)
-	}
+	assert.Equal(t, 1, trendSeriesByTerm(resp.Series)["seam"].Total, "project-filtered total")
 }
 
 func trendsURL(q url.Values) string {

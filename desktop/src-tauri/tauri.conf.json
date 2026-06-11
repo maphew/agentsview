@@ -20,13 +20,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://127.0.0.1:* http://localhost:*; script-src 'self' http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com http://127.0.0.1:* http://localhost:*; font-src 'self' data: https://fonts.gstatic.com http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'self' http://127.0.0.1:* http://localhost:*; script-src 'self' http://127.0.0.1:* http://localhost:*; connect-src 'self' http: https: ws: wss:; img-src 'self' data: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com http://127.0.0.1:* http://localhost:*; font-src 'self' data: https://fonts.gstatic.com http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "copyright": "Copyright 2026 Wes McKinney",
+    "copyright": "Copyright 2026 Kenn Software LLC",
     "shortDescription": "Local viewer for AI agent sessions",
     "longDescription": "AgentsView is a local web viewer for AI agent coding sessions.",
     "createUpdaterArtifacts": "v1Compatible",

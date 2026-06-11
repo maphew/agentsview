@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/db"
 )
@@ -182,18 +184,10 @@ func TestAnalyticsSummary(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.AnalyticsSummary](t, w)
-		if resp.TotalSessions != stats.TotalSessions {
-			t.Errorf("TotalSessions = %d, want %d", resp.TotalSessions, stats.TotalSessions)
-		}
-		if resp.TotalMessages != stats.TotalMessages {
-			t.Errorf("TotalMessages = %d, want %d", resp.TotalMessages, stats.TotalMessages)
-		}
-		if resp.ActiveProjects != stats.ActiveProjects {
-			t.Errorf("ActiveProjects = %d, want %d", resp.ActiveProjects, stats.ActiveProjects)
-		}
-		if resp.ActiveDays != stats.ActiveDays {
-			t.Errorf("ActiveDays = %d, want %d", resp.ActiveDays, stats.ActiveDays)
-		}
+		assert.Equal(t, stats.TotalSessions, resp.TotalSessions)
+		assert.Equal(t, stats.TotalMessages, resp.TotalMessages)
+		assert.Equal(t, stats.ActiveProjects, resp.ActiveProjects)
+		assert.Equal(t, stats.ActiveDays, resp.ActiveDays)
 	})
 
 	t.Run("NonUTCTimezone", func(t *testing.T) {
@@ -215,12 +209,8 @@ func TestAnalyticsSummary_OutputTokenCoverage(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[db.AnalyticsSummary](t, w)
-	if resp.TotalOutputTokens != stats.TotalOutputTokens {
-		t.Errorf("TotalOutputTokens = %d, want %d", resp.TotalOutputTokens, stats.TotalOutputTokens)
-	}
-	if resp.TokenReportingSessions != stats.TokenReportingSessions {
-		t.Errorf("TokenReportingSessions = %d, want %d", resp.TokenReportingSessions, stats.TokenReportingSessions)
-	}
+	assert.Equal(t, stats.TotalOutputTokens, resp.TotalOutputTokens)
+	assert.Equal(t, stats.TokenReportingSessions, resp.TokenReportingSessions)
 }
 
 func TestAnalyticsSummary_DateValidation(t *testing.T) {
@@ -284,9 +274,8 @@ func TestAnalyticsErrorRedaction(t *testing.T) {
 			w := te.get(t, buildURLWithRange(ep, nil))
 			assertStatus(t, w, http.StatusInternalServerError)
 			body := w.Body.String()
-			if strings.Contains(body, "sql") || strings.Contains(body, "database") {
-				t.Errorf("response exposes internal error: %s", body)
-			}
+			assert.NotContains(t, body, "sql", "response exposes internal error")
+			assert.NotContains(t, body, "database", "response exposes internal error")
 		})
 	}
 }
@@ -403,6 +392,67 @@ func TestActiveSinceValidation(t *testing.T) {
 	}
 }
 
+// TestDateFilterValidation pins that the content-search and secrets-list
+// endpoints reject malformed date filters with 400 instead of forwarding them
+// to the DB, where a date/timestamptz cast failure would surface as a 500.
+func TestDateFilterValidation(t *testing.T) {
+	te := setup(t)
+
+	tests := []struct {
+		name   string
+		path   string
+		params map[string]string
+		status int
+	}{
+		{
+			"Search_InvalidDate", "/api/v1/search/content",
+			map[string]string{"pattern": "x", "date": "not-a-date"},
+			http.StatusBadRequest,
+		},
+		{
+			"Search_InvalidDateFrom", "/api/v1/search/content",
+			map[string]string{"pattern": "x", "date_from": "2024-13-40"},
+			http.StatusBadRequest,
+		},
+		{
+			"Search_DateFromAfterDateTo", "/api/v1/search/content",
+			map[string]string{
+				"pattern": "x", "date_from": "2024-06-03", "date_to": "2024-06-01",
+			},
+			http.StatusBadRequest,
+		},
+		{
+			"Search_InvalidActiveSince", "/api/v1/search/content",
+			map[string]string{"pattern": "x", "active_since": "garbage"},
+			http.StatusBadRequest,
+		},
+		{
+			"Search_ValidDates", "/api/v1/search/content",
+			map[string]string{
+				"pattern": "x", "date_from": "2024-06-01", "date_to": "2024-06-03",
+			},
+			http.StatusOK,
+		},
+		{
+			"Secrets_InvalidDateFrom", "/api/v1/secrets",
+			map[string]string{"date_from": "bad-date"},
+			http.StatusBadRequest,
+		},
+		{
+			"Secrets_ValidDates", "/api/v1/secrets",
+			map[string]string{"date_from": "2024-06-01", "date_to": "2024-06-03"},
+			http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := te.get(t, buildPathURL(tt.path, tt.params))
+			assertStatus(t, w, tt.status)
+		})
+	}
+}
+
 func TestAnalyticsActivity(t *testing.T) {
 	te := setup(t)
 	stats := seedAnalyticsEnv(t, te)
@@ -433,22 +483,16 @@ func TestAnalyticsActivity(t *testing.T) {
 				if expectedGran == "" {
 					expectedGran = "day" // default
 				}
-				if resp.Granularity != expectedGran {
-					t.Errorf("Granularity = %q, want %q", resp.Granularity, expectedGran)
-				}
+				assert.Equal(t, expectedGran, resp.Granularity)
 				if expectedGran == "day" {
-					if len(resp.Series) != stats.ActiveDays {
-						t.Fatalf("len(Series) = %d, want %d", len(resp.Series), stats.ActiveDays)
-					}
+					require.Len(t, resp.Series, stats.ActiveDays)
 					totalUser := 0
 					totalAsst := 0
 					for _, e := range resp.Series {
 						totalUser += e.UserMessages
 						totalAsst += e.AssistantMessages
 					}
-					if totalUser+totalAsst != stats.TotalMessages {
-						t.Errorf("total messages = %d, want %d", totalUser+totalAsst, stats.TotalMessages)
-					}
+					assert.Equal(t, stats.TotalMessages, totalUser+totalAsst)
 				}
 			}
 		})
@@ -486,21 +530,20 @@ func TestAnalyticsHeatmap(t *testing.T) {
 				if expectedMetric == "" {
 					expectedMetric = "messages" // default
 				}
-				if resp.Metric != expectedMetric {
-					t.Errorf("Metric = %q, want %q", resp.Metric, expectedMetric)
-				}
-				if tt.wantEntries >= 0 && len(resp.Entries) != tt.wantEntries {
-					t.Errorf("len(Entries) = %d, want %d", len(resp.Entries), tt.wantEntries)
+				assert.Equal(t, expectedMetric, resp.Metric)
+				if tt.wantEntries >= 0 {
+					assert.Len(t, resp.Entries, tt.wantEntries)
 				}
 				if tt.wantEntries > 0 {
 					total := 0
 					for _, e := range resp.Entries {
 						total += e.Value
 					}
-					if expectedMetric == "messages" && total != stats.TotalMessages {
-						t.Errorf("total messages = %d, want %d", total, stats.TotalMessages)
-					} else if expectedMetric == "sessions" && total != stats.TotalSessions {
-						t.Errorf("total sessions = %d, want %d", total, stats.TotalSessions)
+					switch expectedMetric {
+					case "messages":
+						assert.Equal(t, stats.TotalMessages, total)
+					case "sessions":
+						assert.Equal(t, stats.TotalSessions, total)
 					}
 				}
 			}
@@ -517,21 +560,10 @@ func TestAnalyticsHeatmap(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.HeatmapResponse](t, w)
-		if len(resp.Entries) > db.MaxHeatmapDays {
-			t.Errorf(
-				"len(Entries) = %d, want <= %d",
-				len(resp.Entries), db.MaxHeatmapDays,
-			)
-		}
-		if resp.EntriesFrom == "" {
-			t.Fatal("EntriesFrom is empty")
-		}
-		if resp.EntriesFrom <= "2022-01-01" {
-			t.Errorf(
-				"EntriesFrom = %q, want later than 2022-01-01",
-				resp.EntriesFrom,
-			)
-		}
+		assert.LessOrEqual(t, len(resp.Entries), db.MaxHeatmapDays)
+		require.NotEmpty(t, resp.EntriesFrom)
+		assert.Greater(t, resp.EntriesFrom, "2022-01-01",
+			"EntriesFrom should be later than 2022-01-01")
 	})
 
 	t.Run("ShortRange_NoClamping", func(t *testing.T) {
@@ -540,12 +572,7 @@ func TestAnalyticsHeatmap(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.HeatmapResponse](t, w)
-		if resp.EntriesFrom != "2024-06-01" {
-			t.Errorf(
-				"EntriesFrom = %q, want %q",
-				resp.EntriesFrom, "2024-06-01",
-			)
-		}
+		assert.Equal(t, "2024-06-01", resp.EntriesFrom)
 	})
 
 	t.Run("Levels_FromClampedWindow", func(t *testing.T) {
@@ -574,19 +601,14 @@ func TestAnalyticsHeatmap(t *testing.T) {
 		// The outlier at 2020-01-15 should be clamped out.
 		// Verify no entry has the outlier date.
 		for _, e := range resp.Entries {
-			if e.Date == "2020-01-15" {
-				t.Error("outlier date should be outside clamped window")
-			}
+			assert.NotEqual(t, "2020-01-15", e.Date,
+				"outlier date should be outside clamped window")
 		}
 
 		// Levels should reflect the recent data (max ~30 msgs),
 		// not the 500-message outlier.
-		if resp.Levels.L4 >= 500 {
-			t.Errorf(
-				"L4 = %d, should be << 500 (outlier leaked into levels)",
-				resp.Levels.L4,
-			)
-		}
+		assert.Less(t, resp.Levels.L4, 500,
+			"L4 should be << 500 (outlier leaked into levels)")
 	})
 }
 
@@ -601,17 +623,13 @@ func TestAnalyticsHeatmap_OutputTokens(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[db.HeatmapResponse](t, w)
-	if resp.Metric != "output_tokens" {
-		t.Fatalf("Metric = %q, want %q", resp.Metric, "output_tokens")
-	}
+	require.Equal(t, "output_tokens", resp.Metric)
 
 	total := 0
 	for _, e := range resp.Entries {
 		total += e.Value
 	}
-	if total != stats.TotalOutputTokens {
-		t.Errorf("total output tokens = %d, want %d", total, stats.TotalOutputTokens)
-	}
+	assert.Equal(t, stats.TotalOutputTokens, total)
 }
 
 func TestAnalyticsHeatmap_OutputTokensNoReporting(
@@ -628,19 +646,9 @@ func TestAnalyticsHeatmap_OutputTokensNoReporting(
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[db.HeatmapResponse](t, w)
-	if resp.Metric != "output_tokens" {
-		t.Fatalf(
-			"Metric = %q, want output_tokens",
-			resp.Metric,
-		)
-	}
-	if len(resp.Entries) != 0 {
-		t.Errorf(
-			"len(Entries) = %d, want 0 "+
-				"(no sessions report token coverage)",
-			len(resp.Entries),
-		)
-	}
+	require.Equal(t, "output_tokens", resp.Metric)
+	assert.Empty(t, resp.Entries,
+		"no sessions report token coverage")
 }
 
 func TestAnalyticsProjects(t *testing.T) {
@@ -652,17 +660,13 @@ func TestAnalyticsProjects(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.ProjectsAnalyticsResponse](t, w)
-		if len(resp.Projects) != stats.ActiveProjects {
-			t.Fatalf("len(Projects) = %d, want %d", len(resp.Projects), stats.ActiveProjects)
-		}
+		require.Len(t, resp.Projects, stats.ActiveProjects)
 
 		total := 0
 		for _, p := range resp.Projects {
 			total += p.Messages
 		}
-		if total != stats.TotalMessages {
-			t.Errorf("total messages across projects = %d, want %d", total, stats.TotalMessages)
-		}
+		assert.Equal(t, stats.TotalMessages, total)
 	})
 
 	t.Run("MachineFilter", func(t *testing.T) {
@@ -670,9 +674,7 @@ func TestAnalyticsProjects(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.ProjectsAnalyticsResponse](t, w)
-		if len(resp.Projects) != 0 {
-			t.Errorf("len(Projects) = %d, want 0", len(resp.Projects))
-		}
+		assert.Empty(t, resp.Projects)
 	})
 }
 
@@ -685,9 +687,7 @@ func TestAnalyticsHourOfWeek(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.HourOfWeekResponse](t, w)
-		if len(resp.Cells) != 168 {
-			t.Errorf("len(Cells) = %d, want 168", len(resp.Cells))
-		}
+		assert.Len(t, resp.Cells, 168)
 	})
 }
 
@@ -700,9 +700,7 @@ func TestAnalyticsSessionShape(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.SessionShapeResponse](t, w)
-		if resp.Count != stats.TotalSessions {
-			t.Errorf("Count = %d, want %d", resp.Count, stats.TotalSessions)
-		}
+		assert.Equal(t, stats.TotalSessions, resp.Count)
 	})
 }
 
@@ -715,9 +713,7 @@ func TestAnalyticsVelocity(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.VelocityResponse](t, w)
-		if len(resp.ByAgent) != stats.Agents {
-			t.Errorf("len(ByAgent) = %d, want %d", len(resp.ByAgent), stats.Agents)
-		}
+		assert.Len(t, resp.ByAgent, stats.Agents)
 	})
 }
 
@@ -730,15 +726,9 @@ func TestAnalyticsTools(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.ToolsAnalyticsResponse](t, w)
-		if resp.TotalCalls != stats.TotalToolCalls {
-			t.Errorf("TotalCalls = %d, want %d", resp.TotalCalls, stats.TotalToolCalls)
-		}
-		if len(resp.ByCategory) == 0 {
-			t.Error("expected non-empty ByCategory")
-		}
-		if len(resp.ByAgent) != stats.Agents {
-			t.Errorf("len(ByAgent) = %d, want %d", len(resp.ByAgent), stats.Agents)
-		}
+		assert.Equal(t, stats.TotalToolCalls, resp.TotalCalls)
+		assert.NotEmpty(t, resp.ByCategory)
+		assert.Len(t, resp.ByAgent, stats.Agents)
 	})
 
 	t.Run("WithProjectFilter", func(t *testing.T) {
@@ -746,9 +736,7 @@ func TestAnalyticsTools(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 
 		resp := decode[db.ToolsAnalyticsResponse](t, w)
-		if resp.TotalCalls == 0 {
-			t.Error("expected non-zero TotalCalls for alpha")
-		}
+		assert.NotZero(t, resp.TotalCalls, "TotalCalls for alpha")
 	})
 
 	t.Run("InvalidTimezone", func(t *testing.T) {
@@ -796,23 +784,15 @@ func TestAnalyticsTopSessions(t *testing.T) {
 				if expectedMetric == "" {
 					expectedMetric = "messages"
 				}
-				if resp.Metric != expectedMetric {
-					t.Errorf("Metric = %q, want %q", resp.Metric, expectedMetric)
-				}
+				assert.Equal(t, expectedMetric, resp.Metric)
 				if tt.project == "" {
 					expected := min(stats.TotalSessions, 10)
-					if len(resp.Sessions) != expected {
-						t.Errorf("len(Sessions) = %d, want %d", len(resp.Sessions), expected)
-					}
+					assert.Len(t, resp.Sessions, expected)
 				}
 				if tt.project != "" {
-					if len(resp.Sessions) == 0 {
-						t.Errorf("expected at least one session for project %q", tt.project)
-					}
+					assert.NotEmpty(t, resp.Sessions, "project %q", tt.project)
 					for _, s := range resp.Sessions {
-						if s.Project != tt.project {
-							t.Errorf("session project = %q, want %q", s.Project, tt.project)
-						}
+						assert.Equal(t, tt.project, s.Project)
 					}
 				}
 			}
@@ -831,15 +811,9 @@ func TestAnalyticsTopSessions_OutputTokens(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[db.TopSessionsResponse](t, w)
-	if resp.Metric != "output_tokens" {
-		t.Fatalf("Metric = %q, want %q", resp.Metric, "output_tokens")
-	}
-	if len(resp.Sessions) == 0 {
-		t.Fatal("Sessions is empty")
-	}
-	if resp.Sessions[0].OutputTokens != stats.TopSessionOutputTokens {
-		t.Errorf("Sessions[0].OutputTokens = %d, want %d", resp.Sessions[0].OutputTokens, stats.TopSessionOutputTokens)
-	}
+	require.Equal(t, "output_tokens", resp.Metric)
+	require.NotEmpty(t, resp.Sessions)
+	assert.Equal(t, stats.TopSessionOutputTokens, resp.Sessions[0].OutputTokens)
 }
 
 // TestSessionCountConsistency verifies that session counts from
@@ -945,27 +919,17 @@ func TestSessionCountConsistency(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 	summaryResp := decode[db.AnalyticsSummary](t, w)
 
-	if listResp.Total != wantCount {
-		t.Errorf("session list total = %d, want %d",
-			listResp.Total, wantCount)
-	}
-	if statsResp.SessionCount != wantCount {
-		t.Errorf("stats session_count = %d, want %d",
-			statsResp.SessionCount, wantCount)
-	}
-	if summaryResp.TotalSessions != wantCount {
-		t.Errorf("analytics total_sessions = %d, want %d",
-			summaryResp.TotalSessions, wantCount)
-	}
+	assert.Equal(t, wantCount, listResp.Total, "session list total")
+	assert.Equal(t, wantCount, statsResp.SessionCount, "stats session_count")
+	assert.Equal(t, wantCount, summaryResp.TotalSessions, "analytics total_sessions")
 
 	// All three must be equal.
-	if listResp.Total != statsResp.SessionCount ||
-		statsResp.SessionCount != summaryResp.TotalSessions {
-		t.Fatalf(
-			"session counts disagree: list=%d stats=%d analytics=%d",
-			listResp.Total,
-			statsResp.SessionCount,
-			summaryResp.TotalSessions,
-		)
-	}
+	require.True(t,
+		listResp.Total == statsResp.SessionCount &&
+			statsResp.SessionCount == summaryResp.TotalSessions,
+		"session counts disagree: list=%d stats=%d analytics=%d",
+		listResp.Total,
+		statsResp.SessionCount,
+		summaryResp.TotalSessions,
+	)
 }

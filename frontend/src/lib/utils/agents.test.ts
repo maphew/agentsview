@@ -18,10 +18,12 @@ describe("KNOWN_AGENTS", () => {
       "cursor",
       "amp",
       "zencoder",
+      "zed",
       "vscode-copilot",
       "pi",
       "qwen",
       "openclaw",
+      "qclaw",
       "iflow",
       "kimi",
       "claude-ai",
@@ -29,7 +31,10 @@ describe("KNOWN_AGENTS", () => {
       "kiro",
       "kiro-ide",
       "cortex",
+      "workbuddy",
       "piebald",
+      "antigravity",
+      "antigravity-cli",
     ]);
   });
 
@@ -69,6 +74,9 @@ describe("agentColor", () => {
     expect(agentColor("zencoder")).toBe(
       "var(--accent-red)",
     );
+    expect(agentColor("zed")).toBe(
+      "var(--accent-green)",
+    );
     expect(agentColor("pi")).toBe(
       "var(--accent-indigo)",
     );
@@ -77,6 +85,12 @@ describe("agentColor", () => {
     );
     expect(agentColor("vscode-copilot")).toBe(
       "var(--accent-teal)",
+    );
+    expect(agentColor("qclaw")).toBe(
+      "var(--accent-orange)",
+    );
+    expect(agentColor("workbuddy")).toBe(
+      "var(--accent-violet)",
     );
     expect(agentColor("piebald")).toBe(
       "var(--accent-orange)",
@@ -98,8 +112,11 @@ describe("agentLabel", () => {
     );
     expect(agentLabel("openhands")).toBe("OpenHands");
     expect(agentLabel("openclaw")).toBe("OpenClaw");
+    expect(agentLabel("qclaw")).toBe("QClaw");
     expect(agentLabel("iflow")).toBe("iFlow");
+    expect(agentLabel("workbuddy")).toBe("WorkBuddy");
     expect(agentLabel("piebald")).toBe("Piebald");
+    expect(agentLabel("zed")).toBe("Zed");
     expect(agentLabel("qwen")).toBe("Qwen Code");
   });
 

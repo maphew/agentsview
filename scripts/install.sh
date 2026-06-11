@@ -1,10 +1,10 @@
 #!/bin/bash
 # agentsview installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/wesm/agentsview/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/kenn-io/agentsview/main/scripts/install.sh | bash
 
 set -euo pipefail
 
-REPO="wesm/agentsview"
+REPO="kenn-io/agentsview"
 BINARY_NAME="agentsview"
 
 RED='\033[0;31m'
@@ -54,19 +54,25 @@ download() {
 }
 
 get_latest_version() {
-    local url="https://api.github.com/repos/${REPO}/releases/latest"
-    local json
+    # Use the HTML /releases/latest endpoint, which 302-redirects to
+    # /releases/tag/<version>. Unlike api.github.com it is not rate-limited
+    # at 60 req/hr per IP, so users behind shared NAT / VPN don't get 403.
+    local url="https://github.com/${REPO}/releases/latest"
+    local final_url=""
     if command -v curl &>/dev/null; then
-        json=$(curl -fsSL "$url")
+        final_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$url") || return 1
     elif command -v wget &>/dev/null; then
-        json=$(wget -qO- "$url")
+        final_url=$(wget --spider -S "$url" 2>&1 \
+            | awk 'tolower($1)=="location:" {print $2}' \
+            | tail -1 \
+            | tr -d '\r\n') || return 1
     else
         return 1
     fi
-    echo "$json" \
-        | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | head -1 \
-        | cut -d'"' -f4
+    case "$final_url" in
+        */releases/tag/*) echo "${final_url##*/releases/tag/}" ;;
+        *) return 1 ;;
+    esac
 }
 
 verify_checksum() {

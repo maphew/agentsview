@@ -7,7 +7,7 @@
     getAuthToken,
     setAuthToken,
     isRemoteConnection,
-  } from "../../api/client.js";
+  } from "../../api/runtime.js";
 
   let serverUrl: string = $state(getServerUrl());
   let tokenInput: string = $state(getAuthToken());

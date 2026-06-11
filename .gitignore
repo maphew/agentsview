@@ -60,3 +60,10 @@ html/
 
 # Visual verification scratch — per-task screenshot/HTML capture dirs.
 .test-data*/
+
+# Antigravity CLI session dir created when AGY runs inside this repo
+.antigravitycli/
+
+# graphify knowledge-graph output (local analysis)
+graphify-out/
+.kata.local.toml

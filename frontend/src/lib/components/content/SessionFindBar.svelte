@@ -1,4 +1,10 @@
 <script lang="ts">
+  import {
+    ChevronDownIcon,
+    ChevronUpIcon,
+    SearchIcon,
+    XIcon,
+  } from "../../icons.js";
   import { inSessionSearch } from "../../stores/inSessionSearch.svelte.js";
   import { tick } from "svelte";
 
@@ -42,16 +48,7 @@
 
 {#if inSessionSearch.isOpen}
   <div class="find-bar" role="search" aria-label="Find in session">
-    <svg
-      class="find-icon"
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.099zm-5.242 1.156a5.5 5.5 0 110-11 5.5 5.5 0 010 11z"/>
-    </svg>
+    <SearchIcon class="find-icon" size="13" strokeWidth="2" aria-hidden="true" />
 
     <input
       bind:this={inputRef}
@@ -83,9 +80,7 @@
         tabindex="0"
         aria-label="Previous match"
       >
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M7.646 4.646a.5.5 0 01.708 0l6 6a.5.5 0 01-.708.708L8 5.707l-5.646 5.647a.5.5 0 01-.708-.708l6-6z"/>
-        </svg>
+        <ChevronUpIcon size="11" strokeWidth="2.4" aria-hidden="true" />
       </button>
       <button
         class="nav-btn"
@@ -95,9 +90,7 @@
         tabindex="0"
         aria-label="Next match"
       >
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.646 4.646a.5.5 0 01.708 0L8 10.293l5.646-5.647a.5.5 0 01.708.708l-6 6a.5.5 0 01-.708 0l-6-6a.5.5 0 010-.708z"/>
-        </svg>
+        <ChevronDownIcon size="11" strokeWidth="2.4" aria-hidden="true" />
       </button>
     </div>
 
@@ -110,9 +103,7 @@
       tabindex="0"
       aria-label="Close find bar"
     >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-      </svg>
+      <XIcon size="12" strokeWidth="2.4" aria-hidden="true" />
     </button>
   </div>
 {/if}
@@ -140,7 +131,7 @@
     }
   }
 
-  .find-icon {
+  :global(.find-icon) {
     color: var(--text-muted);
     flex-shrink: 0;
   }

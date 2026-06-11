@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseIntParam(t *testing.T) {
@@ -61,17 +63,67 @@ func TestParseIntParam(t *testing.T) {
 			w, r := newTestRequest(t, tt.query)
 
 			val, ok := parseIntParam(w, r, tt.param)
-			if ok != tt.wantOK {
-				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if val != tt.wantVal {
-				t.Errorf("val = %d, want %d", val, tt.wantVal)
-			}
-			if w.Code != tt.wantStatus {
-				t.Errorf(
-					"status = %d, want %d", w.Code, tt.wantStatus,
-				)
-			}
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantVal, val)
+			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
+
+// TestParseNonNegativeIntParam pins the cursor-validation contract:
+// negative integers, which would flow through to SQL OFFSET and 500
+// on PostgreSQL, must be rejected with a 400 at the handler.
+func TestParseNonNegativeIntParam(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantVal    int
+		wantOK     bool
+		wantStatus int
+	}{
+		{
+			name:       "absent",
+			query:      "",
+			wantVal:    0,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "zero",
+			query:      "cursor=0",
+			wantVal:    0,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "positive",
+			query:      "cursor=50",
+			wantVal:    50,
+			wantOK:     true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "negative rejected",
+			query:      "cursor=-1",
+			wantVal:    0,
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "non-numeric rejected",
+			query:      "cursor=abc",
+			wantVal:    0,
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, r := newTestRequest(t, tt.query)
+			val, ok := parseNonNegativeIntParam(w, r, "cursor")
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantVal, val)
+			assert.Equal(t, tt.wantStatus, w.Code)
 		})
 	}
 }
@@ -94,11 +146,7 @@ func TestClampLimit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := clampLimit(tt.limit, defaultLimit, max)
-			if got != tt.want {
-				t.Errorf("clampLimit(%d, %d, %d) = %d, want %d",
-					tt.limit, defaultLimit, max, got, tt.want)
-			}
+			assert.Equal(t, tt.want, clampLimit(tt.limit, defaultLimit, max))
 		})
 	}
 }

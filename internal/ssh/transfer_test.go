@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -15,20 +16,12 @@ func TestBuildTarCommand(t *testing.T) {
 	}
 	cmd := buildTarCommand(dirs)
 
-	if !strings.HasPrefix(cmd, "tar cf - -C / -- ") {
-		t.Errorf("bad prefix: %s", cmd)
-	}
+	assert.True(t, strings.HasPrefix(cmd, "tar cf - -C / -- "), "bad prefix: %s", cmd)
 	// Paths are shell-quoted.
-	if !strings.Contains(cmd, "'home/wes/.claude/projects'") {
-		t.Error("missing quoted claude dir")
-	}
-	if !strings.Contains(cmd, "'home/wes/.codex/sessions'") {
-		t.Error("missing quoted codex dir")
-	}
+	assert.Contains(t, cmd, "'home/wes/.claude/projects'")
+	assert.Contains(t, cmd, "'home/wes/.codex/sessions'")
 	// No leading slash in dir args.
-	if strings.Contains(cmd, "'/home/") {
-		t.Errorf("dir has leading slash: %s", cmd)
-	}
+	assert.NotContains(t, cmd, "'/home/", "dir has leading slash: %s", cmd)
 }
 
 func TestRemapPath(t *testing.T) {
@@ -40,10 +33,7 @@ func TestRemapPath(t *testing.T) {
 		"tmp", "sync-123", "home", "wes", ".claude", "foo.jsonl",
 	)
 	got := remapToRemotePath(tempDir, remoteDir, localPath)
-	want := "/home/wes/.claude/foo.jsonl"
-	if got != want {
-		t.Errorf("remapToRemotePath = %q, want %q", got, want)
-	}
+	assert.Equal(t, "/home/wes/.claude/foo.jsonl", got)
 }
 
 func TestRemappedDir(t *testing.T) {
@@ -51,7 +41,5 @@ func TestRemappedDir(t *testing.T) {
 	remoteDir := "/home/wes/.claude"
 	got := remappedDir(tempDir, remoteDir)
 	want := filepath.Join("tmp", "sync-123", "home", "wes", ".claude")
-	if got != want {
-		t.Errorf("remappedDir = %q, want %q", got, want)
-	}
+	assert.Equal(t, want, got)
 }

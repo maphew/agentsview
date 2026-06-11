@@ -499,6 +499,27 @@ func (db *DB) ReplaceSessionMessages(
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := replaceSessionMessagesTx(tx, sessionID, msgs); err != nil {
+		return err
+	}
+	// The new messages invalidate any findings scanned from the old content, so
+	// clear them and reset the scan state (empty version => secrets scan
+	// --backfill re-scans). ReplaceSessionContent does not call this method; it
+	// supplies fresh findings via replaceSecretFindingsTx directly.
+	if err := replaceSecretFindingsTx(tx, sessionID, nil, 0, ""); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replaceSessionMessagesTx performs the full message-replace sequence within
+// an existing transaction: saves pins, deletes old tool_calls /
+// tool_result_events / messages (with FTS optimisation), inserts new messages
+// + tool_calls + tool_result_events, then restores pins. Caller owns the lock
+// and transaction lifecycle.
+func replaceSessionMessagesTx(
+	tx *sql.Tx, sessionID string, msgs []Message,
+) error {
 	pins, err := savePinsTx(tx, sessionID)
 	if err != nil {
 		return err
@@ -581,10 +602,38 @@ func (db *DB) ReplaceSessionMessages(
 		}
 	}
 
-	if err := restorePinsTx(tx, sessionID, pins); err != nil {
+	return restorePinsTx(tx, sessionID, pins)
+}
+
+// ReplaceSessionContent atomically replaces a session's messages, signal
+// columns, and secret findings in one transaction, so the derived data can
+// never diverge from the messages it was computed from.
+func (db *DB) ReplaceSessionContent(
+	sessionID string, msgs []Message,
+	signals SessionSignalUpdate, findings []SecretFinding,
+) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.getWriter().Begin()
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := replaceSessionMessagesTx(tx, sessionID, msgs); err != nil {
 		return err
 	}
-
+	if err := updateSessionSignalsTx(tx, sessionID, signals); err != nil {
+		return err
+	}
+	// replaceSecretFindingsTx is the sole writer of secret_leak_count/
+	// secrets_rules_version (updateSessionSignalsTx leaves them untouched), so
+	// the count cannot diverge from the findings it summarizes.
+	if err := replaceSecretFindingsTx(tx, sessionID, findings,
+		signals.SecretLeakCount, signals.SecretsRulesVersion); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

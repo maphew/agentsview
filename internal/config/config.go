@@ -65,6 +65,17 @@ type PGConfig struct {
 	ExcludeProjects []string `toml:"exclude_projects" json:"exclude_projects,omitempty"`
 }
 
+// DuckDBConfig holds DuckDB mirror and Quack connection settings.
+type DuckDBConfig struct {
+	Path            string   `toml:"path" json:"path"`
+	URL             string   `toml:"url" json:"url"`
+	Token           string   `toml:"token" json:"token,omitempty"`
+	MachineName     string   `toml:"machine_name" json:"machine_name"`
+	AllowInsecure   bool     `toml:"allow_insecure" json:"allow_insecure"`
+	Projects        []string `toml:"projects" json:"projects,omitempty"`
+	ExcludeProjects []string `toml:"exclude_projects" json:"exclude_projects,omitempty"`
+}
+
 // AutomatedConfig holds user-supplied additions to the
 // automated-session classifier. Parse-only; all semantic
 // normalization (trim, dedupe, length cap, built-in overlap
@@ -83,6 +94,15 @@ type CustomModelRate struct {
 	Output        float64 `json:"output" toml:"output"`
 	CacheCreation float64 `json:"cache_creation,omitempty" toml:"cache_creation"`
 	CacheRead     float64 `json:"cache_read,omitempty" toml:"cache_read"`
+}
+
+// RemoteHost describes one SSH target for config-driven
+// `agentsview sync` fan-out. Host is required; User and Port are
+// optional (Port 0 means the ssh default of 22).
+type RemoteHost struct {
+	Host string `toml:"host" json:"host"`
+	User string `toml:"user,omitempty" json:"user,omitempty"`
+	Port int    `toml:"port,omitempty" json:"port,omitempty"`
 }
 
 // Config holds all application configuration.
@@ -104,6 +124,7 @@ type Config struct {
 	DisableUpdateCheck   bool                   `json:"disable_update_check" toml:"disable_update_check"`
 	NoSync               bool                   `json:"-" toml:"-"`
 	PG                   PGConfig               `json:"pg,omitempty" toml:"pg"`
+	DuckDB               DuckDBConfig           `json:"duckdb,omitempty" toml:"duckdb"`
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
 	WriteTimeout         time.Duration          `json:"-" toml:"-"`
@@ -127,6 +148,12 @@ type Config struct {
 	EventsCoalesceInterval time.Duration `json:"events_coalesce_interval,omitempty" toml:"events_coalesce_interval"`
 
 	CustomModelPricing map[string]CustomModelRate `json:"custom_model_pricing,omitempty" toml:"custom_model_pricing"`
+
+	// RemoteHosts is the config-file list of SSH targets that
+	// `agentsview sync` (with no --host) syncs after the local
+	// pass. CLI/config-file only; never serialized to the
+	// settings API, so there is no web-UI editing of this list.
+	RemoteHosts []RemoteHost `json:"-" toml:"-"`
 
 	// HostExplicit is true when the user passed --host on the CLI.
 	// Used to prevent auto-bind to 0.0.0.0 when the user
@@ -156,6 +183,46 @@ func (c *Config) IsUserConfigured(
 	agent parser.AgentType,
 ) bool {
 	return c.agentDirSource[agent] != dirDefault
+}
+
+// ValidateRemoteHosts checks the configured remote_hosts entries
+// for semantic errors: a non-empty host and a port within 0..65535
+// (0 means the ssh default). It checks the trimmed values that
+// loadFile already normalized, so what is validated here is exactly
+// what is passed to ssh. Returns an aggregated error naming every
+// offending entry, or nil when all entries are valid.
+func (c Config) ValidateRemoteHosts() error {
+	var problems []string
+	seen := make(map[string]int, len(c.RemoteHosts))
+	for i, h := range c.RemoteHosts {
+		if h.Host == "" {
+			problems = append(problems,
+				fmt.Sprintf("entry %d: host is required", i+1))
+		}
+		if h.Port < 0 || h.Port > 65535 {
+			problems = append(problems,
+				fmt.Sprintf("entry %d (%q): invalid port %d",
+					i+1, h.Host, h.Port))
+		}
+		// Remote sync namespaces sessions and the skip cache by
+		// host alone (see ssh.RemoteSync), so two entries sharing a
+		// host collide regardless of user/port. Reject duplicates
+		// rather than silently share or overwrite cached state.
+		if h.Host != "" {
+			if first, ok := seen[h.Host]; ok {
+				problems = append(problems,
+					fmt.Sprintf("entry %d: duplicate host %q (already at entry %d)",
+						i+1, h.Host, first))
+			} else {
+				seen[h.Host] = i + 1
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("remote_hosts: %s",
+			strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // Default returns a Config with default values.
@@ -240,6 +307,20 @@ func LoadPGServe(fs *flag.FlagSet) (Config, error) {
 
 // LoadPGServePFlags builds a PG serve config from a parsed Cobra/pflag FlagSet.
 func LoadPGServePFlags(fs *pflag.FlagSet) (Config, error) {
+	cfg, err := loadPGServeBase()
+	if err != nil {
+		return cfg, err
+	}
+	applyPFlags(&cfg, fs)
+	if err := finalize(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LoadDuckDBServePFlags builds a DuckDB serve config from a parsed Cobra/pflag
+// FlagSet. It intentionally uses the same isolated serve defaults as pg serve.
+func LoadDuckDBServePFlags(fs *pflag.FlagSet) (Config, error) {
 	cfg, err := loadPGServeBase()
 	if err != nil {
 		return cfg, err
@@ -371,10 +452,12 @@ func (c *Config) loadFile() error {
 		RemoteAccess                   bool                       `toml:"remote_access"`
 		DisableUpdateCheck             bool                       `toml:"disable_update_check"`
 		PG                             PGConfig                   `toml:"pg"`
+		DuckDB                         DuckDBConfig               `toml:"duckdb"`
 		Automated                      AutomatedConfig            `toml:"automated"`
 		Agent                          map[string]AgentConfig     `toml:"agent"`
 		EventsCoalesceInterval         time.Duration              `toml:"events_coalesce_interval"`
 		CustomModelPricing             map[string]CustomModelRate `toml:"custom_model_pricing"`
+		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -432,6 +515,29 @@ func (c *Config) loadFile() error {
 	if file.PG.ExcludeProjects != nil && c.PG.ExcludeProjects == nil {
 		c.PG.ExcludeProjects = file.PG.ExcludeProjects
 	}
+	// Merge duckdb field-by-field so env vars override only
+	// the fields they set, preserving config-file settings.
+	if file.DuckDB.Path != "" && c.DuckDB.Path == "" {
+		c.DuckDB.Path = file.DuckDB.Path
+	}
+	if file.DuckDB.URL != "" && c.DuckDB.URL == "" {
+		c.DuckDB.URL = file.DuckDB.URL
+	}
+	if file.DuckDB.Token != "" && c.DuckDB.Token == "" {
+		c.DuckDB.Token = file.DuckDB.Token
+	}
+	if file.DuckDB.MachineName != "" && c.DuckDB.MachineName == "" {
+		c.DuckDB.MachineName = file.DuckDB.MachineName
+	}
+	if file.DuckDB.AllowInsecure {
+		c.DuckDB.AllowInsecure = true
+	}
+	if file.DuckDB.Projects != nil && c.DuckDB.Projects == nil {
+		c.DuckDB.Projects = file.DuckDB.Projects
+	}
+	if file.DuckDB.ExcludeProjects != nil && c.DuckDB.ExcludeProjects == nil {
+		c.DuckDB.ExcludeProjects = file.DuckDB.ExcludeProjects
+	}
 	// IsDefined distinguishes "unset" (leave default 10s) from an
 	// explicit "0s" (disable coalescing). Checking != 0 would silently
 	// ignore the latter.
@@ -456,6 +562,17 @@ func (c *Config) loadFile() error {
 	}
 	if len(file.CustomModelPricing) > 0 {
 		c.CustomModelPricing = file.CustomModelPricing
+	}
+	if len(file.RemoteHosts) > 0 {
+		hosts := make([]RemoteHost, len(file.RemoteHosts))
+		for i, h := range file.RemoteHosts {
+			hosts[i] = RemoteHost{
+				Host: strings.TrimSpace(h.Host),
+				User: strings.TrimSpace(h.User),
+				Port: h.Port,
+			}
+		}
+		c.RemoteHosts = hosts
 	}
 
 	// Parse config-file dir arrays for agents that have a
@@ -586,6 +703,18 @@ func (c *Config) loadEnv() {
 	}
 	if v := os.Getenv("AGENTSVIEW_PG_MACHINE"); v != "" {
 		c.PG.MachineName = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_PATH"); v != "" {
+		c.DuckDB.Path = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_URL"); v != "" {
+		c.DuckDB.URL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_TOKEN"); v != "" {
+		c.DuckDB.Token = v
+	}
+	if v := os.Getenv("AGENTSVIEW_DUCKDB_MACHINE"); v != "" {
+		c.DuckDB.MachineName = v
 	}
 	if v := os.Getenv("AGENTSVIEW_DISABLE_UPDATE_CHECK"); v != "" {
 		c.DisableUpdateCheck = v == "1" || v == "true"
@@ -1113,11 +1242,63 @@ func (c *Config) ResolvePG() (PGConfig, error) {
 	return pg, nil
 }
 
+// ResolveDuckDB returns a copy of DuckDB config with defaults applied
+// and environment variables expanded in path, URL, and token.
+func (c *Config) ResolveDuckDB() (DuckDBConfig, error) {
+	duck := c.DuckDB
+	if duck.Path != "" {
+		expanded, err := expandBracedEnv(duck.Path)
+		if err != nil {
+			return duck, fmt.Errorf("expanding path: %w", err)
+		}
+		duck.Path = expanded
+	}
+	if duck.URL != "" {
+		expanded, err := expandBracedEnv(duck.URL)
+		if err != nil {
+			return duck, fmt.Errorf("expanding url: %w", err)
+		}
+		duck.URL = expanded
+	}
+	if duck.Token != "" {
+		expanded, err := expandBracedEnv(duck.Token)
+		if err != nil {
+			return duck, fmt.Errorf("expanding token: %w", err)
+		}
+		duck.Token = expanded
+	}
+	if duck.Path == "" {
+		duck.Path = filepath.Join(c.DataDir, "sessions.duckdb")
+	}
+	if duck.MachineName == "" {
+		h, err := os.Hostname()
+		if err != nil {
+			return duck, fmt.Errorf("os.Hostname failed (%w); set machine_name explicitly in config", err)
+		}
+		duck.MachineName = h
+	}
+	return duck, nil
+}
+
 var (
 	bracedEnvPattern      = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 	bareEnvPattern        = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 	partialBareEnvPattern = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
 )
+
+// IsEnvDependentURL reports whether s would have environment variables
+// expanded by expandBracedEnv: it contains any ${VAR} reference, or the
+// whole string is a single bare $VAR shortcut. Embedded bare $VAR
+// references (e.g. "postgres://$USER@host") are deliberately NOT expanded
+// and so do not count. Callers that must persist a literal URL into a
+// context without the shell environment (e.g. a background service) use
+// this to reject env-dependent values. It shares the exact patterns
+// expandBracedEnv uses so the rejection check cannot drift from the
+// expansion semantics.
+func IsEnvDependentURL(s string) bool {
+	return bracedEnvPattern.MatchString(s) ||
+		bareEnvPattern.MatchString(strings.TrimSpace(s))
+}
 
 // bareEnvWarned tracks which bare $VAR names have already been warned
 // about, so each distinct variable triggers a warning at most once.

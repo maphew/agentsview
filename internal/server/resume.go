@@ -1,20 +1,14 @@
 package server
 
 import (
-	"encoding/json"
-	"errors"
+	"bufio"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"bufio"
 
 	"github.com/google/shlex"
 	"github.com/tidwall/gjson"
@@ -25,10 +19,10 @@ import (
 
 // resumeRequest is the JSON body for POST /api/v1/sessions/{id}/resume.
 type resumeRequest struct {
-	SkipPermissions bool   `json:"skip_permissions"`
-	ForkSession     bool   `json:"fork_session"`
-	CommandOnly     bool   `json:"command_only"`
-	OpenerID        string `json:"opener_id"`
+	SkipPermissions bool   `json:"skip_permissions,omitempty"`
+	ForkSession     bool   `json:"fork_session,omitempty"`
+	CommandOnly     bool   `json:"command_only,omitempty"`
+	OpenerID        string `json:"opener_id,omitempty"`
 }
 
 // resumeResponse is the JSON response for a resume request.
@@ -69,255 +63,6 @@ var terminalCandidates = []struct {
 	{"tilix", []string{"-e"}},
 	{"xterm", []string{"-e"}},
 	{"x-terminal-emulator", []string{"-e"}},
-}
-
-func (s *Server) handleResumeSession(
-	w http.ResponseWriter, r *http.Request,
-) {
-	id := r.PathValue("id")
-
-	// Look up the session with full file metadata so
-	// resolveSessionDir can read the session file for cwd.
-	session, err := s.db.GetSessionFull(r.Context(), id)
-	if err != nil {
-		if handleContextError(w, err) {
-			return
-		}
-		log.Printf("resume: session lookup failed: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if session == nil || session.DeletedAt != nil {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-
-	// Remote sessions have host-prefixed IDs (host~rawID).
-	// They cannot be resumed locally.
-	if host, _ := parser.StripHostPrefix(id); host != "" {
-		writeError(
-			w, http.StatusBadRequest,
-			"cannot resume remote session",
-		)
-		return
-	}
-
-	// Check if this agent supports resumption.
-	tmpl, ok := resumeAgents[string(session.Agent)]
-	if !ok {
-		writeError(
-			w, http.StatusBadRequest,
-			fmt.Sprintf("agent %q does not support resume", session.Agent),
-		)
-		return
-	}
-
-	// Parse optional flags.
-	var req resumeRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-	}
-
-	// Strip agent prefix from compound ID only when it matches the
-	// expected agent (e.g. "codex:abc" → "abc"). Raw IDs that
-	// happen to contain ":" are left untouched.
-	prefix := string(session.Agent) + ":"
-	rawID := strings.TrimPrefix(id, prefix)
-
-	// Build the CLI command.
-	var cmd string
-	if strings.Contains(tmpl, "%s") {
-		cmd = fmt.Sprintf(tmpl, shellQuote(rawID))
-	} else {
-		cmd = tmpl
-	}
-	if string(session.Agent) == "claude" {
-		if req.SkipPermissions {
-			cmd += " --dangerously-skip-permissions"
-		}
-		if req.ForkSession {
-			cmd += " --fork-session"
-		}
-	}
-
-	// Resolve the terminal launch directory. Cursor resume needs the
-	// shell to start in the latest session cwd so the resumed chat
-	// inherits the same working directory it last used.
-	launchDir, workspaceDir := resolveResumePaths(session)
-	if string(session.Agent) == "cursor" && workspaceDir != "" {
-		cmd += " --workspace " + shellQuote(workspaceDir)
-	}
-
-	responseCmd := cmd
-	switch string(session.Agent) {
-	case "claude", "kiro":
-		responseCmd = commandWithCwd(cmd, launchDir)
-	}
-
-	// If the caller only wants the command string (e.g. for
-	// clipboard copy), skip terminal detection and launch.
-	if req.CommandOnly {
-		writeJSON(w, http.StatusOK, resumeResponse{
-			Launched: false,
-			Command:  responseCmd,
-			Cwd:      launchDir,
-		})
-		return
-	}
-
-	// Block actual launches in read-only mode. command_only
-	// requests above are safe and remain available.
-	if s.db.ReadOnly() {
-		writeError(w, http.StatusNotImplemented,
-			"session launch not available in remote mode")
-		return
-	}
-
-	// If the caller specified a terminal opener, use it directly.
-	if req.OpenerID != "" {
-		openers := detectOpeners()
-		var opener *Opener
-		for i := range openers {
-			if openers[i].ID == req.OpenerID {
-				opener = &openers[i]
-				break
-			}
-		}
-		if opener == nil {
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("opener %q not found", req.OpenerID))
-			return
-		}
-
-		// Claude Desktop: hand off via claude:// URL scheme.
-		if opener.ID == "claude-desktop" {
-			if string(session.Agent) != "claude" {
-				writeError(w, http.StatusBadRequest,
-					"Claude Desktop resume only supports Claude sessions")
-				return
-			}
-			proc := launchClaudeDesktop(rawID, launchDir)
-			if err := proc.Start(); err != nil {
-				log.Printf("resume: Claude Desktop launch failed: %v", err)
-				writeJSON(w, http.StatusOK, resumeResponse{
-					Launched: false,
-					Command:  responseCmd,
-					Cwd:      launchDir,
-					Error:    "desktop_launch_failed",
-				})
-				return
-			}
-			go func() { _ = proc.Wait() }()
-			writeJSON(w, http.StatusOK, resumeResponse{
-				Launched: true,
-				Terminal: opener.Name,
-				Command:  responseCmd,
-				Cwd:      launchDir,
-			})
-			return
-		}
-
-		openerCwd := resumeLaunchCwd(
-			string(session.Agent), opener.ID, runtime.GOOS, launchDir,
-		)
-		proc := launchResumeInOpener(*opener, cmd, openerCwd)
-		if proc == nil {
-			writeJSON(w, http.StatusOK, resumeResponse{
-				Launched: false,
-				Command:  responseCmd,
-				Cwd:      launchDir,
-				Error:    "unsupported_opener",
-			})
-			return
-		}
-		if err := proc.Start(); err != nil {
-			log.Printf("resume: opener start failed: %v", err)
-			writeJSON(w, http.StatusOK, resumeResponse{
-				Launched: false,
-				Command:  responseCmd,
-				Cwd:      launchDir,
-				Error:    "terminal_launch_failed",
-			})
-			return
-		}
-		go func() { _ = proc.Wait() }()
-		writeJSON(w, http.StatusOK, resumeResponse{
-			Launched: true,
-			Terminal: opener.Name,
-			Command:  responseCmd,
-			Cwd:      launchDir,
-		})
-		return
-	}
-
-	// Check terminal config.
-	s.mu.RLock()
-	termCfg := s.cfg.Terminal
-	s.mu.RUnlock()
-
-	if termCfg.Mode == "clipboard" {
-		// User explicitly chose clipboard-only mode.
-		writeJSON(w, http.StatusOK, resumeResponse{
-			Launched: false,
-			Command:  responseCmd,
-			Cwd:      launchDir,
-		})
-		return
-	}
-
-	// Detect and launch a terminal.
-	detectCwd := launchDir
-	if termCfg.Mode == "auto" {
-		detectCwd = resumeLaunchCwd(
-			string(session.Agent), "auto", runtime.GOOS, launchDir,
-		)
-	}
-	termBin, termArgs, termName, termErr := detectTerminal(cmd, detectCwd, termCfg)
-	if termErr != nil {
-		// Can't launch — return the command for clipboard fallback.
-		log.Printf("resume: terminal detection failed: %v", termErr)
-		writeJSON(w, http.StatusOK, resumeResponse{
-			Launched: false,
-			Command:  responseCmd,
-			Cwd:      launchDir,
-			Error:    "no_terminal_found",
-		})
-		return
-	}
-
-	// Fire and forget — we don't need the terminal process to
-	// complete before responding.
-	proc := exec.Command(termBin, termArgs...)
-	proc.Stdout = nil
-	proc.Stderr = nil
-	proc.Stdin = nil
-	if detectCwd != "" {
-		proc.Dir = detectCwd
-	}
-
-	if err := proc.Start(); err != nil {
-		log.Printf("resume: terminal start failed: %v", err)
-		writeJSON(w, http.StatusOK, resumeResponse{
-			Launched: false,
-			Command:  responseCmd,
-			Cwd:      launchDir,
-			Error:    "terminal_launch_failed",
-		})
-		return
-	}
-
-	// Detach — don't wait for the terminal process.
-	go func() { _ = proc.Wait() }()
-
-	writeJSON(w, http.StatusOK, resumeResponse{
-		Launched: true,
-		Terminal: termName,
-		Command:  responseCmd,
-		Cwd:      launchDir,
-	})
 }
 
 // shellQuote applies POSIX single-quote escaping.
@@ -452,72 +197,6 @@ func detectTerminalDarwin(
 		return "osascript", []string{"-e", appleScript}, "Terminal", nil
 	}
 	return "", nil, "", fmt.Errorf("osascript not found on macOS")
-}
-
-func (s *Server) handleGetTerminalConfig(
-	w http.ResponseWriter, _ *http.Request,
-) {
-	s.mu.RLock()
-	tc := s.cfg.Terminal
-	s.mu.RUnlock()
-	if tc.Mode == "" {
-		tc.Mode = "auto"
-	}
-	writeJSON(w, http.StatusOK, tc)
-}
-
-func (s *Server) handleSetTerminalConfig(
-	w http.ResponseWriter, r *http.Request,
-) {
-	var tc config.TerminalConfig
-	if err := json.NewDecoder(r.Body).Decode(&tc); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-
-	switch tc.Mode {
-	case "auto", "custom", "clipboard":
-		// ok
-	default:
-		writeError(w, http.StatusBadRequest,
-			`mode must be "auto", "custom", or "clipboard"`)
-		return
-	}
-
-	if tc.Mode == "custom" && tc.CustomBin == "" {
-		writeError(w, http.StatusBadRequest,
-			`custom_bin is required when mode is "custom"`)
-		return
-	}
-
-	// Only validate custom_args when mode is "custom" — stale
-	// args from a previous config shouldn't block saving other modes.
-	if tc.Mode == "custom" {
-		if tc.CustomArgs != "" &&
-			!strings.Contains(tc.CustomArgs, "{cmd}") {
-			writeError(w, http.StatusBadRequest,
-				`custom_args must contain the {cmd} placeholder so the `+
-					`resume command is passed to the terminal`)
-			return
-		}
-		if tc.CustomArgs != "" {
-			if _, splitErr := shlex.Split(tc.CustomArgs); splitErr != nil {
-				writeError(w, http.StatusBadRequest,
-					fmt.Sprintf("custom_args has invalid shell syntax: %v", splitErr))
-				return
-			}
-		}
-	}
-
-	s.mu.Lock()
-	err := s.cfg.SaveTerminalConfig(tc)
-	s.mu.Unlock()
-	if err != nil {
-		log.Printf("save terminal config: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, tc)
 }
 
 // readSessionCwd reads the first few lines of a session JSONL file

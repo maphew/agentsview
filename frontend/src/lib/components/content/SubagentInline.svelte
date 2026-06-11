@@ -1,8 +1,13 @@
 <!-- ABOUTME: Expandable inline view of a subagent's conversation.
      ABOUTME: Lazily loads and renders subagent messages within a parent ToolBlock. -->
 <script lang="ts">
-  import type { Message, Session } from "../../api/types.js";
-  import { getMessages, getSession } from "../../api/client.js";
+  import type {
+    Message,
+    MessagesResponse,
+    Session,
+  } from "../../api/types.js";
+  import { SessionsService } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
   import { formatTokenUsage } from "../../utils/format.js";
   import { computeMainModel } from "../../utils/model.js";
   import { sessions } from "../../stores/sessions.svelte.js";
@@ -29,9 +34,15 @@
       loading = true;
       error = null;
       try {
+        configureGeneratedClient();
         const [resp, meta] = await Promise.all([
-          getMessages(sessionId, { limit: 1000 }),
-          getSession(sessionId).catch(() => null),
+          SessionsService.getApiV1SessionsIdMessages({
+            id: sessionId,
+            limit: 1000,
+          }) as unknown as Promise<MessagesResponse>,
+          (SessionsService.getApiV1SessionsId({
+            id: sessionId,
+          }) as unknown as Promise<Session>).catch(() => null),
         ]);
         messages = resp.messages;
         sessionMeta = meta;

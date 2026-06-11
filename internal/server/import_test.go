@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/importer"
 )
 
@@ -42,9 +45,7 @@ func TestHandleImportClaudeAI(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", "conversations.json")
-	if err != nil {
-		t.Fatalf("creating form file: %v", err)
-	}
+	require.NoError(t, err)
 	_, _ = part.Write([]byte(conversations))
 	writer.Close()
 
@@ -58,23 +59,12 @@ func TestHandleImportClaudeAI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf(
-			"status = %d, want 200: %s",
-			rec.Code, rec.Body.String(),
-		)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var stats importer.ImportStats
-	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	if stats.Imported != 1 {
-		t.Errorf("imported = %d, want 1", stats.Imported)
-	}
-	if stats.Updated != 0 {
-		t.Errorf("updated = %d, want 0", stats.Updated)
-	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&stats))
+	assert.Equal(t, 1, stats.Imported)
+	assert.Zero(t, stats.Updated)
 }
 
 func TestHandleImportChatGPT_RequiresZip(t *testing.T) {
@@ -83,9 +73,7 @@ func TestHandleImportChatGPT_RequiresZip(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", "data.json")
-	if err != nil {
-		t.Fatalf("creating form file: %v", err)
-	}
+	require.NoError(t, err)
 	_, _ = part.Write([]byte("[]"))
 	writer.Close()
 
@@ -101,12 +89,7 @@ func TestHandleImportChatGPT_RequiresZip(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf(
-			"status = %d, want 400: %s",
-			rec.Code, rec.Body.String(),
-		)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestHandleImportClaudeAI_SSE(t *testing.T) {
@@ -129,9 +112,7 @@ func TestHandleImportClaudeAI_SSE(t *testing.T) {
 	part, err := writer.CreateFormFile(
 		"file", "conversations.json",
 	)
-	if err != nil {
-		t.Fatalf("creating form file: %v", err)
-	}
+	require.NoError(t, err)
 	_, _ = part.Write([]byte(conversations))
 	writer.Close()
 
@@ -148,19 +129,9 @@ func TestHandleImportClaudeAI_SSE(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf(
-			"status = %d, want 200: %s",
-			rec.Code, rec.Body.String(),
-		)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
-	ct := rec.Header().Get("Content-Type")
-	if !strings.Contains(ct, "text/event-stream") {
-		t.Fatalf(
-			"Content-Type = %q, want text/event-stream", ct,
-		)
-	}
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
 
 	// Parse the done event from the SSE body.
 	var stats importer.ImportStats
@@ -170,16 +141,10 @@ func TestHandleImportClaudeAI_SSE(t *testing.T) {
 			data := strings.TrimPrefix(
 				lines[i+1], "data: ",
 			)
-			if err := json.Unmarshal(
-				[]byte(data), &stats,
-			); err != nil {
-				t.Fatalf("decoding done event: %v", err)
-			}
+			require.NoError(t, json.Unmarshal([]byte(data), &stats))
 		}
 	}
-	if stats.Imported != 1 {
-		t.Errorf("imported = %d, want 1", stats.Imported)
-	}
+	assert.Equal(t, 1, stats.Imported)
 }
 
 func TestHandleImportClaudeAI_NoFile(t *testing.T) {
@@ -199,10 +164,5 @@ func TestHandleImportClaudeAI_NoFile(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf(
-			"status = %d, want 400: %s",
-			rec.Code, rec.Body.String(),
-		)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }

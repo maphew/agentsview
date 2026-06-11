@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
 )
 
@@ -18,21 +20,15 @@ func TestBrowserURLUsesPublicURL(t *testing.T) {
 		Port:      8080,
 		PublicURL: "https://viewer.example.test",
 	}
-	if got := browserURL(cfg); got != "https://viewer.example.test" {
-		t.Fatalf("browserURL = %q, want %q", got, "https://viewer.example.test")
-	}
+	assert.Equal(t, "https://viewer.example.test", browserURL(cfg))
 }
 
 func TestValidateServeConfigManagedCaddyAllowsHTTPS(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "viewer.crt")
 	keyPath := filepath.Join(dir, "viewer.key")
-	if err := os.WriteFile(certPath, []byte("cert"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(certPath, []byte("cert"), 0o600))
+	require.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
 		Host:      "127.0.0.1",
@@ -46,9 +42,7 @@ func TestValidateServeConfigManagedCaddyAllowsHTTPS(t *testing.T) {
 			AllowedSubnets: []string{"10.0.0.0/16"},
 		},
 	}
-	if err := validateServeConfig(cfg); err != nil {
-		t.Fatalf("validateServeConfig returned error: %v", err)
-	}
+	assert.NoError(t, validateServeConfig(cfg))
 }
 
 func TestValidateServeConfigManagedCaddyRejectsNonLoopbackHost(t *testing.T) {
@@ -62,24 +56,16 @@ func TestValidateServeConfigManagedCaddyRejectsNonLoopbackHost(t *testing.T) {
 		},
 	}
 	err := validateServeConfig(cfg)
-	if err == nil {
-		t.Fatal("expected error for non-loopback backend host")
-	}
-	if !strings.Contains(err.Error(), "loopback backend host") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected error for non-loopback backend host")
+	assert.Contains(t, err.Error(), "loopback backend host")
 }
 
 func TestValidateServeConfigManagedCaddyRequiresAllowlistForNonLoopbackBind(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "viewer.crt")
 	keyPath := filepath.Join(dir, "viewer.key")
-	if err := os.WriteFile(certPath, []byte("cert"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(certPath, []byte("cert"), 0o600))
+	require.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
 		Host:      "127.0.0.1",
@@ -94,12 +80,8 @@ func TestValidateServeConfigManagedCaddyRequiresAllowlistForNonLoopbackBind(t *t
 		},
 	}
 	err := validateServeConfig(cfg)
-	if err == nil {
-		t.Fatal("expected non-loopback bind allowlist error")
-	}
-	if !strings.Contains(err.Error(), "allowed_subnet") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected non-loopback bind allowlist error")
+	assert.Contains(t, err.Error(), "allowed_subnet")
 }
 
 func TestValidateServeConfigManagedCaddyRejectsHTTPWithTLS(t *testing.T) {
@@ -115,12 +97,8 @@ func TestValidateServeConfigManagedCaddyRejectsHTTPWithTLS(t *testing.T) {
 		},
 	}
 	err := validateServeConfig(cfg)
-	if err == nil {
-		t.Fatal("expected HTTP-with-TLS error")
-	}
-	if !strings.Contains(err.Error(), "HTTP mode") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected HTTP-with-TLS error")
+	assert.Contains(t, err.Error(), "HTTP mode")
 }
 
 func TestBuildManagedCaddyfileIncludesAllowlistAndTLS(t *testing.T) {
@@ -143,9 +121,8 @@ func TestBuildManagedCaddyfileIncludesAllowlistAndTLS(t *testing.T) {
 		"tls \"/tmp/viewer.crt\" \"/tmp/viewer.key\"",
 		"reverse_proxy 127.0.0.1:8080",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("generated caddyfile missing %q:\n%s", want, got)
-		}
+		assert.Contains(t, got, want,
+			"generated caddyfile missing %q", want)
 	}
 }
 
@@ -155,21 +132,16 @@ func TestManagedCaddyConfigPathNamespacesMode(t *testing.T) {
 	gotServe := managedCaddyConfigPath(dataDir, "serve")
 	gotPG := managedCaddyConfigPath(dataDir, "pg-serve")
 
-	if gotServe == gotPG {
-		t.Fatal("managed caddy paths must differ by mode")
-	}
-	if !strings.HasSuffix(
+	assert.NotEqual(t, gotServe, gotPG,
+		"managed caddy paths must differ by mode")
+	assert.True(t, strings.HasSuffix(
 		gotServe,
 		filepath.Join("managed-caddy", "serve", "Caddyfile"),
-	) {
-		t.Fatalf("serve path = %q", gotServe)
-	}
-	if !strings.HasSuffix(
+	), "serve path = %q", gotServe)
+	assert.True(t, strings.HasSuffix(
 		gotPG,
 		filepath.Join("managed-caddy", "pg-serve", "Caddyfile"),
-	) {
-		t.Fatalf("pg path = %q", gotPG)
-	}
+	), "pg path = %q", gotPG)
 }
 
 func TestPrepareManagedCaddyConfigForPGServeUsesNamespacedPathAndBackend(t *testing.T) {
@@ -190,18 +162,12 @@ func TestPrepareManagedCaddyConfigForPGServeUsesNamespacedPathAndBackend(t *test
 		"pg-serve",
 		"127.0.0.1:18080",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(
 		path,
 		filepath.Join("managed-caddy", "pg-serve", "Caddyfile"),
-	) {
-		t.Fatalf("path = %q", path)
-	}
-	if !strings.Contains(content, "reverse_proxy 127.0.0.1:18080") {
-		t.Fatalf("content = %s", content)
-	}
+	), "path = %q", path)
+	assert.Contains(t, content, "reverse_proxy 127.0.0.1:18080")
 }
 
 func TestRewriteConfiguredPublicURLPort_RewritesMatchingExplicitPort(t *testing.T) {
@@ -211,18 +177,11 @@ func TestRewriteConfiguredPublicURLPort_RewritesMatchingExplicitPort(t *testing.
 		8004,
 		8005,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("expected public URL rewrite")
-	}
-	if updatedURL != "http://viewer.example.test:8005" {
-		t.Fatalf("updatedURL = %q, want %q", updatedURL, "http://viewer.example.test:8005")
-	}
-	if got := strings.Join(updatedOrigins, ","); got != "http://viewer.example.test:8005" {
-		t.Fatalf("updatedOrigins = %q, want %q", got, "http://viewer.example.test:8005")
-	}
+	require.NoError(t, err)
+	assert.True(t, changed, "expected public URL rewrite")
+	assert.Equal(t, "http://viewer.example.test:8005", updatedURL)
+	assert.Equal(t, "http://viewer.example.test:8005",
+		strings.Join(updatedOrigins, ","))
 }
 
 func TestRewriteConfiguredPublicURLPort_PreservesExternalProxyPort(t *testing.T) {
@@ -232,18 +191,11 @@ func TestRewriteConfiguredPublicURLPort_PreservesExternalProxyPort(t *testing.T)
 		8080,
 		8081,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed {
-		t.Fatal("expected public URL to remain unchanged")
-	}
-	if updatedURL != "https://viewer.example.test" {
-		t.Fatalf("updatedURL = %q, want %q", updatedURL, "https://viewer.example.test")
-	}
-	if got := strings.Join(updatedOrigins, ","); got != "https://viewer.example.test" {
-		t.Fatalf("updatedOrigins = %q, want %q", got, "https://viewer.example.test")
-	}
+	require.NoError(t, err)
+	assert.False(t, changed, "expected public URL to remain unchanged")
+	assert.Equal(t, "https://viewer.example.test", updatedURL)
+	assert.Equal(t, "https://viewer.example.test",
+		strings.Join(updatedOrigins, ","))
 }
 
 func TestReadinessProbeHost(t *testing.T) {
@@ -255,9 +207,8 @@ func TestReadinessProbeHost(t *testing.T) {
 		"10.0.60.2": "10.0.60.2",
 	}
 	for input, want := range tests {
-		if got := readinessProbeHost(input); got != want {
-			t.Fatalf("readinessProbeHost(%q) = %q, want %q", input, got, want)
-		}
+		assert.Equal(t, want, readinessProbeHost(input),
+			"readinessProbeHost(%q)", input)
 	}
 }
 
@@ -271,9 +222,8 @@ func TestWaitForLocalPortReturnsEarlyOnErrorChannel(t *testing.T) {
 		5*time.Second,
 		errCh,
 	)
-	if err == nil || !strings.Contains(err.Error(), "backend failed") {
-		t.Fatalf("expected backend failure, got %v", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backend failed")
 }
 
 func TestWaitForLocalPortHonorsContextCancellation(t *testing.T) {
@@ -286,9 +236,7 @@ func TestWaitForLocalPortHonorsContextCancellation(t *testing.T) {
 		5*time.Second,
 		nil,
 	)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation, got %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestWaitForLocalPortPrefersContextCancellationOverError(t *testing.T) {
@@ -303,7 +251,5 @@ func TestWaitForLocalPortPrefersContextCancellationOverError(t *testing.T) {
 		5*time.Second,
 		errCh,
 	)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation, got %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 }

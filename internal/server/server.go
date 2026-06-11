@@ -9,10 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	gosync "sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
@@ -20,6 +24,7 @@ import (
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/web"
+	"go.kenn.io/kit/daemon"
 )
 
 // VersionInfo holds build-time version metadata.
@@ -30,6 +35,8 @@ type VersionInfo struct {
 	ReadOnly  bool   `json:"read_only,omitempty"`
 }
 
+const daemonService = "agentsview"
+
 // Server is the HTTP server that serves the SPA and REST API.
 type Server struct {
 	mu          gosync.RWMutex
@@ -39,6 +46,7 @@ type Server struct {
 	sessions    service.SessionService
 	broadcaster *Broadcaster
 	mux         *http.ServeMux
+	api         huma.API
 	httpSrv     *http.Server
 	version     VersionInfo
 	dataDir     string
@@ -200,148 +208,38 @@ func WithGenerateStreamFunc(f insight.GenerateStreamFunc) Option {
 	}
 }
 
+func (s *Server) humaConfig() huma.Config {
+	version := s.version.Version
+	if version == "" {
+		version = "dev"
+	}
+	cfg := huma.DefaultConfig("AgentsView API", version)
+	cfg.Info.Description = "HTTP API for browsing, searching, syncing, and managing local agent sessions."
+	cfg.OpenAPIPath = "/api/openapi"
+	cfg.DocsPath = ""
+	cfg.SchemasPath = ""
+	cfg.CreateHooks = nil
+	cfg.Components.Schemas = huma.NewMapRegistry(
+		"#/components/schemas/",
+		agentsViewSchemaNamer,
+	)
+	if s.basePath != "" {
+		cfg.Servers = []*huma.Server{{
+			URL:         s.basePath,
+			Description: "Configured reverse-proxy base path",
+		}}
+	}
+	return cfg
+}
+
 func (s *Server) routes() {
-	// API v1 routes
-	s.mux.Handle("GET /api/v1/sessions", s.withTimeout(s.handleListSessions))
-	s.mux.Handle("GET /api/v1/sessions/{id}", s.withTimeout(s.handleGetSession))
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/messages", s.withTimeout(s.handleGetMessages),
-	)
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/tool-calls", s.withTimeout(s.handleToolCalls),
-	)
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/children", s.withTimeout(s.handleGetChildSessions),
-	)
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/activity", s.withTimeout(s.handleGetSessionActivity),
-	)
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/timing", s.withTimeout(s.handleSessionTiming),
-	)
-	// SSE: Do not use timeout, as this is a long-lived connection.
-	s.mux.HandleFunc(
-		"GET /api/v1/sessions/{id}/watch", s.handleWatchSession,
-	)
-	// SSE: Do not use timeout, as this is a long-lived connection.
-	s.mux.HandleFunc(
-		"GET /api/v1/events", s.handleEvents,
-	)
-	// Export: Do not use timeout handler to support large downloads and avoid buffering.
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/export", http.HandlerFunc(s.handleExportSession),
-	)
-	s.mux.Handle(
-		"GET /api/v1/sessions/{id}/md", http.HandlerFunc(s.handleMarkdownSession),
-	)
-	s.mux.Handle(
-		"POST /api/v1/sessions/{id}/publish", s.withTimeout(s.handlePublishSession),
-	)
-	s.mux.Handle(
-		"POST /api/v1/sessions/{id}/resume", s.withTimeout(s.handleResumeSession),
-	)
-	s.mux.Handle("GET /api/v1/openers", s.withTimeout(s.handleListOpeners))
-	s.mux.Handle("GET /api/v1/sessions/{id}/directory", s.withTimeout(s.handleGetSessionDir))
-	s.mux.Handle("GET /api/v1/sessions/{id}/search", s.withTimeout(s.handleSearchSession))
-	s.mux.Handle("POST /api/v1/sessions/{id}/open", s.withTimeout(s.handleOpenSession))
-	s.mux.Handle(
-		"POST /api/v1/sessions/sync", s.withTimeout(s.handleSyncSession),
-	)
-	s.mux.Handle(
-		"POST /api/v1/sessions/upload", s.withTimeout(s.handleUploadSession),
-	)
-	s.mux.Handle("GET /api/v1/analytics/summary", s.withTimeout(s.handleAnalyticsSummary))
-	s.mux.Handle("GET /api/v1/analytics/activity", s.withTimeout(s.handleAnalyticsActivity))
-	s.mux.Handle("GET /api/v1/analytics/heatmap", s.withTimeout(s.handleAnalyticsHeatmap))
-	s.mux.Handle("GET /api/v1/analytics/projects", s.withTimeout(s.handleAnalyticsProjects))
-	s.mux.Handle("GET /api/v1/analytics/hour-of-week", s.withTimeout(s.handleAnalyticsHourOfWeek))
-	s.mux.Handle("GET /api/v1/analytics/sessions", s.withTimeout(s.handleAnalyticsSessionShape))
-	s.mux.Handle("GET /api/v1/analytics/velocity", s.withTimeout(s.handleAnalyticsVelocity))
-	s.mux.Handle("GET /api/v1/analytics/tools", s.withTimeout(s.handleAnalyticsTools))
-	s.mux.Handle("GET /api/v1/analytics/top-sessions", s.withTimeout(s.handleAnalyticsTopSessions))
-	s.mux.Handle("GET /api/v1/analytics/signals", s.withTimeout(s.handleAnalyticsSignals))
-	s.mux.Handle("GET /api/v1/trends/terms", s.withTimeout(s.handleTrendsTerms))
-
-	s.mux.Handle("GET /api/v1/usage/summary",
-		s.withTimeout(s.handleUsageSummary))
-	s.mux.Handle("GET /api/v1/usage/top-sessions",
-		s.withTimeout(s.handleUsageTopSessions))
-
-	s.mux.Handle("GET /api/v1/insights", s.withTimeout(s.handleListInsights))
-	s.mux.Handle("GET /api/v1/insights/{id}", s.withTimeout(s.handleGetInsight))
-	s.mux.Handle("DELETE /api/v1/insights/{id}", s.withTimeout(s.handleDeleteInsight))
-	s.mux.HandleFunc("POST /api/v1/insights/generate", s.handleGenerateInsight)
-
-	s.mux.Handle("GET /api/v1/search", s.withTimeout(s.handleSearch))
-	s.mux.Handle("GET /api/v1/projects", s.withTimeout(s.handleListProjects))
-	s.mux.Handle("GET /api/v1/machines", s.withTimeout(s.handleListMachines))
-	s.mux.Handle("GET /api/v1/agents", s.withTimeout(s.handleListAgents))
-	s.mux.Handle("GET /api/v1/stats", s.withTimeout(s.handleGetStats))
-	s.mux.Handle("GET /api/v1/version", s.withTimeout(s.handleGetVersion))
-	s.mux.HandleFunc("POST /api/v1/sync", s.handleTriggerSync)
-	s.mux.HandleFunc("POST /api/v1/resync", s.handleTriggerResync)
-	s.mux.Handle("GET /api/v1/sync/status", s.withTimeout(s.handleSyncStatus))
-	s.mux.Handle("GET /api/v1/config/github", s.withTimeout(s.handleGetGithubConfig))
-	s.mux.Handle(
-		"POST /api/v1/config/github", s.withTimeout(s.handleSetGithubConfig),
-	)
-	s.mux.Handle("GET /api/v1/config/terminal", s.withTimeout(s.handleGetTerminalConfig))
-	s.mux.Handle(
-		"POST /api/v1/config/terminal", s.withTimeout(s.handleSetTerminalConfig),
-	)
-	s.mux.Handle("GET /api/v1/update/check", s.withTimeout(s.handleCheckUpdate))
-
-	s.mux.Handle("GET /api/v1/settings", s.withTimeout(s.handleGetSettings))
-	s.mux.Handle("PUT /api/v1/settings", s.withTimeout(s.handleUpdateSettings))
-	s.mux.Handle("GET /api/v1/settings/worktree-mappings", s.withTimeout(s.handleListWorktreeMappings))
-	s.mux.Handle("POST /api/v1/settings/worktree-mappings", s.withTimeout(s.handleCreateWorktreeMapping))
-	s.mux.Handle("PUT /api/v1/settings/worktree-mappings/{id}", s.withTimeout(s.handleUpdateWorktreeMapping))
-	s.mux.Handle("DELETE /api/v1/settings/worktree-mappings/{id}", s.withTimeout(s.handleDeleteWorktreeMapping))
-	s.mux.Handle("POST /api/v1/settings/worktree-mappings/apply", s.withTimeout(s.handleApplyWorktreeMappings))
-
-	s.mux.Handle("GET /api/v1/starred", s.withTimeout(s.handleListStarred))
-	s.mux.Handle("PUT /api/v1/sessions/{id}/star", s.withTimeout(s.handleStarSession))
-	s.mux.Handle("DELETE /api/v1/sessions/{id}/star", s.withTimeout(s.handleUnstarSession))
-	s.mux.Handle("POST /api/v1/starred/bulk", s.withTimeout(s.handleBulkStar))
-
-	// Session management
-	s.mux.Handle("PATCH /api/v1/sessions/{id}/rename", s.withTimeout(s.handleRenameSession))
-	s.mux.Handle("DELETE /api/v1/sessions/{id}", s.withTimeout(s.handleDeleteSession))
-	s.mux.Handle("POST /api/v1/sessions/{id}/restore", s.withTimeout(s.handleRestoreSession))
-	s.mux.Handle("DELETE /api/v1/sessions/{id}/permanent", s.withTimeout(s.handlePermanentDeleteSession))
-	s.mux.Handle("GET /api/v1/trash", s.withTimeout(s.handleListTrash))
-	s.mux.Handle("DELETE /api/v1/trash", s.withTimeout(s.handleEmptyTrash))
-
-	// Pinned messages
-	s.mux.Handle("GET /api/v1/pins", s.withTimeout(s.handleListPins))
-	s.mux.Handle("GET /api/v1/sessions/{id}/pins", s.withTimeout(s.handleListSessionPins))
-	s.mux.Handle("POST /api/v1/sessions/{id}/messages/{messageId}/pin", s.withTimeout(s.handlePinMessage))
-	s.mux.Handle("DELETE /api/v1/sessions/{id}/messages/{messageId}/pin", s.withTimeout(s.handleUnpinMessage))
-	// Import: no timeout wrapper (large files may take longer).
-	s.mux.HandleFunc(
-		"POST /api/v1/import/claude-ai",
-		s.handleImportClaudeAI,
-	)
-	// ChatGPT import: no timeout wrapper.
-	s.mux.HandleFunc(
-		"POST /api/v1/import/chatgpt",
-		s.handleImportChatGPT,
-	)
-	// Assets: no timeout wrapper (static files).
-	s.mux.HandleFunc(
-		"GET /api/v1/assets/{filename}",
-		s.handleGetAsset,
-	)
+	configureHumaErrors()
+	s.api = humago.New(s.mux, s.humaConfig())
+	s.registerTypedAPIRoutes()
 
 	// SPA fallback: serve embedded frontend
 	// Do not use timeout handler for static assets to avoid buffering.
 	s.mux.Handle("/", http.HandlerFunc(s.handleSPA))
-}
-
-func (s *Server) handleGetVersion(
-	w http.ResponseWriter, _ *http.Request,
-) {
-	writeJSON(w, http.StatusOK, s.version)
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +346,7 @@ func (s *Server) Handler() http.Handler {
 	if bindAll {
 		bindAllIPs = localInterfaceIPs()
 	}
-	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.cfg.PublicOrigins, bindAllIPs, s.basePath,
+	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.basePath,
 		s.authMiddleware(
 			hostCheckMiddleware(
 				allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
@@ -488,8 +386,8 @@ func (s *Server) Handler() http.Handler {
 // responses. The policy pins the exact host:port origin so that
 // even if Tauri's compile-time CSP uses a wildcard port, the
 // intersection narrows to the actual runtime port.
-func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map[string]bool, basePath string, next http.Handler) http.Handler {
-	policy := buildCSPPolicy(host, port, publicOrigins, bindAllIPs, basePath)
+func cspMiddleware(host string, port int, basePath string, next http.Handler) http.Handler {
+	policy := buildCSPPolicy(host, port, basePath)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Security-Policy", policy)
@@ -500,77 +398,29 @@ func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map
 }
 
 // buildCSPPolicy constructs the Content-Security-Policy string.
-// It uses the same loopback/bind-all logic as buildAllowedOrigins
-// to handle IPv6 bracketing, 0.0.0.0/:: normalization, and
-// public origins (proxy/TLS).
 //
-// The server's own origin (host:port) is included explicitly in
-// all directives because WebKitGTK in a Tauri webview may not
-// resolve 'self' to the Go server origin after navigating from
-// tauri://localhost. Public origins and LAN IPs are restricted
-// to connect-src only to limit the script execution surface.
-func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs map[string]bool, basePath string) string {
+// The server's own origin (host:port) is pinned in the resource
+// directives (default/script/img/style/font) because WebKitGTK in a
+// Tauri webview may not resolve 'self' to the Go server origin after
+// navigating from tauri://localhost.
+//
+// connect-src is intentionally widened to any http/https/ws/wss
+// origin. The "Connect to Remote Server" feature (see
+// frontend/src/lib/api/client.ts) lets the user point the SPA at an
+// arbitrary remote agentsview API origin stored client-side, which
+// this server cannot know when the policy is built. This mirrors the
+// backend, where authenticated remote requests already bypass the
+// host-check and CORS restrictions (see isRemoteAuth in auth.go and
+// corsMiddleware). Security tradeoff: a broad connect-src means that
+// if an XSS ever executed in the app, exfiltration would be easier;
+// the other directives stay pinned so script execution remains gated
+// to 'self'.
+func buildCSPPolicy(host string, port int, basePath string) string {
 	// serverOrigin is the pinned http origin for the configured
-	// host:port, used in all directives so resources load
+	// host:port, used in the resource directives so resources load
 	// correctly regardless of how the webview resolves 'self'.
 	serverOrigin := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-
-	// connectSrcs collects additional origins for connect-src
-	// (fetch, SSE, WebSocket) — loopback variants, LAN IPs,
-	// and public/proxy origins.
-	connectHTTP := []string{}
-	connectWS := []string{}
-
-	addConnectOrigin := func(h string) {
-		for _, o := range httpOrigin(h, port) {
-			connectHTTP = append(connectHTTP, o)
-			connectWS = append(connectWS, strings.Replace(o, "http://", "ws://", 1))
-		}
-	}
-
-	// Mirror buildAllowedOrigins: when binding to loopback,
-	// include the other loopback variant. When binding to all
-	// interfaces, include all loopback origins plus every
-	// concrete interface IP.
-	switch host {
-	case "127.0.0.1":
-		addConnectOrigin("localhost")
-	case "localhost":
-		addConnectOrigin("127.0.0.1")
-	case "0.0.0.0", "::":
-		addConnectOrigin("127.0.0.1")
-		addConnectOrigin("localhost")
-		addConnectOrigin("::1")
-		for ip := range bindAllIPs {
-			if ip != "127.0.0.1" && ip != "::1" {
-				addConnectOrigin(ip)
-			}
-		}
-	case "::1":
-		addConnectOrigin("127.0.0.1")
-		addConnectOrigin("localhost")
-	}
-
-	for _, origin := range publicOrigins {
-		connectHTTP = append(connectHTTP, origin)
-		connectWS = append(connectWS,
-			strings.NewReplacer(
-				"https://", "wss://",
-				"http://", "ws://",
-			).Replace(origin),
-		)
-	}
-
-	// resource-src: 'self' + pinned server origin (for all resource types)
 	resourceSrc := "'self' " + serverOrigin
-
-	// connect-src: resource-src + loopback/LAN/public origins + ws variants
-	connectParts := []string{resourceSrc}
-	wsOrigin := "ws://" + net.JoinHostPort(host, strconv.Itoa(port))
-	connectParts = append(connectParts, wsOrigin)
-	connectParts = append(connectParts, connectHTTP...)
-	connectParts = append(connectParts, connectWS...)
-	connectSrc := strings.Join(connectParts, " ")
 
 	baseURI := "'none'"
 	if basePath != "" {
@@ -580,14 +430,14 @@ func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs ma
 	return fmt.Sprintf(
 		"default-src %[1]s; "+
 			"script-src %[1]s; "+
-			"connect-src %[2]s; "+
+			"connect-src 'self' http: https: ws: wss:; "+
 			"img-src %[1]s data:; "+
 			"style-src %[1]s 'unsafe-inline' https://fonts.googleapis.com; "+
 			"font-src %[1]s data: https://fonts.gstatic.com; "+
 			"object-src 'none'; "+
-			"base-uri %[3]s; "+
+			"base-uri %[2]s; "+
 			"frame-ancestors 'none'",
-		resourceSrc, connectSrc, baseURI,
+		resourceSrc, baseURI,
 	)
 }
 
@@ -658,14 +508,50 @@ func hostCheckMiddleware(
 				hostAllowed = isAllowedBindAllHost(r.Host, port, allowedIPs)
 			}
 			if !hostAllowed {
+				allowed := sortedHosts(allowedHosts)
+				log.Printf(
+					"host check rejected %s %s: Host %q not in allowed "+
+						"set %v; if reaching agentsview through a forwarded "+
+						"port or remote host, restart with --public-url "+
+						"<origin> matching your browser URL",
+					r.Method, r.URL.Path, r.Host, allowed,
+				)
 				http.Error(
-					w, "Forbidden", http.StatusForbidden,
+					w, hostRejectionMessage(r.Host, allowed),
+					http.StatusForbidden,
 				)
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sortedHosts returns the allowed Host header values as a sorted
+// slice for deterministic log and error output.
+func sortedHosts(hosts map[string]bool) []string {
+	out := make([]string, 0, len(hosts))
+	for h := range hosts {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// hostRejectionMessage builds a self-explaining 403 body for a
+// rejected Host header. It names the offending Host, lists the
+// allowed values, and points at --public-url so users behind SSH
+// port-forwarding, reverse proxies, or remote dev environments
+// (exe.dev, Codespaces, Coder, WSL2) can diagnose without devtools.
+func hostRejectionMessage(host string, allowed []string) string {
+	return fmt.Sprintf(
+		"Forbidden: request Host %q is not in the allowed set %v. "+
+			"If you are reaching agentsview through SSH port-forwarding, "+
+			"a reverse proxy, or a remote dev environment, restart the "+
+			"server with --public-url <origin> matching the URL in your "+
+			"browser (for example --public-url http://%s).",
+		host, allowed, host,
+	)
 }
 
 // httpOrigin formats an HTTP origin string. It uses
@@ -843,7 +729,23 @@ func (s *Server) ListenAndServe() error {
 	s.httpSrv = srv
 	s.mu.Unlock()
 	log.Printf("Starting server at http://%s", addr)
-	return srv.ListenAndServe()
+
+	listenCtx := context.Background()
+	if s.baseCtx != nil {
+		listenCtx = s.baseCtx
+	}
+	ln, err := daemon.Listen(
+		listenCtx,
+		daemon.Endpoint{
+			Network: daemon.NetworkTCP,
+			Address: addr,
+		},
+		daemon.WithRuntimeStore(daemon.RuntimeStore{Dir: s.dataDir}),
+	)
+	if err != nil {
+		return err
+	}
+	return srv.Serve(ln)
 }
 
 // Shutdown gracefully shuts down the HTTP server.

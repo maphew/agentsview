@@ -14,7 +14,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/pricing"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -173,7 +172,7 @@ func openUsageDB() (*db.DB, config.Config) {
 // Decision tree:
 //  1. If the stored data version is stale (parser changes on
 //     upgrade), run a full resync.
-//  2. If a server process is active (via state file), trust
+//  2. If a server process is active (via kit runtime record), trust
 //     its file watcher and skip on-demand sync. This avoids
 //     duplicate work and write contention.
 //  3. Otherwise, run a quick incremental sync scoped to files
@@ -216,7 +215,7 @@ func ensureFreshData(
 	// already keeping the SQLite archive fresh. pg serve daemons
 	// (read-only) do not sync the local DB, so we still want to
 	// run our own sync when only one of those is present.
-	if server.IsLocalServerActive(appCfg.DataDir) {
+	if IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken) {
 		return
 	}
 
@@ -316,6 +315,61 @@ func refreshPricingFromLiteLLM(database *db.DB) {
 	}
 }
 
+// pricingRefreshMetaKey marks the last time the CLI tried to
+// refresh model_pricing from LiteLLM. Cooldown is enforced
+// against this value, win or fail, so a repeatedly-failing
+// fetch (offline, DNS broken) does not block every CLI call.
+const pricingRefreshMetaKey = "_litellm_last_attempt"
+
+// pricingRefreshCooldown is the minimum interval between
+// CLI-triggered LiteLLM fetches. Short enough that a newly
+// released model gets priced within hours of the user noticing,
+// long enough that statusline-style repeated CLI invocations
+// don't hammer LiteLLM when a session uses a truly unpriced
+// model (e.g. a local Ollama model).
+const pricingRefreshCooldown = time.Hour
+
+// refreshPricingIfStale fetches the LiteLLM pricing catalog
+// and upserts it when the last attempt is older than cooldown
+// (or has never run). The fetcher is injectable for tests so
+// the cooldown logic can be exercised without network. Returns
+// true when an upsert succeeded; callers can re-query pricing
+// after a true result. Errors from the fetch are returned so
+// the caller can emit a warning; cooldown is recorded before
+// the fetch so a persistent failure won't retry every call.
+func refreshPricingIfStale(
+	database *db.DB,
+	fetch func() ([]pricing.ModelPricing, error),
+	cooldown time.Duration,
+	now time.Time,
+) (bool, error) {
+	stored, err := database.GetPricingMeta(pricingRefreshMetaKey)
+	if err != nil {
+		return false, fmt.Errorf(
+			"reading pricing refresh meta: %w", err)
+	}
+	if stored != "" {
+		last, perr := time.Parse(time.RFC3339, stored)
+		if perr == nil && now.Sub(last) < cooldown {
+			return false, nil
+		}
+	}
+	if err := database.SetPricingMeta(
+		pricingRefreshMetaKey, now.UTC().Format(time.RFC3339),
+	); err != nil {
+		return false, fmt.Errorf(
+			"recording pricing refresh attempt: %w", err)
+	}
+	prices, err := fetch()
+	if err != nil {
+		return false, err
+	}
+	if err := upsertPricing(database, prices); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func ensurePricing(database *db.DB, offline bool) {
 	var prices []pricing.ModelPricing
 
@@ -356,6 +410,26 @@ func upsertPricing(
 		}
 	}
 	return database.UpsertModelPricing(dbPrices)
+}
+
+// insertMissingPricing inserts fallback rows for models not already
+// priced, without overwriting existing rows. Used by the direct
+// usage path so a CLI-only data dir still prices fallback-catalog
+// models, while never clobbering richer LiteLLM rows.
+func insertMissingPricing(
+	database *db.DB, prices []pricing.ModelPricing,
+) error {
+	dbPrices := make([]db.ModelPricing, len(prices))
+	for i, p := range prices {
+		dbPrices[i] = db.ModelPricing{
+			ModelPattern:         p.ModelPattern,
+			InputPerMTok:         p.InputPerMTok,
+			OutputPerMTok:        p.OutputPerMTok,
+			CacheCreationPerMTok: p.CacheCreationPerMTok,
+			CacheReadPerMTok:     p.CacheReadPerMTok,
+		}
+	}
+	return database.InsertMissingModelPricing(dbPrices)
 }
 
 func printDailyTable(

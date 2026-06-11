@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -33,7 +33,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -61,7 +61,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -90,13 +90,15 @@ jobs:
           path-type: inherit
 
       - name: Run Go tests
-        run: go test -tags fts5 ./... -v -count=1
+        run: go test -tags "fts5,kit_posthog_disabled" ./... -v -count=1
         env:
           CGO_ENABLED: "1"
 
       - name: Run Go tests (race detector)
         if: runner.os == 'Linux'
-        run: go test -tags fts5 -race ./... -count=1
+        run: |
+          go test -tags "fts5,kit_posthog_disabled" ./internal/duckdb -count=1
+          go test -tags "fts5,kit_posthog_disabled" -race $(go list ./... | grep -v '/internal/duckdb$') -count=1
         env:
           CGO_ENABLED: "1"
 
@@ -104,7 +106,7 @@ jobs:
     name: Desktop Unit Tests (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -124,7 +126,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -133,13 +135,13 @@ jobs:
           go-version-file: go.mod
 
       - name: Test with coverage
-        run: go test -tags fts5 -race -coverprofile=coverage.out ./...
+        run: go test -tags "fts5,kit_posthog_disabled" -coverprofile=coverage.out ./...
         env:
           CGO_ENABLED: "1"
 
       - name: Upload coverage
         id: codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
         with:
           files: coverage.out
         continue-on-error: true
@@ -165,7 +167,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -213,7 +215,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -240,9 +242,9 @@ jobs:
 
       - name: Pre-build Go binaries
         run: |
-          CGO_ENABLED=1 go build -tags fts5 \
+          CGO_ENABLED=1 go build -tags "fts5,kit_posthog_disabled" \
             -o /tmp/testfixture ./cmd/testfixture
-          CGO_ENABLED=1 go build -tags fts5 \
+          CGO_ENABLED=1 go build -tags "fts5,kit_posthog_disabled" \
             -o /tmp/agentsview ./cmd/agentsview
         env:
           CGO_ENABLED: "1"

@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // writeGhStub drops a shell script named "gh" into dir that picks its canned
@@ -24,13 +27,9 @@ func writeGhStub(t *testing.T, body string) string {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gh")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write gh stub: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755), "write gh stub")
 	// On some filesystems WriteFile's mode is masked; ensure +x explicitly.
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatalf("chmod gh stub: %v", err)
-	}
+	require.NoError(t, os.Chmod(path, 0o755), "chmod gh stub")
 	return dir
 }
 
@@ -57,16 +56,10 @@ esac
 		"2026-01-01", "2026-02-01",
 		"fake-token",
 	)
-	if err != nil {
-		t.Fatalf("AggregatePRs: %v", err)
-	}
-	if got == nil {
-		t.Fatalf("AggregatePRs returned nil result with non-empty token")
-	}
+	require.NoError(t, err, "AggregatePRs")
+	require.NotNil(t, got, "AggregatePRs returned nil result with non-empty token")
 	want := PRResult{Opened: 3, Merged: 2}
-	if *got != want {
-		t.Fatalf("AggregatePRs = %+v, want %+v", *got, want)
-	}
+	assert.Equal(t, want, *got, "AggregatePRs")
 }
 
 func TestAggregatePRs_EmptyTokenShortCircuits(t *testing.T) {
@@ -84,12 +77,8 @@ exit 97
 		"2026-01-01", "2026-02-01",
 		"",
 	)
-	if err != nil {
-		t.Fatalf("AggregatePRs (empty token): %v", err)
-	}
-	if got != nil {
-		t.Fatalf("AggregatePRs (empty token) = %+v, want nil", got)
-	}
+	require.NoError(t, err, "AggregatePRs (empty token)")
+	assert.Nil(t, got, "AggregatePRs (empty token)")
 }
 
 func TestAggregatePRs_ExecFailurePropagates(t *testing.T) {
@@ -106,9 +95,7 @@ exit 1
 		"2026-01-01", "2026-02-01",
 		"fake-token",
 	)
-	if err == nil {
-		t.Fatalf("AggregatePRs: expected error from failing gh, got nil")
-	}
+	require.Error(t, err, "AggregatePRs expected error from failing gh")
 }
 
 func TestAggregatePRs_EmptyArrayCountsZero(t *testing.T) {
@@ -124,16 +111,10 @@ echo '[]'
 		"2026-01-01", "2026-02-01",
 		"fake-token",
 	)
-	if err != nil {
-		t.Fatalf("AggregatePRs: %v", err)
-	}
-	if got == nil {
-		t.Fatalf("AggregatePRs returned nil with non-empty token")
-	}
+	require.NoError(t, err, "AggregatePRs")
+	require.NotNil(t, got, "AggregatePRs returned nil with non-empty token")
 	want := PRResult{Opened: 0, Merged: 0}
-	if *got != want {
-		t.Fatalf("AggregatePRs = %+v, want %+v", *got, want)
-	}
+	assert.Equal(t, want, *got, "AggregatePRs")
 }
 
 func TestAggregatePRs_BadJSONIsError(t *testing.T) {
@@ -149,9 +130,7 @@ echo 'not json at all'
 		"2026-01-01", "2026-02-01",
 		"fake-token",
 	)
-	if err == nil {
-		t.Fatalf("AggregatePRs: expected parse error, got nil")
-	}
+	require.Error(t, err, "AggregatePRs expected parse error")
 }
 
 func TestAggregatePRs_InjectsGHTokenIntoEnv(t *testing.T) {
@@ -173,14 +152,8 @@ echo '[]'
 		"2026-01-01", "2026-02-01",
 		"injected-token-123",
 	)
-	if err != nil {
-		t.Fatalf("AggregatePRs: %v", err)
-	}
+	require.NoError(t, err, "AggregatePRs")
 	got, err := os.ReadFile(sideChannel)
-	if err != nil {
-		t.Fatalf("read side channel: %v", err)
-	}
-	if string(got) != "injected-token-123" {
-		t.Fatalf("GH_TOKEN in env = %q, want %q", got, "injected-token-123")
-	}
+	require.NoError(t, err, "read side channel")
+	assert.Equal(t, "injected-token-123", string(got), "GH_TOKEN in env")
 }

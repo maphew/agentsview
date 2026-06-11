@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWorktreeProjectMappingsCRUDNormalizesAndScopesByMachine(t *testing.T) {
@@ -18,28 +20,19 @@ func TestWorktreeProjectMappingsCRUDNormalizesAndScopesByMachine(t *testing.T) {
 		Project:    "my-app",
 		Enabled:    true,
 	})
-	requireNoError(t, err, "create mapping")
-	if m.Machine != "laptop" {
-		t.Fatalf("machine = %q, want laptop", m.Machine)
-	}
-	if m.PathPrefix != prefix {
-		t.Fatalf("path_prefix = %q, want %q", m.PathPrefix, prefix)
-	}
-	if m.Project != "my_app" {
-		t.Fatalf("project = %q, want my_app", m.Project)
-	}
+	require.NoError(t, err, "create mapping")
+	assert.Equal(t, "laptop", m.Machine, "machine")
+	assert.Equal(t, prefix, m.PathPrefix, "path_prefix")
+	assert.Equal(t, "my_app", m.Project, "project")
 
 	got, err := d.ListWorktreeProjectMappings(ctx, "laptop")
-	requireNoError(t, err, "list laptop mappings")
-	if len(got) != 1 || got[0].ID != m.ID {
-		t.Fatalf("laptop mappings = %+v, want created mapping", got)
-	}
+	require.NoError(t, err, "list laptop mappings")
+	require.Len(t, got, 1, "laptop mappings")
+	assert.Equal(t, m.ID, got[0].ID, "laptop mapping ID")
 
 	other, err := d.ListWorktreeProjectMappings(ctx, "server")
-	requireNoError(t, err, "list server mappings")
-	if len(other) != 0 {
-		t.Fatalf("server mappings = %+v, want none", other)
-	}
+	require.NoError(t, err, "list server mappings")
+	assert.Empty(t, other, "server mappings")
 }
 
 func TestWorktreeProjectMappingsRejectInvalidAndDuplicateRows(t *testing.T) {
@@ -50,26 +43,20 @@ func TestWorktreeProjectMappingsRejectInvalidAndDuplicateRows(t *testing.T) {
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: " ", Project: "repo", Enabled: true,
 	})
-	if err == nil {
-		t.Fatal("empty path prefix accepted")
-	}
+	require.Error(t, err, "empty path prefix accepted")
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: " ", Enabled: true,
 	})
-	if err == nil {
-		t.Fatal("empty project accepted")
-	}
+	require.Error(t, err, "empty project accepted")
 
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: "repo", Enabled: true,
 	})
-	requireNoError(t, err, "create first mapping")
+	require.NoError(t, err, "create first mapping")
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: "repo2", Enabled: true,
 	})
-	if !errors.Is(err, ErrWorktreeMappingDuplicate) {
-		t.Fatalf("duplicate error = %v, want ErrWorktreeMappingDuplicate", err)
-	}
+	require.ErrorIs(t, err, ErrWorktreeMappingDuplicate)
 }
 
 func TestResolveWorktreeProjectMappingUsesLongestPrefixAndBoundaries(t *testing.T) {
@@ -82,31 +69,28 @@ func TestResolveWorktreeProjectMappingUsesLongestPrefixAndBoundaries(t *testing.
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: broad, Project: "repo", Enabled: true,
 	})
-	requireNoError(t, err, "create broad mapping")
+	require.NoError(t, err, "create broad mapping")
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: nested, Project: "special-repo", Enabled: true,
 	})
-	requireNoError(t, err, "create nested mapping")
+	require.NoError(t, err, "create nested mapping")
 
 	project, ok, err := d.ResolveWorktreeProjectMapping(ctx, "laptop",
 		filepath.Join(nested, "feat", "thing"), "leaf")
-	requireNoError(t, err, "resolve nested")
-	if !ok || project != "special_repo" {
-		t.Fatalf("nested resolve = (%q,%v), want (special_repo,true)", project, ok)
-	}
+	require.NoError(t, err, "resolve nested")
+	assert.True(t, ok, "nested resolve")
+	assert.Equal(t, "special_repo", project, "nested resolve")
 
 	project, ok, err = d.ResolveWorktreeProjectMapping(ctx, "laptop",
 		filepath.Join(broad, "feat", "thing"), "leaf")
-	requireNoError(t, err, "resolve broad")
-	if !ok || project != "repo" {
-		t.Fatalf("broad resolve = (%q,%v), want (repo,true)", project, ok)
-	}
+	require.NoError(t, err, "resolve broad")
+	assert.True(t, ok, "broad resolve")
+	assert.Equal(t, "repo", project, "broad resolve")
 
 	_, ok, err = d.ResolveWorktreeProjectMapping(ctx, "laptop", broad+"-other", "leaf")
-	requireNoError(t, err, "resolve boundary miss")
-	if ok {
-		t.Fatal("path with shared string prefix matched across component boundary")
-	}
+	require.NoError(t, err, "resolve boundary miss")
+	assert.False(t, ok,
+		"path with shared string prefix matched across component boundary")
 
 	project, ok = ResolveWorktreeProjectFromMappings(
 		[]WorktreeProjectMapping{
@@ -116,9 +100,8 @@ func TestResolveWorktreeProjectMappingUsesLongestPrefixAndBoundaries(t *testing.
 		filepath.Join(nested, "feat", "thing"),
 		"leaf",
 	)
-	if !ok || project != "special_repo" {
-		t.Fatalf("unsorted resolve = (%q,%v), want (special_repo,true)", project, ok)
-	}
+	assert.True(t, ok, "unsorted resolve")
+	assert.Equal(t, "special_repo", project, "unsorted resolve")
 }
 
 func TestResolveWorktreeProjectMappingMatchesRootPrefix(t *testing.T) {
@@ -131,14 +114,13 @@ func TestResolveWorktreeProjectMappingMatchesRootPrefix(t *testing.T) {
 		Project:    "root-project",
 		Enabled:    true,
 	})
-	requireNoError(t, err, "create root mapping")
+	require.NoError(t, err, "create root mapping")
 
 	project, ok, err := d.ResolveWorktreeProjectMapping(ctx, "laptop",
 		filepath.Join(string(filepath.Separator), "tmp", "worktree"), "leaf")
-	requireNoError(t, err, "resolve root")
-	if !ok || project != "root_project" {
-		t.Fatalf("root resolve = (%q,%v), want (root_project,true)", project, ok)
-	}
+	require.NoError(t, err, "resolve root")
+	assert.True(t, ok, "root resolve")
+	assert.Equal(t, "root_project", project, "root resolve")
 }
 
 func TestApplyWorktreeProjectMappingsUpdatesOnlyCurrentMachineAndEnabledRows(t *testing.T) {
@@ -151,31 +133,30 @@ func TestApplyWorktreeProjectMappingsUpdatesOnlyCurrentMachineAndEnabledRows(t *
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: "repo", Enabled: true,
 	})
-	requireNoError(t, err, "create enabled mapping")
+	require.NoError(t, err, "create enabled mapping")
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: disabledPrefix, Project: "disabled", Enabled: false,
 	})
-	requireNoError(t, err, "create disabled mapping")
+	require.NoError(t, err, "create disabled mapping")
 
 	insert := func(id, machine, project, cwd string) {
 		t.Helper()
 		err := d.UpsertSession(Session{
 			ID: id, Project: project, Machine: machine, Agent: "claude", Cwd: cwd,
 		})
-		requireNoError(t, err, "insert "+id)
+		require.NoError(t, err, "insert %s", id)
 	}
 	insert("match", "laptop", "leaf", filepath.Join(prefix, "feat", "thing"))
 	insert("same-project", "laptop", "repo", filepath.Join(prefix, "bugfix"))
 	insert("other-machine", "server", "leaf", filepath.Join(prefix, "feat", "thing"))
 	insert("disabled", "laptop", "leaf", filepath.Join(disabledPrefix, "feat"))
 	insert("trashed", "laptop", "leaf", filepath.Join(prefix, "trashed"))
-	requireNoError(t, d.SoftDeleteSession("trashed"), "trash session")
+	require.NoError(t, d.SoftDeleteSession("trashed"), "trash session")
 
 	result, err := d.ApplyWorktreeProjectMappings(ctx, "laptop")
-	requireNoError(t, err, "apply mappings")
-	if result.MatchedSessions != 2 || result.UpdatedSessions != 1 {
-		t.Fatalf("apply result = %+v, want matched=2 updated=1", result)
-	}
+	require.NoError(t, err, "apply mappings")
+	assert.Equal(t, 2, result.MatchedSessions, "matched sessions")
+	assert.Equal(t, 1, result.UpdatedSessions, "updated sessions")
 	assertSessionProject(t, d, "match", "repo")
 	assertSessionProject(t, d, "same-project", "repo")
 	assertSessionProject(t, d, "other-machine", "leaf")
@@ -191,32 +172,25 @@ func TestApplyWorktreeProjectMappingsBumpsLocalModifiedAt(t *testing.T) {
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: "repo", Enabled: true,
 	})
-	requireNoError(t, err, "create mapping")
-	requireNoError(t, d.UpsertSession(Session{
+	require.NoError(t, err, "create mapping")
+	require.NoError(t, d.UpsertSession(Session{
 		ID: "match", Project: "leaf", Machine: "laptop", Agent: "claude",
 		Cwd: filepath.Join(prefix, "feat"),
 	}), "insert match")
 
 	before, err := d.GetSessionFull(ctx, "match")
-	requireNoError(t, err, "GetSessionFull before")
-	if before.LocalModifiedAt != nil {
-		t.Fatalf("local_modified_at before = %v, want nil", *before.LocalModifiedAt)
-	}
+	require.NoError(t, err, "GetSessionFull before")
+	require.Nil(t, before.LocalModifiedAt, "local_modified_at before")
 
 	result, err := d.ApplyWorktreeProjectMappings(ctx, "laptop")
-	requireNoError(t, err, "apply mappings")
-	if result.UpdatedSessions != 1 {
-		t.Fatalf("updated sessions = %d, want 1", result.UpdatedSessions)
-	}
+	require.NoError(t, err, "apply mappings")
+	require.Equal(t, 1, result.UpdatedSessions, "updated sessions")
 
 	after, err := d.GetSessionFull(ctx, "match")
-	requireNoError(t, err, "GetSessionFull after")
-	if after.Project != "repo" {
-		t.Fatalf("project = %q, want repo", after.Project)
-	}
-	if after.LocalModifiedAt == nil || *after.LocalModifiedAt == "" {
-		t.Fatalf("local_modified_at after = %v, want timestamp", after.LocalModifiedAt)
-	}
+	require.NoError(t, err, "GetSessionFull after")
+	assert.Equal(t, "repo", after.Project, "project")
+	require.NotNil(t, after.LocalModifiedAt, "local_modified_at after")
+	assert.NotEmpty(t, *after.LocalModifiedAt, "local_modified_at after")
 }
 
 func TestApplyWorktreeProjectMappingsToSessionUsesCurrentSessionState(
@@ -231,19 +205,19 @@ func TestApplyWorktreeProjectMappingsToSessionUsesCurrentSessionState(
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: stalePrefix, Project: "stale-repo", Enabled: true,
 	})
-	requireNoError(t, err, "create stale mapping")
+	require.NoError(t, err, "create stale mapping")
 	_, err = d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: currentPrefix, Project: "current-repo", Enabled: true,
 	})
-	requireNoError(t, err, "create current mapping")
+	require.NoError(t, err, "create current mapping")
 
 	staleCwd := filepath.Join(stalePrefix, "feat")
 	currentCwd := filepath.Join(currentPrefix, "feat")
-	requireNoError(t, d.UpsertSession(Session{
+	require.NoError(t, d.UpsertSession(Session{
 		ID: "match", Project: "leaf", Machine: "laptop", Agent: "claude",
 		Cwd: staleCwd,
 	}), "insert stale match")
-	requireNoError(t, d.UpsertSession(Session{
+	require.NoError(t, d.UpsertSession(Session{
 		ID: "match", Project: "other_leaf", Machine: "laptop", Agent: "claude",
 		Cwd: currentCwd,
 	}), "move session before apply")
@@ -251,10 +225,8 @@ func TestApplyWorktreeProjectMappingsToSessionUsesCurrentSessionState(
 	updated, err := d.ApplyWorktreeProjectMappingToSession(
 		ctx, "laptop", "match", staleCwd, "leaf",
 	)
-	requireNoError(t, err, "ApplyWorktreeProjectMappingToSession")
-	if !updated {
-		t.Fatal("updated = false, want true")
-	}
+	require.NoError(t, err, "ApplyWorktreeProjectMappingToSession")
+	require.True(t, updated, "updated")
 	assertSessionProject(t, d, "match", "current_repo")
 }
 
@@ -268,43 +240,33 @@ func TestApplyWorktreeProjectMappingToSessionFromSyncDoesNotBumpLocalModifiedAt(
 	_, err := d.CreateWorktreeProjectMapping(ctx, WorktreeProjectMapping{
 		Machine: "laptop", PathPrefix: prefix, Project: "repo", Enabled: true,
 	})
-	requireNoError(t, err, "create mapping")
-	requireNoError(t, d.UpsertSession(Session{
+	require.NoError(t, err, "create mapping")
+	require.NoError(t, d.UpsertSession(Session{
 		ID: "match", Project: "leaf", Machine: "laptop", Agent: "claude",
 		Cwd: filepath.Join(prefix, "feat"),
 	}), "insert match")
 
 	before, err := d.GetSessionFull(ctx, "match")
-	requireNoError(t, err, "GetSessionFull before")
-	if before.LocalModifiedAt != nil {
-		t.Fatalf("local_modified_at before = %v, want nil", before.LocalModifiedAt)
-	}
+	require.NoError(t, err, "GetSessionFull before")
+	require.Nil(t, before.LocalModifiedAt, "local_modified_at before")
 
 	updated, err := d.ApplyWorktreeProjectMappingToSessionFromSync(
 		ctx, "laptop", "match", before.Cwd, before.Project,
 	)
-	requireNoError(t, err, "ApplyWorktreeProjectMappingToSessionFromSync")
-	if !updated {
-		t.Fatal("updated = false, want true")
-	}
+	require.NoError(t, err, "ApplyWorktreeProjectMappingToSessionFromSync")
+	require.True(t, updated, "updated")
 
 	after, err := d.GetSessionFull(ctx, "match")
-	requireNoError(t, err, "GetSessionFull after")
-	if after.Project != "repo" {
-		t.Fatalf("project = %q, want repo", after.Project)
-	}
-	if after.LocalModifiedAt != nil {
-		t.Fatalf("local_modified_at after = %v, want nil", after.LocalModifiedAt)
-	}
+	require.NoError(t, err, "GetSessionFull after")
+	assert.Equal(t, "repo", after.Project, "project")
+	assert.Nil(t, after.LocalModifiedAt, "local_modified_at after")
 }
 
 func assertSessionProject(t *testing.T, d *DB, id, want string) {
 	t.Helper()
 	got, err := d.GetSession(context.Background(), id)
-	requireNoError(t, err, "GetSession "+id)
-	if got.Project != want {
-		t.Fatalf("session %s project = %q, want %q", id, got.Project, want)
-	}
+	require.NoError(t, err, "GetSession %s", id)
+	assert.Equal(t, want, got.Project, "session %s project", id)
 }
 
 func TestWorktreeProjectMappingsFinalMetadataCopyRefreshesStalePrecopy(
@@ -315,7 +277,7 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRefreshesStalePrecopy(
 
 	srcPath := filepath.Join(dir, "src.db")
 	srcDB, err := Open(srcPath)
-	requireNoError(t, err, "Open src")
+	require.NoError(t, err, "Open src")
 	defer srcDB.Close()
 
 	prefix := filepath.Join(dir, "app.worktrees")
@@ -328,14 +290,14 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRefreshesStalePrecopy(
 			Enabled:    true,
 		},
 	)
-	requireNoError(t, err, "CreateWorktreeProjectMapping src")
+	require.NoError(t, err, "CreateWorktreeProjectMapping src")
 
 	dstPath := filepath.Join(dir, "dst.db")
 	dstDB, err := Open(dstPath)
-	requireNoError(t, err, "Open dst")
+	require.NoError(t, err, "Open dst")
 	defer dstDB.Close()
 
-	requireNoError(
+	require.NoError(
 		t,
 		dstDB.CopyWorktreeProjectMappingsFrom(srcPath),
 		"CopyWorktreeProjectMappingsFrom",
@@ -351,8 +313,8 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRefreshesStalePrecopy(
 			Enabled:    false,
 		},
 	)
-	requireNoError(t, err, "UpdateWorktreeProjectMapping src")
-	requireNoError(t, srcDB.CloseConnections(), "CloseConnections src")
+	require.NoError(t, err, "UpdateWorktreeProjectMapping src")
+	require.NoError(t, srcDB.CloseConnections(), "CloseConnections src")
 
 	_, err = dstDB.getWriter().ExecContext(ctx, `
 		UPDATE worktree_project_mappings
@@ -361,25 +323,19 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRefreshesStalePrecopy(
 		"laptop",
 		prefix,
 	)
-	requireNoError(t, err, "force dst updated_at ahead")
+	require.NoError(t, err, "force dst updated_at ahead")
 
-	requireNoError(
+	require.NoError(
 		t,
 		dstDB.CopySessionMetadataFrom(srcPath),
 		"CopySessionMetadataFrom",
 	)
 
 	got, err := dstDB.ListWorktreeProjectMappings(ctx, "laptop")
-	requireNoError(t, err, "ListWorktreeProjectMappings")
-	if len(got) != 1 {
-		t.Fatalf("mapping count = %d, want 1: %+v", len(got), got)
-	}
-	if got[0].Project != "new_project" {
-		t.Fatalf("project = %q, want new_project", got[0].Project)
-	}
-	if got[0].Enabled {
-		t.Fatal("mapping should reflect disabled source row")
-	}
+	require.NoError(t, err, "ListWorktreeProjectMappings")
+	require.Len(t, got, 1, "mapping count")
+	assert.Equal(t, "new_project", got[0].Project, "project")
+	assert.False(t, got[0].Enabled, "mapping should reflect disabled source row")
 }
 
 func TestWorktreeProjectMappingsFinalMetadataCopyRemovesDeletedPrecopy(
@@ -390,7 +346,7 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRemovesDeletedPrecopy(
 
 	srcPath := filepath.Join(dir, "src.db")
 	srcDB, err := Open(srcPath)
-	requireNoError(t, err, "Open src")
+	require.NoError(t, err, "Open src")
 	defer srcDB.Close()
 
 	prefix := filepath.Join(dir, "app.worktrees")
@@ -403,46 +359,42 @@ func TestWorktreeProjectMappingsFinalMetadataCopyRemovesDeletedPrecopy(
 			Enabled:    true,
 		},
 	)
-	requireNoError(t, err, "CreateWorktreeProjectMapping src")
+	require.NoError(t, err, "CreateWorktreeProjectMapping src")
 
 	dstPath := filepath.Join(dir, "dst.db")
 	dstDB, err := Open(dstPath)
-	requireNoError(t, err, "Open dst")
+	require.NoError(t, err, "Open dst")
 	defer dstDB.Close()
 
-	requireNoError(
+	require.NoError(
 		t,
 		dstDB.CopyWorktreeProjectMappingsFrom(srcPath),
 		"CopyWorktreeProjectMappingsFrom",
 	)
 
-	requireNoError(
+	require.NoError(
 		t,
 		srcDB.DeleteWorktreeProjectMapping(
 			ctx, "laptop", sourceMapping.ID,
 		),
 		"DeleteWorktreeProjectMapping src",
 	)
-	requireNoError(t, srcDB.CloseConnections(), "CloseConnections src")
+	require.NoError(t, srcDB.CloseConnections(), "CloseConnections src")
 
-	requireNoError(
+	require.NoError(
 		t,
 		dstDB.CopySessionMetadataFrom(srcPath),
 		"CopySessionMetadataFrom",
 	)
 
 	got, err := dstDB.ListWorktreeProjectMappings(ctx, "laptop")
-	requireNoError(t, err, "ListWorktreeProjectMappings")
-	if len(got) != 0 {
-		t.Fatalf("mapping count = %d, want 0: %+v", len(got), got)
-	}
+	require.NoError(t, err, "ListWorktreeProjectMappings")
+	assert.Empty(t, got, "mapping count")
 }
 
 func assertFullSessionProject(t *testing.T, d *DB, id, want string) {
 	t.Helper()
 	got, err := d.GetSessionFull(context.Background(), id)
-	requireNoError(t, err, "GetSessionFull "+id)
-	if got.Project != want {
-		t.Fatalf("session %s project = %q, want %q", id, got.Project, want)
-	}
+	require.NoError(t, err, "GetSessionFull %s", id)
+	assert.Equal(t, want, got.Project, "session %s project", id)
 }

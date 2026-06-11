@@ -1024,7 +1024,7 @@ func addMessageToCacheTotals(
 	totals.cacheCreateT += cacheCrTok
 	totals.cacheReadT += cacheRdTok
 
-	rates := pricing[model]
+	rates, _ := lookupModelRates(pricing, model)
 	totals.dollarsSpent += (float64(inputTok)*rates.input +
 		float64(outputTok)*rates.output +
 		float64(cacheCrTok)*rates.cacheCreation +
@@ -1392,7 +1392,7 @@ func (db *DB) computeOutcomeStats(
 			cwds = append(cwds, r.cwd)
 		}
 	}
-	repos := git.DiscoverRepos(cwds)
+	repos := git.DiscoverRepos(ctx, cwds)
 	if len(repos) == 0 {
 		return nil
 	}
@@ -1402,7 +1402,7 @@ func (db *DB) computeOutcomeStats(
 	out := &StatsOutcomeStats{}
 	contributed := false
 	for _, repo := range repos {
-		email := git.AuthorEmail(repo)
+		email := git.AuthorEmail(ctx, repo)
 		if email == "" {
 			continue
 		}

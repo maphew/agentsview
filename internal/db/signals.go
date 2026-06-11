@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 )
@@ -27,6 +28,8 @@ type SessionSignalUpdate struct {
 	HealthGrade            *string
 	HasToolCalls           bool
 	HasContextData         bool
+	SecretLeakCount        int
+	SecretsRulesVersion    string
 }
 
 // UpdateSessionSignals persists computed signal values on the
@@ -41,7 +44,28 @@ func (db *DB) UpdateSessionSignals(
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	_, err := db.getWriter().Exec(`
+	tx, err := db.getWriter().Begin()
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := updateSessionSignalsTx(tx, sessionID, u); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// updateSessionSignalsTx writes signal columns within an existing transaction.
+// Caller owns the lock and transaction lifecycle. It deliberately does NOT
+// write secret_leak_count/secrets_rules_version: those are owned solely by the
+// secret-finding replacement path (replaceSecretFindingsTx), so a signals-only
+// recompute cannot reset them while findings still exist. The two secret fields
+// on SessionSignalUpdate are carried here only so callers can forward them to
+// replaceSecretFindingsTx alongside the findings.
+func updateSessionSignalsTx(
+	tx *sql.Tx, sessionID string, u SessionSignalUpdate,
+) error {
+	_, err := tx.Exec(`
 		UPDATE sessions SET
 			tool_failure_signal_count = ?,
 			tool_retry_count = ?,

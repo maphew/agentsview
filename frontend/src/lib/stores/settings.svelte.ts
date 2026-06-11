@@ -1,11 +1,44 @@
 import {
-  getSettings,
-  updateSettings,
-  type AppSettings,
-  ApiError,
+  ApiError as GeneratedApiError,
+  SettingsService,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+  type TerminalResponse,
+} from "../api/generated/index";
+import {
+  configureGeneratedClient,
+  generatedErrorMessage,
   setAuthToken,
   isRemoteConnection,
-} from "../api/client.js";
+} from "../api/runtime.js";
+
+type TerminalConfig = TerminalResponse & {
+  mode: "auto" | "custom" | "clipboard";
+};
+
+interface AppSettings extends Omit<SettingsResponse, "terminal" | "agent_dirs"> {
+  agent_dirs: Record<string, string[]>;
+  terminal: TerminalConfig;
+}
+
+/** Build an actionable message for a 403 from the settings API. A
+ *  403 means the server rejected the request origin/Host (not that a
+ *  token is required), which typically happens behind SSH
+ *  port-forwarding, a reverse proxy, or a remote dev environment.
+ *  Newer servers return a descriptive body; for older servers that
+ *  return a bare "Forbidden", supply the actionable hint ourselves. */
+function forbiddenMessage(serverMessage: string): string {
+  const detail = serverMessage.trim();
+  if (detail && detail.toLowerCase() !== "forbidden") {
+    return detail;
+  }
+  return (
+    "Server rejected this origin. If you are reaching agentsview " +
+    "through SSH port-forwarding, a reverse proxy, or a remote dev " +
+    "environment, restart it with --public-url <origin> matching the " +
+    "URL in your browser."
+  );
+}
 
 class SettingsStore {
   agentDirs: Record<string, string[]> = $state({});
@@ -20,7 +53,7 @@ class SettingsStore {
   loading: boolean = $state(false);
   saving: boolean = $state(false);
   error: string | null = $state(null);
-  /** True when the API returned 401/403, indicating the user needs
+  /** True when the API returned 401, indicating the user needs
    *  to provide an auth token before the app can load. */
   needsAuth: boolean = $state(false);
 
@@ -29,7 +62,9 @@ class SettingsStore {
     this.error = null;
     this.needsAuth = false;
     try {
-      const data = await getSettings();
+      configureGeneratedClient();
+      const data =
+        await SettingsService.getApiV1Settings() as unknown as AppSettings;
       this.agentDirs = data.agent_dirs;
       this.githubConfigured = data.github_configured;
       this.terminal = data.terminal;
@@ -44,8 +79,10 @@ class SettingsStore {
         setAuthToken(data.auth_token);
       }
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      if (e instanceof GeneratedApiError && e.status === 401) {
         this.needsAuth = true;
+      } else if (e instanceof GeneratedApiError && e.status === 403) {
+        this.error = forbiddenMessage(generatedErrorMessage(e));
       } else {
         this.error =
           e instanceof Error ? e.message : "Failed to load settings";
@@ -59,7 +96,11 @@ class SettingsStore {
     this.saving = true;
     this.error = null;
     try {
-      const data = await updateSettings(patch);
+      configureGeneratedClient();
+      const data =
+        await SettingsService.putApiV1Settings({
+          requestBody: patch as SettingsUpdateRequest,
+        }) as unknown as AppSettings;
       this.agentDirs = data.agent_dirs;
       this.githubConfigured = data.github_configured;
       this.terminal = data.terminal;

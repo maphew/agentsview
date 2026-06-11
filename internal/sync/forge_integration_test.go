@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -20,9 +22,7 @@ func createForgeDB(t *testing.T, dir string) *forgeTestDB {
 	t.Helper()
 	path := filepath.Join(dir, ".forge.db")
 	d, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("opening forge test db: %v", err)
-	}
+	require.NoError(t, err, "opening forge test db")
 	t.Cleanup(func() { d.Close() })
 
 	schema := `
@@ -36,17 +36,15 @@ func createForgeDB(t *testing.T, dir string) *forgeTestDB {
 			metrics TEXT
 		);
 	`
-	if _, err := d.Exec(schema); err != nil {
-		t.Fatalf("creating forge schema: %v", err)
-	}
+	_, err = d.Exec(schema)
+	require.NoError(t, err, "creating forge schema")
 	return &forgeTestDB{path: path, db: d}
 }
 
 func (f *forgeTestDB) mustExec(t *testing.T, msg, query string, args ...any) {
 	t.Helper()
-	if _, err := f.db.Exec(query, args...); err != nil {
-		t.Fatalf("%s: %v", msg, err)
-	}
+	_, err := f.db.Exec(query, args...)
+	require.NoError(t, err, msg)
 }
 
 func (f *forgeTestDB) addConversation(
@@ -198,30 +196,20 @@ func TestSyncSingleSessionForge(t *testing.T) {
 		`{"input_tokens":360,"output_tokens":55,"cached_input_tokens":85}`,
 	)
 
-	if err := env.engine.SyncSingleSession("forge:forge-sync-single"); err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
-	}
+	require.NoError(t, env.engine.SyncSingleSession("forge:forge-sync-single"), "SyncSingleSession")
 	assertSessionProject(t, env.db, "forge:forge-sync-single", "agentsview")
 	assertSessionMessageCount(t, env.db, "forge:forge-sync-single", 3)
 
 	src := env.engine.FindSourceFile("forge:forge-sync-single")
 	wantSrc := filepath.Join(env.forgeDir, ".forge.db")
-	if src != wantSrc {
-		t.Fatalf("FindSourceFile() = %q, want %q", src, wantSrc)
-	}
+	assert.Equal(t, wantSrc, src)
 
 	mtime := env.engine.SourceMtime("forge:forge-sync-single")
-	if mtime == 0 {
-		t.Fatal("SourceMtime returned zero")
-	}
+	require.NotZero(t, mtime, "SourceMtime returned zero")
 
 	_, storedMtime, ok := env.db.GetSessionFileInfo("forge:forge-sync-single")
-	if !ok {
-		t.Fatal("session file info not found")
-	}
-	if storedMtime != mtime {
-		t.Fatalf("stored mtime = %d, want %d", storedMtime, mtime)
-	}
+	require.True(t, ok, "session file info not found")
+	assert.Equal(t, mtime, storedMtime)
 
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 0, Synced: 0, Skipped: 0})
 }
@@ -257,9 +245,7 @@ func TestSyncForgeMultiConversationIncremental(t *testing.T) {
 
 	// Capture the stored mtime for A (should remain unchanged after the partial sync).
 	_, storedMtimeA, okA := env.db.GetSessionFileInfo("forge:multi-conv-A")
-	if !okA {
-		t.Fatal("session A file info not found after initial sync")
-	}
+	require.True(t, okA, "session A file info not found after initial sync")
 
 	// Update only B's updated_at (and its context) to simulate a newer version.
 	updatedContextB := forgeTestContext("First prompt B updated.", "Answer B updated.")
@@ -273,21 +259,13 @@ func TestSyncForgeMultiConversationIncremental(t *testing.T) {
 
 	// A's stored mtime must be unchanged.
 	_, storedMtimeA2, okA2 := env.db.GetSessionFileInfo("forge:multi-conv-A")
-	if !okA2 {
-		t.Fatal("session A file info not found after partial sync")
-	}
-	if storedMtimeA != storedMtimeA2 {
-		t.Errorf("A's stored mtime changed: was %d, now %d", storedMtimeA, storedMtimeA2)
-	}
+	require.True(t, okA2, "session A file info not found after partial sync")
+	assert.Equal(t, storedMtimeA, storedMtimeA2, "A's stored mtime changed")
 
 	// B's stored mtime must have advanced.
 	_, storedMtimeB2, okB2 := env.db.GetSessionFileInfo("forge:multi-conv-B")
-	if !okB2 {
-		t.Fatal("session B file info not found after partial sync")
-	}
-	if storedMtimeB2 <= storedMtimeA {
-		t.Errorf("B's stored mtime did not advance: got %d, A had %d", storedMtimeB2, storedMtimeA)
-	}
+	require.True(t, okB2, "session B file info not found after partial sync")
+	assert.Greater(t, storedMtimeB2, storedMtimeA, "B's stored mtime did not advance")
 }
 
 // ---------------------------------------------------------------------------
@@ -306,9 +284,7 @@ func TestSyncForgeMissingConversation(t *testing.T) {
 		`{"input_tokens":50,"output_tokens":10}`,
 	)
 
-	if err := env.engine.SyncSingleSession("forge:disappearing-conv"); err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
-	}
+	require.NoError(t, env.engine.SyncSingleSession("forge:disappearing-conv"), "SyncSingleSession")
 
 	// Now delete the conversation from .forge.db.
 	forge.mustExec(t, "delete conversation",
@@ -318,25 +294,18 @@ func TestSyncForgeMissingConversation(t *testing.T) {
 	// FindSourceFile still returns the db path (it's a directory-level lookup).
 	// SourceMtime returns 0 because the conversation row is gone.
 	mtime := env.engine.SourceMtime("forge:disappearing-conv")
-	if mtime != 0 {
-		t.Errorf("SourceMtime after delete = %d, want 0", mtime)
-	}
+	assert.Zero(t, mtime, "SourceMtime after delete")
 
 	src := env.engine.FindSourceFile("forge:disappearing-conv")
-	if src != "" {
-		t.Errorf("FindSourceFile after delete = %q, want empty", src)
-	}
+	assert.Empty(t, src, "FindSourceFile after delete")
 
 	// SyncSingleSession must return an error indicating the conversation
 	// could not be found (either "not found" or a db no-rows error).
 	err := env.engine.SyncSingleSession("forge:disappearing-conv")
-	if err == nil {
-		t.Fatal("expected error from SyncSingleSession for deleted conversation, got nil")
-	}
+	require.Error(t, err, "expected error from SyncSingleSession for deleted conversation")
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "not found") && !strings.Contains(msg, "no rows") {
-		t.Errorf("expected 'not found' or 'no rows' error, got: %v", err)
-	}
+	assert.True(t, strings.Contains(msg, "not found") || strings.Contains(msg, "no rows"),
+		"expected 'not found' or 'no rows' error, got: %v", err)
 }
 
 func TestSyncForgeSyncSingleNonExistent(t *testing.T) {
@@ -345,13 +314,10 @@ func TestSyncForgeSyncSingleNonExistent(t *testing.T) {
 	createForgeDB(t, env.forgeDir)
 
 	err := env.engine.SyncSingleSession("forge:does-not-exist")
-	if err == nil {
-		t.Fatal("expected error for non-existent session, got nil")
-	}
+	require.Error(t, err, "expected error for non-existent session")
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "not found") && !strings.Contains(msg, "no rows") {
-		t.Errorf("expected 'not found' or 'no rows' error, got: %v", err)
-	}
+	assert.True(t, strings.Contains(msg, "not found") || strings.Contains(msg, "no rows"),
+		"expected 'not found' or 'no rows' error, got: %v", err)
 }
 
 // ---------------------------------------------------------------------------
@@ -421,12 +387,9 @@ func TestSyncForgeSubagentLinking(t *testing.T) {
 		`SELECT subagent_session_id FROM tool_calls WHERE session_id = ? AND tool_name = 'task'`,
 		"forge:"+parentID,
 	).Scan(&subagentSessID)
-	if err != nil {
-		t.Fatalf("query tool_calls for parent: %v", err)
-	}
-	if !subagentSessID.Valid || subagentSessID.String != "forge:"+childID {
-		t.Errorf("tool_calls.subagent_session_id = %v, want forge:%s", subagentSessID, childID)
-	}
+	require.NoError(t, err, "query tool_calls for parent")
+	require.True(t, subagentSessID.Valid, "tool_calls.subagent_session_id not valid")
+	assert.Equal(t, "forge:"+childID, subagentSessID.String)
 
 	// SyncAll must now call LinkSubagentSessions after the Forge write,
 	// so parent_session_id and relationship_type on the child must already
@@ -437,15 +400,11 @@ func TestSyncForgeSubagentLinking(t *testing.T) {
 		`SELECT parent_session_id, relationship_type FROM sessions WHERE id = ?`,
 		"forge:"+childID,
 	).Scan(&parentSessID, &relType)
-	if err != nil {
-		t.Fatalf("query child session: %v", err)
-	}
-	if !parentSessID.Valid || parentSessID.String != "forge:"+parentID {
-		t.Errorf("child parent_session_id = %v, want forge:%s", parentSessID, parentID)
-	}
-	if !relType.Valid || relType.String != "subagent" {
-		t.Errorf("child relationship_type = %v, want subagent", relType)
-	}
+	require.NoError(t, err, "query child session")
+	require.True(t, parentSessID.Valid, "child parent_session_id not valid")
+	assert.Equal(t, "forge:"+parentID, parentSessID.String)
+	require.True(t, relType.Valid, "child relationship_type not valid")
+	assert.Equal(t, "subagent", relType.String)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,10 +443,6 @@ func TestSyncForgeFailureIsolation(t *testing.T) {
 	err := env.db.Reader().QueryRow(
 		"SELECT COUNT(*) FROM sessions WHERE id = 'forge:broken-conv'",
 	).Scan(&count)
-	if err != nil {
-		t.Fatalf("query broken session: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("broken session present in DB (count=%d), expected 0", count)
-	}
+	require.NoError(t, err, "query broken session")
+	assert.Zero(t, count, "broken session present in DB")
 }

@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -98,10 +98,13 @@ jobs:
           - os: windows-latest
             goos: windows
             goarch: amd64
+          - os: windows-11-arm
+            goos: windows
+            goarch: arm64
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -123,14 +126,47 @@ jobs:
           rm -rf internal/web/dist
           cp -r frontend/dist internal/web/dist
 
-      - name: Setup MinGW (Windows)
-        if: matrix.goos == 'windows'
+      - name: Setup MinGW (Windows amd64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c  # v2
         with:
           msystem: MINGW64
           update: false
           install: mingw-w64-x86_64-gcc
           path-type: inherit
+
+      - name: Setup llvm-mingw (Windows arm64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        env:
+          # Self-contained aarch64 mingw clang toolchain (clang + runtime +
+          # lld). cgo (mattn/go-sqlite3) needs a C compiler; no Visual
+          # Studio / Windows SDK required. Pinned to a version + SHA256 for
+          # reproducibility and supply-chain integrity.
+          LLVM_MINGW_VERSION: "20260602"
+          LLVM_MINGW_NAME: llvm-mingw-20260602-ucrt-aarch64
+          LLVM_MINGW_SHA256: cb5c20fbe1808e31ada5cbe4efd9daa2fee19c91dac6ec5ca1ac46a9c7247e37
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$env:LLVM_MINGW_VERSION/$env:LLVM_MINGW_NAME.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          # Verify the archive against the pinned SHA256 before extracting or
+          # executing any of it, so a swapped or compromised upstream asset
+          # fails the build instead of producing a trojaned binary.
+          $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
+          if ($actual -ne $env:LLVM_MINGW_SHA256) {
+            throw "Checksum mismatch for $url`n  expected $env:LLVM_MINGW_SHA256`n  actual   $actual"
+          }
+          # 7-Zip is preinstalled on the runner image and extracts faster
+          # than Expand-Archive for this many files.
+          7z x $zip -o"$env:RUNNER_TEMP" | Out-Null
+          $bin = Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW_NAME\bin"
+          $cc = Join-Path $bin 'aarch64-w64-mingw32-clang.exe'
+          if (-not (Test-Path $cc)) { throw "CC not found at $cc" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "CC=$cc"
 
       - name: Build
         shell: bash
@@ -189,7 +225,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -246,7 +282,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 

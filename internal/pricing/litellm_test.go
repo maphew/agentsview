@@ -3,6 +3,9 @@ package pricing
 import (
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseLiteLLMPricing(t *testing.T) {
@@ -18,9 +21,7 @@ func TestParseLiteLLMPricing(t *testing.T) {
 	}`)
 
 	prices, err := ParseLiteLLMPricing(data)
-	if err != nil {
-		t.Fatalf("ParseLiteLLMPricing: %v", err)
-	}
+	require.NoError(t, err)
 
 	var found *ModelPricing
 	for i := range prices {
@@ -29,9 +30,7 @@ func TestParseLiteLLMPricing(t *testing.T) {
 			break
 		}
 	}
-	if found == nil {
-		t.Fatal("claude-sonnet-4-20250514 not found in results")
-	}
+	require.NotNil(t, found, "claude-sonnet-4-20250514 not found in results")
 
 	assertClose(t, "InputPerMTok", found.InputPerMTok, 3.0)
 	assertClose(t, "OutputPerMTok", found.OutputPerMTok, 15.0)
@@ -56,9 +55,7 @@ func TestParseLiteLLMPricingMultipleProviders(t *testing.T) {
 	}`)
 
 	prices, err := ParseLiteLLMPricing(data)
-	if err != nil {
-		t.Fatalf("ParseLiteLLMPricing: %v", err)
-	}
+	require.NoError(t, err)
 
 	foundAnthropic := false
 	foundOpenAI := false
@@ -70,12 +67,8 @@ func TestParseLiteLLMPricingMultipleProviders(t *testing.T) {
 			foundOpenAI = true
 		}
 	}
-	if !foundAnthropic {
-		t.Error("anthropic model not found")
-	}
-	if !foundOpenAI {
-		t.Error("openai model not found")
-	}
+	assert.True(t, foundAnthropic, "anthropic model not found")
+	assert.True(t, foundOpenAI, "openai model not found")
 }
 
 func TestParseLiteLLMPricingSkipsNoCost(t *testing.T) {
@@ -91,27 +84,22 @@ func TestParseLiteLLMPricingSkipsNoCost(t *testing.T) {
 	}`)
 
 	prices, err := ParseLiteLLMPricing(data)
-	if err != nil {
-		t.Fatalf("ParseLiteLLMPricing: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(prices) != 1 {
-		t.Fatalf("expected 1 model, got %d", len(prices))
-	}
-	if prices[0].ModelPattern != "claude-sonnet-4-20250514" {
-		t.Errorf("unexpected model: %s", prices[0].ModelPattern)
-	}
+	require.Len(t, prices, 1)
+	assert.Equal(t, "claude-sonnet-4-20250514", prices[0].ModelPattern)
 }
 
 func TestFallbackPricing(t *testing.T) {
 	prices := FallbackPricing()
-	if len(prices) == 0 {
-		t.Fatal("FallbackPricing returned empty")
-	}
+	require.NotEmpty(t, prices, "FallbackPricing returned empty")
 
 	required := map[string]bool{
 		"claude-sonnet-4-6":         false,
 		"claude-opus-4-6":           false,
+		"claude-opus-4-7":           false,
+		"claude-opus-4-8":           false,
+		"claude-fable-5":            false,
 		"claude-haiku-4-5-20251001": false,
 		"claude-sonnet-4-20250514":  false,
 		"claude-opus-4-20250514":    false,
@@ -123,9 +111,7 @@ func TestFallbackPricing(t *testing.T) {
 		}
 	}
 	for model, found := range required {
-		if !found {
-			t.Errorf("required model %s missing", model)
-		}
+		assert.True(t, found, "required model %s missing", model)
 	}
 }
 
@@ -135,7 +121,5 @@ func assertClose(
 	got, want float64,
 ) {
 	t.Helper()
-	if math.Abs(got-want) > 0.001 {
-		t.Errorf("%s: got %f, want %f", name, got, want)
-	}
+	assert.LessOrEqual(t, math.Abs(got-want), 0.001, "%s: got %f, want %f", name, got, want)
 }

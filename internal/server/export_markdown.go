@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io"
-	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -48,38 +46,6 @@ type markdownMatch struct {
 	Start   int
 	End     int
 	Segment markdownSegment
-}
-
-func (s *Server) handleMarkdownSession(
-	w http.ResponseWriter, r *http.Request,
-) {
-	depth := strings.TrimSpace(r.URL.Query().Get("depth"))
-	if depth != "" && depth != "1" && depth != "all" {
-		writeError(w, http.StatusBadRequest, "invalid depth")
-		return
-	}
-	tree, err := s.loadExportSessionTree(r.Context(), r.PathValue("id"), depth, map[string]bool{}, 0)
-	if err != nil {
-		if handleContextError(w, err) {
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if tree == nil || tree.Session == nil {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	md := generateExportMarkdownTree(tree, exportMarkdownOptions{Depth: depth})
-	filename := sanitizeFilename(
-		tree.Session.Project + "-" + formatDateShort(tree.Session.StartedAt) + ".md",
-	)
-	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Header().Set(
-		"Content-Disposition",
-		fmt.Sprintf(`inline; filename="%s"`, filename),
-	)
-	_, _ = io.WriteString(w, md)
 }
 
 func (s *Server) loadExportSessionTree(

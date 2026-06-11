@@ -7,10 +7,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -54,31 +55,17 @@ func TestMustLoadConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("AGENTSVIEW_DATA_DIR", t.TempDir())
 			cmd := newServeCommand()
-			if err := cmd.Flags().Parse(tt.args); err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
+			require.NoError(t, cmd.Flags().Parse(tt.args), "Parse")
 			cfg := mustLoadConfig(cmd)
 
-			if cfg.Host != tt.wantHost {
-				t.Errorf("Host = %q, want %q", cfg.Host, tt.wantHost)
-			}
-			if cfg.Port != tt.wantPort {
-				t.Errorf("Port = %d, want %d", cfg.Port, tt.wantPort)
-			}
-			if cfg.PublicURL != tt.wantPublicURL {
-				t.Errorf("PublicURL = %q, want %q", cfg.PublicURL, tt.wantPublicURL)
-			}
-			if cfg.Proxy.Mode != tt.wantProxyMode {
-				t.Errorf("Proxy.Mode = %q, want %q", cfg.Proxy.Mode, tt.wantProxyMode)
-			}
+			assert.Equal(t, tt.wantHost, cfg.Host)
+			assert.Equal(t, tt.wantPort, cfg.Port)
+			assert.Equal(t, tt.wantPublicURL, cfg.PublicURL)
+			assert.Equal(t, tt.wantProxyMode, cfg.Proxy.Mode)
 
-			if cfg.DataDir == "" {
-				t.Error("DataDir should be set")
-			}
+			assert.NotEmpty(t, cfg.DataDir, "DataDir should be set")
 			wantDBPath := filepath.Join(cfg.DataDir, "sessions.db")
-			if cfg.DBPath != wantDBPath {
-				t.Errorf("DBPath = %q, want %q", cfg.DBPath, wantDBPath)
-			}
+			assert.Equal(t, wantDBPath, cfg.DBPath)
 		})
 	}
 }
@@ -99,18 +86,12 @@ func TestPrepareServeRuntimeConfigPortZeroUsesAssignedPort(t *testing.T) {
 			},
 		)
 	})
-	if err != nil {
-		t.Fatalf("prepareServeRuntimeConfig: %v", err)
-	}
-	if cfg.Port == 0 {
-		t.Fatal("Port remained literal 0")
-	}
-	if strings.Contains(out, "Port 0 in use") {
-		t.Fatalf("unexpected literal port 0 fallback message: %q", out)
-	}
-	if !strings.Contains(out, "Using available port") {
-		t.Fatalf("missing ephemeral port message: %q", out)
-	}
+	require.NoError(t, err, "prepareServeRuntimeConfig")
+	assert.NotZero(t, cfg.Port, "Port remained literal 0")
+	assert.NotContains(t, out, "Port 0 in use",
+		"unexpected literal port 0 fallback message")
+	assert.Contains(t, out, "Using available port",
+		"missing ephemeral port message")
 }
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -118,9 +99,7 @@ func captureStdout(t *testing.T, fn func()) string {
 
 	orig := os.Stdout
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	require.NoError(t, err, "pipe")
 	os.Stdout = w
 	t.Cleanup(func() {
 		os.Stdout = orig
@@ -128,18 +107,12 @@ func captureStdout(t *testing.T, fn func()) string {
 
 	fn()
 
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stdout pipe writer: %v", err)
-	}
+	require.NoError(t, w.Close(), "close stdout pipe writer")
 	os.Stdout = orig
 
 	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read stdout pipe: %v", err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close stdout pipe reader: %v", err)
-	}
+	require.NoError(t, err, "read stdout pipe")
+	require.NoError(t, r.Close(), "close stdout pipe reader")
 	return string(data)
 }
 
@@ -164,14 +137,9 @@ func TestSetupLogFile(t *testing.T) {
 
 	logPath := filepath.Join(dir, "debug.log")
 	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("reading log file: %v", err)
-	}
-	if !strings.Contains(string(data), "test-log-message") {
-		t.Errorf(
-			"log file missing message, got: %q", data,
-		)
-	}
+	require.NoError(t, err, "reading log file")
+	assert.Contains(t, string(data), "test-log-message",
+		"log file missing message")
 }
 
 func TestSetupLogFileOpenFailure(t *testing.T) {
@@ -189,12 +157,8 @@ func TestSetupLogFileOpenFailure(t *testing.T) {
 
 	setupLogFile(tmpFile)
 
-	if !strings.Contains(buf.String(), "cannot open log file") {
-		t.Errorf(
-			"expected warning about log file, got: %q",
-			buf.String(),
-		)
-	}
+	assert.Contains(t, buf.String(), "cannot open log file",
+		"expected warning about log file")
 }
 
 func TestTruncateLogFile(t *testing.T) {
@@ -209,12 +173,8 @@ func TestTruncateLogFile(t *testing.T) {
 	truncateLogFile(path, 512)
 
 	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat after truncate: %v", err)
-	}
-	if info.Size() != 0 {
-		t.Errorf("size after truncate = %d, want 0", info.Size())
-	}
+	require.NoError(t, err, "stat after truncate")
+	assert.Equal(t, int64(0), info.Size())
 }
 
 func TestTruncateLogFileUnderLimit(t *testing.T) {
@@ -228,12 +188,8 @@ func TestTruncateLogFileUnderLimit(t *testing.T) {
 	truncateLogFile(path, 1024)
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read after truncate: %v", err)
-	}
-	if string(data) != string(content) {
-		t.Errorf("content changed: got %q", data)
-	}
+	require.NoError(t, err, "read after truncate")
+	assert.Equal(t, string(content), string(data), "content changed")
 }
 
 func TestTruncateLogFileMissing(t *testing.T) {
@@ -249,9 +205,7 @@ func TestTruncateLogFileSymlink(t *testing.T) {
 
 	// Write a target file larger than the limit.
 	big := bytes.Repeat([]byte("x"), 1024)
-	if err := os.WriteFile(target, big, 0o644); err != nil {
-		t.Fatalf("write target: %v", err)
-	}
+	require.NoError(t, os.WriteFile(target, big, 0o644), "write target")
 	if err := os.Symlink(target, link); err != nil {
 		if errors.Is(err, syscall.EPERM) ||
 			errors.Is(err, syscall.EACCES) ||
@@ -267,15 +221,8 @@ func TestTruncateLogFileSymlink(t *testing.T) {
 	truncateLogFile(link, 512)
 
 	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if len(data) != 1024 {
-		t.Errorf(
-			"symlink target was truncated: size=%d, want 1024",
-			len(data),
-		)
-	}
+	require.NoError(t, err, "read target")
+	assert.Len(t, data, 1024, "symlink target was truncated")
 }
 
 func TestResyncCoversSignals(t *testing.T) {
@@ -316,12 +263,7 @@ func TestResyncCoversSignals(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := resyncCoversSignals(tc.stats, tc.fellBack)
-			if got != tc.want {
-				t.Errorf(
-					"resyncCoversSignals = %v, want %v",
-					got, tc.want,
-				)
-			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

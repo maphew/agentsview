@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -40,16 +43,9 @@ func stubServer(
 	return httptest.NewServer(
 		http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != expectedMethod {
-					t.Errorf("expected method %q, got %q", expectedMethod, r.Method)
-				}
-				if r.Header.Get("User-Agent") != "agentsview" {
-					t.Errorf("expected User-Agent %q, got %q", "agentsview", r.Header.Get("User-Agent"))
-				}
-				expectedAuth := "token " + expectedToken
-				if auth := r.Header.Get("Authorization"); auth != expectedAuth {
-					t.Errorf("expected Authorization header %q, got %q", expectedAuth, auth)
-				}
+				assert.Equal(t, expectedMethod, r.Method)
+				assert.Equal(t, "agentsview", r.Header.Get("User-Agent"))
+				assert.Equal(t, "token "+expectedToken, r.Header.Get("Authorization"))
 				w.WriteHeader(status)
 				if body != "" {
 					w.Write([]byte(body))
@@ -62,27 +58,22 @@ func stubServer(
 // assertErrorContains checks that err is non-nil and contains want.
 func assertErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
-	if err == nil {
-		t.Fatalf("expected error containing %q, got nil", want)
-	}
-	if !strings.Contains(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
-	}
+	require.Error(t, err, "expected error containing %q", want)
+	assert.Contains(t, err.Error(), want)
 }
 
 // assertContextCancelled checks that err is non-nil and
 // wraps context.Canceled.
 func assertContextCancelled(t *testing.T, err error) {
 	t.Helper()
-	if err == nil {
-		t.Fatal("expected error for cancelled context")
-	}
+	require.Error(t, err, "expected error for cancelled context")
 	if !errors.Is(err, context.Canceled) &&
 		!strings.Contains(
 			err.Error(), "context canceled",
 		) {
-		t.Errorf(
-			"expected context.Canceled, got: %v", err,
+		assert.Fail(t,
+			"expected context.Canceled",
+			"got: %v", err,
 		)
 	}
 }
@@ -129,12 +120,7 @@ func TestFormatTimestamp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := formatTimestamp(tt.in)
-			if got != tt.want {
-				t.Errorf(
-					"formatTimestamp(%q) = %q, want %q",
-					tt.in, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -169,12 +155,7 @@ func TestFormatDateShort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := formatDateShort(tt.in)
-			if got != tt.want {
-				t.Errorf(
-					"formatDateShort(%v) = %q, want %q",
-					tt.in, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -196,12 +177,7 @@ func TestParseTimestamp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, ok := parseTimestamp(tt.in)
-			if ok != tt.valid {
-				t.Errorf(
-					"parseTimestamp(%q) ok=%v, want %v",
-					tt.in, ok, tt.valid,
-				)
-			}
+			assert.Equal(t, tt.valid, ok)
 		})
 	}
 }
@@ -358,12 +334,7 @@ func TestIsThinkingOnly(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := isThinkingOnly(tt.in)
-			if got != tt.want {
-				t.Errorf(
-					"isThinkingOnly(%q) = %v, want %v",
-					tt.in, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -420,10 +391,8 @@ func TestGenerateExportHTML_ThinkingOnlyClass(t *testing.T) {
 	}
 
 	html := generateExportHTML(session, msgs)
-	if !strings.Contains(html, "thinking-only") {
-		t.Error("expected thinking-only class for" +
-			" thinking-only message")
-	}
+	assert.Contains(t, html, "thinking-only",
+		"expected thinking-only class for thinking-only message")
 }
 
 func TestGenerateExportHTML_EscapesHostileInput(t *testing.T) {
@@ -444,13 +413,11 @@ func TestGenerateExportHTML_EscapesHostileInput(t *testing.T) {
 	out := generateExportHTML(session, msgs)
 
 	// Template auto-escapes the <img> tag in project name
-	if strings.Contains(out, "<img src=x") {
-		t.Error("project name XSS: raw <img> tag not escaped")
-	}
+	assert.NotContains(t, out, "<img src=x",
+		"project name XSS: raw <img> tag not escaped")
 	// Content is escaped by formatContentForExport
-	if strings.Contains(out, "<script>alert") {
-		t.Error("message content XSS not escaped")
-	}
+	assert.NotContains(t, out, "<script>alert",
+		"message content XSS not escaped")
 }
 
 func TestGenerateExportHTML_CodexAgent(t *testing.T) {
@@ -460,9 +427,8 @@ func TestGenerateExportHTML_CodexAgent(t *testing.T) {
 	})
 
 	html := generateExportHTML(session, nil)
-	if !strings.Contains(html, "Codex") {
-		t.Error("expected Codex display name for codex agent")
-	}
+	assert.Contains(t, html, "Codex",
+		"expected Codex display name for codex agent")
 }
 
 func TestGenerateExportHTML_NilStartedAt(t *testing.T) {
@@ -472,9 +438,8 @@ func TestGenerateExportHTML_NilStartedAt(t *testing.T) {
 	})
 
 	html := generateExportHTML(session, nil)
-	if !strings.Contains(html, "<!DOCTYPE html>") {
-		t.Error("expected valid HTML even with nil StartedAt")
-	}
+	assert.Contains(t, html, "<!DOCTYPE html>",
+		"expected valid HTML even with nil StartedAt")
 }
 
 func TestGenerateExportHTML_TranscriptModeControls(t *testing.T) {
@@ -516,15 +481,15 @@ func TestGenerateExportHTML_TranscriptModeControls(t *testing.T) {
 		`class="message assistant focused-hidden" data-ordinal="2"`,
 		`class="message assistant" data-ordinal="3"`,
 	})
-	if strings.Index(
-		html,
-		`#transcript-focused:checked ~ main .message.focused-hidden`,
-	) < strings.Index(
-		html,
-		`#thinking-toggle:checked ~ main .message.thinking-only`,
-	) {
-		t.Error("focused hide rule must follow thinking display rule")
-	}
+	assert.GreaterOrEqual(t,
+		strings.Index(html,
+			`#transcript-focused:checked ~ main .message.focused-hidden`,
+		),
+		strings.Index(html,
+			`#thinking-toggle:checked ~ main .message.thinking-only`,
+		),
+		"focused hide rule must follow thinking display rule",
+	)
 	assertContainsNone(t, html, []string{
 		`class="message user focused-hidden" data-ordinal="0"`,
 		`class="message assistant focused-hidden" data-ordinal="3"`,
@@ -645,9 +610,8 @@ func TestFocusedExportOrdinals(t *testing.T) {
 					got = append(got, msg.Ordinal)
 				}
 			}
-			if !slices.Equal(got, tt.want) {
-				t.Fatalf("visible ordinals = %v, want %v", got, tt.want)
-			}
+			assert.True(t, slices.Equal(got, tt.want),
+				"visible ordinals = %v, want %v", got, tt.want)
 		})
 	}
 }
@@ -875,9 +839,8 @@ func TestGenerateExportMarkdown_SanitizesHeadingAndAvoidsDuplicateAnchors(t *tes
 		AnchoredChildren: map[string]*exportSessionTree{"child-a": child},
 	}, exportMarkdownOptions{Depth: "all"})
 	assertContainsNone(t, out, []string{"# Session: proj\n<script>alert(1)</script>"})
-	if strings.Count(out, `<subagent_session id="child-a"`) != 1 {
-		t.Fatalf("expected child session once, got:\n%s", out)
-	}
+	assert.Equal(t, 1, strings.Count(out, `<subagent_session id="child-a"`),
+		"expected child session once, got:\n%s", out)
 }
 
 func TestGenerateExportMarkdown_DoesNotParseToolMarkersInsideCodeBlocks(t *testing.T) {
@@ -1016,12 +979,7 @@ func TestSanitizeFilename(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := sanitizeFilename(tt.in)
-			if got != tt.want {
-				t.Errorf(
-					"sanitizeFilename(%q) = %q, want %q",
-					tt.in, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -1042,12 +1000,7 @@ func TestTruncateStr(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := truncateStr(tt.in, tt.max)
-			if got != tt.want {
-				t.Errorf(
-					"truncateStr(%q, %d) = %q, want %q",
-					tt.in, tt.max, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -1071,12 +1024,10 @@ func TestExportTemplateValid(t *testing.T) {
 		},
 	}
 	var b strings.Builder
-	if err := exportTmpl.Execute(&b, data); err != nil {
-		t.Fatalf("template execution failed: %v", err)
-	}
-	if !strings.Contains(b.String(), "<!DOCTYPE html>") {
-		t.Error("expected valid HTML doctype")
-	}
+	require.NoError(t, exportTmpl.Execute(&b, data),
+		"template execution failed")
+	assert.Contains(t, b.String(), "<!DOCTYPE html>",
+		"expected valid HTML doctype")
 }
 
 func TestExportTemplateAccentColors(t *testing.T) {
@@ -1096,9 +1047,8 @@ func TestExportTemplateAccentColors(t *testing.T) {
 		"--accent-indigo",
 	}
 	for _, v := range required {
-		if !strings.Contains(exportTemplateStr, v) {
-			t.Errorf("export template missing CSS variable %s", v)
-		}
+		assert.Contains(t, exportTemplateStr, v,
+			"export template missing CSS variable %s", v)
 	}
 }
 
@@ -1176,19 +1126,11 @@ func TestCreateGist(t *testing.T) {
 				assertErrorContains(t, err, tt.wantErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
-			if got.ID != tt.wantID {
-				t.Errorf("expected ID %q, got %q", tt.wantID, got.ID)
-			}
-			if got.HTMLURL != tt.wantURL {
-				t.Errorf("expected HTMLURL %q, got %q", tt.wantURL, got.HTMLURL)
-			}
-			if got.Owner.Login != tt.wantLogin {
-				t.Errorf("expected Owner.Login %q, got %q", tt.wantLogin, got.Owner.Login)
-			}
+			assert.Equal(t, tt.wantID, got.ID)
+			assert.Equal(t, tt.wantURL, got.HTMLURL)
+			assert.Equal(t, tt.wantLogin, got.Owner.Login)
 		})
 	}
 }
@@ -1262,13 +1204,9 @@ func TestValidateGithubToken(t *testing.T) {
 				assertErrorContains(t, err, tt.wantErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
-			if login != tt.wantLogin {
-				t.Errorf("expected login %q, got %q", tt.wantLogin, login)
-			}
+			assert.Equal(t, tt.wantLogin, login)
 		})
 	}
 }

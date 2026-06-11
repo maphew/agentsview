@@ -1,16 +1,52 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { messages } from './messages.svelte.js';
-import * as api from '../api/client.js';
+import { parseContent } from '../utils/content-parser.js';
 import type {
   Message,
   MessagesResponse,
   Session,
 } from '../api/types.js';
 
-// Mock the API client
-vi.mock('../api/client.js', () => ({
+const api = vi.hoisted(() => ({
   getMessages: vi.fn(),
   getSession: vi.fn(),
+}));
+
+vi.mock('../api/runtime.js', () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+  isAbortError: (err: unknown) => {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return true;
+    }
+    if (err === null || typeof err !== 'object') {
+      return false;
+    }
+    const candidate = err as {
+      isCancelled?: unknown;
+      name?: unknown;
+    };
+    return candidate.isCancelled === true ||
+      candidate.name === 'CancelError';
+  },
+  withAbort: <T>(promise: Promise<T>) => promise,
+}));
+
+vi.mock('../api/generated/index', () => ({
+  SessionsService: {
+    getApiV1SessionsId: vi.fn(({ id }) => api.getSession(id)),
+    getApiV1SessionsIdMessages: vi.fn((params) =>
+      api.getMessages(
+        params.id,
+        {
+          from: params.from,
+          limit: params.limit,
+          direction: params.direction,
+        },
+        { signal: new AbortController().signal },
+      )
+    ),
+  },
 }));
 
 function createDeferred<T>() {
@@ -21,6 +57,15 @@ function createDeferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function generatedCancelError(): Error & { isCancelled: true } {
+  const err = new Error('Request aborted') as Error & {
+    isCancelled: true;
+  };
+  err.name = 'CancelError';
+  err.isCancelled = true;
+  return err;
 }
 
 function makeSession(
@@ -376,6 +421,212 @@ describe('MessagesStore', () => {
     );
   });
 
+  it('should refresh the loaded window when reload count is unchanged', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(
+      makeSession('s1', 3),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([
+        makeMessage(0),
+        makeMessage(1),
+        makeMessage(2),
+      ]),
+    );
+
+    await messages.loadSession('s1');
+    expect(messages.messages[0]!.content).toBe('msg 0');
+
+    const updated = {
+      ...makeMessage(0),
+      content: 'msg 0 rewritten content',
+      content_length: 'msg 0 rewritten content'.length,
+    };
+    vi.mocked(api.getSession).mockResolvedValueOnce(
+      makeSession('s1', 3),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([
+        updated,
+        makeMessage(1),
+        makeMessage(2),
+      ]),
+    );
+
+    await messages.reload();
+
+    expect(messages.messageCount).toBe(3);
+    expect(messages.messages).toHaveLength(3);
+    expect(messages.messages[0]!.content).toBe(
+      'msg 0 rewritten content',
+    );
+    expect(vi.mocked(api.getMessages)).toHaveBeenLastCalledWith(
+      's1',
+      expect.objectContaining({
+        from: 0,
+        limit: 1000,
+        direction: 'asc',
+      }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it('should clear parser caches for same-length rewritten messages on same-count reload', async () => {
+    const original = {
+      ...makeMessage(0),
+      content: 'alpha1',
+      content_length: 6,
+    };
+    vi.mocked(api.getSession).mockResolvedValue(
+      makeSession('s1', 1),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([original]),
+    );
+
+    await messages.loadSession('s1');
+    expect(
+      parseContent(
+        original.content,
+        original.has_tool_use,
+        original.id,
+        original.content_length,
+      ),
+    ).toEqual([{ type: 'text', content: 'alpha1' }]);
+
+    const rewritten = {
+      ...original,
+      content: 'bravo2',
+    };
+    vi.mocked(api.getSession).mockResolvedValueOnce(
+      makeSession('s1', 1),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([rewritten]),
+    );
+
+    await messages.reload();
+
+    expect(messages.messages[0]!.content).toBe('bravo2');
+    expect(
+      parseContent(
+        messages.messages[0]!.content,
+        messages.messages[0]!.has_tool_use,
+        messages.messages[0]!.id,
+        messages.messages[0]!.content_length,
+      ),
+    ).toEqual([{ type: 'text', content: 'bravo2' }]);
+  });
+
+  it('should refresh the loaded tail when appending new messages', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(
+      makeSession('s1', 2),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([makeMessage(0), makeMessage(1)]),
+    );
+
+    await messages.loadSession('s1');
+    expect(messages.messages[1]!.content).toBe('msg 1');
+    expect(
+      parseContent(
+        messages.messages[1]!.content,
+        messages.messages[1]!.has_tool_use,
+        messages.messages[1]!.id,
+        messages.messages[1]!.content_length,
+      ),
+    ).toEqual([{ type: 'text', content: 'msg 1' }]);
+
+    const updatedTail = {
+      ...makeMessage(1),
+      content: 'tail!!',
+      content_length: 6,
+    };
+    vi.mocked(api.getSession).mockResolvedValueOnce(
+      makeSession('s1', 3),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([updatedTail, makeMessage(2)]),
+    );
+
+    await messages.reload();
+
+    expect(messages.messageCount).toBe(3);
+    expect(messages.messages.map((m) => m.ordinal)).toEqual([
+      0, 1, 2,
+    ]);
+    expect(messages.messages[1]!.content).toBe('tail!!');
+    expect(
+      parseContent(
+        messages.messages[1]!.content,
+        messages.messages[1]!.has_tool_use,
+        messages.messages[1]!.id,
+        messages.messages[1]!.content_length,
+      ),
+    ).toEqual([{ type: 'text', content: 'tail!!' }]);
+    expect(vi.mocked(api.getMessages)).toHaveBeenLastCalledWith(
+      's1',
+      expect.objectContaining({
+        from: 0,
+        limit: 1000,
+        direction: 'asc',
+      }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it('should refresh earlier loaded messages when appending new messages', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(
+      makeSession('s1', 2),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([makeMessage(0), makeMessage(1)]),
+    );
+
+    await messages.loadSession('s1');
+    expect(messages.messages[0]!.content).toBe('msg 0');
+
+    const updatedEarlier = {
+      ...makeMessage(0),
+      content: 'msg 0 rewritten',
+      content_length: 'msg 0 rewritten'.length,
+    };
+    vi.mocked(api.getSession).mockResolvedValueOnce(
+      makeSession('s1', 3),
+    );
+    vi.mocked(api.getMessages).mockResolvedValueOnce(
+      makeMessagesResponse([
+        updatedEarlier,
+        makeMessage(1),
+        makeMessage(2),
+      ]),
+    );
+
+    await messages.reload();
+
+    expect(messages.messageCount).toBe(3);
+    expect(messages.messages.map((m) => m.ordinal)).toEqual([
+      0, 1, 2,
+    ]);
+    expect(messages.messages[0]!.content).toBe(
+      'msg 0 rewritten',
+    );
+    expect(vi.mocked(api.getMessages)).toHaveBeenLastCalledWith(
+      's1',
+      expect.objectContaining({
+        from: 0,
+        limit: 1000,
+        direction: 'asc',
+      }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
   it('should not update messageCount prematurely if incremental fetch fails and triggers full reload', async () => {
     // 1. Initial State: Session 's1' with 2 messages
     vi.mocked(api.getSession).mockResolvedValue(
@@ -467,9 +718,7 @@ describe('MessagesStore', () => {
       expect(messages.loadingOlder).toBe(true);
 
       // Simulate session switch which aborts in-flight requests
-      rejectHang(
-        new DOMException('The operation was aborted.', 'AbortError'),
-      );
+      rejectHang(generatedCancelError());
       messages.clear();
 
       // Should resolve without throwing
@@ -668,9 +917,7 @@ describe('MessagesStore', () => {
 
       const p = messages.ensureOrdinalLoaded(0);
 
-      rejectHang(
-        new DOMException('The operation was aborted.', 'AbortError'),
-      );
+      rejectHang(generatedCancelError());
       messages.clear();
 
       await expect(p).resolves.toBeUndefined();

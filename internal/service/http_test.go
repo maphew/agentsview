@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -312,6 +313,54 @@ func TestHTTPBackend_Watch_CancelClosesChannel(t *testing.T) {
 			t.Fatal("channel not closed after context cancel")
 		}
 	}
+}
+
+func TestHTTPSearchContent(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/search/content" {
+				t.Errorf("path = %s", r.URL.Path)
+			}
+			if r.URL.Query().Get("pattern") != "needle" {
+				t.Errorf("pattern = %s", r.URL.Query().Get("pattern"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"matches":[{"session_id":"s1","location":"message"}],"next_cursor":0}`))
+		}))
+	defer srv.Close()
+	be := service.NewHTTPBackend(srv.URL, "", true)
+	res, err := be.SearchContent(context.Background(), service.ContentSearchRequest{
+		Pattern: "needle", Limit: 50,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1)
+	assert.Equal(t, "s1", res.Matches[0].SessionID)
+}
+
+func TestHTTPSearchContent_RealServer(t *testing.T) {
+	t.Parallel()
+	baseURL, d := newHTTPTestServer(t)
+	// Seed a session with UserMessageCount=2 so content search includes it.
+	dbtest.SeedSession(t, d, "cs-1", "search-proj", func(s *db.Session) {
+		s.MessageCount = 3
+		s.UserMessageCount = 2
+	})
+	msgs := []db.Message{
+		dbtest.UserMsg("cs-1", 0, "find the needle in the haystack"),
+		dbtest.AsstMsg("cs-1", 1, "here it is"),
+	}
+	dbtest.SeedMessages(t, d, msgs...)
+
+	svc := service.NewHTTPBackend(baseURL, "", true)
+	res, err := svc.SearchContent(context.Background(), service.ContentSearchRequest{
+		Pattern: "needle", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Len(t, res.Matches, 1)
+	assert.Equal(t, "cs-1", res.Matches[0].SessionID)
+	assert.Equal(t, "message", res.Matches[0].Location)
 }
 
 func TestNewHTTPBackend_TrimsTrailingSlash(t *testing.T) {

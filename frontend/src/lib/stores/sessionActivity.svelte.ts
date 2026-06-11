@@ -1,4 +1,5 @@
-import { getSessionActivity } from "../api/client.js";
+import { SessionsService } from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
 import type {
   SessionActivityBucket,
   SessionActivityResponse,
@@ -60,8 +61,11 @@ class SessionActivityStore {
     this.error = null;
     this.firstVisibleTimestamp = null;
     try {
-      const resp: SessionActivityResponse =
-        await getSessionActivity(sessionId);
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.getApiV1SessionsIdActivity({
+          id: sessionId,
+        }) as unknown as SessionActivityResponse;
       // Ignore stale responses from previous sessions.
       if (version !== this.loadVersion) return;
       this.buckets = resp.buckets;

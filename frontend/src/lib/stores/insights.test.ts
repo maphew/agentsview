@@ -6,21 +6,44 @@ import {
   beforeEach,
 } from "vite-plus/test";
 import { insights } from "./insights.svelte.js";
-import * as api from "../api/client.js";
-import { ApiError } from "../api/client.js";
 import type { Insight } from "../api/types.js";
 
-vi.mock("../api/client.js", async (importOriginal) => {
-  const orig =
-    await importOriginal<typeof import("../api/client.js")>();
+const api = vi.hoisted(() => {
+  class MockApiError extends Error {
+    constructor(
+      public readonly status: number,
+      message: string,
+    ) {
+      super(message);
+      this.name = "ApiError";
+    }
+  }
   return {
-    ...orig,
     listInsights: vi.fn(),
-    getInsight: vi.fn(),
     deleteInsight: vi.fn(),
     generateInsight: vi.fn(),
+    ApiError: MockApiError,
   };
 });
+
+const ApiError = api.ApiError;
+
+vi.mock("../api/client.js", () => ({
+  generateInsight: api.generateInsight,
+}));
+
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+}));
+
+vi.mock("../api/generated/index", () => ({
+  ApiError: api.ApiError,
+  InsightsService: {
+    getApiV1Insights: vi.fn(() => api.listInsights()),
+    deleteApiV1InsightsId: vi.fn(({ id }) => api.deleteInsight(id)),
+  },
+}));
 
 function makeInsight(
   overrides: Partial<Insight> = {},

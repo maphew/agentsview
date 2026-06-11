@@ -17,9 +17,11 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/signals"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/telemetry"
 )
 
 var (
@@ -30,12 +32,20 @@ var (
 
 const (
 	periodicSyncInterval  = 15 * time.Minute
+	telemetryPingInterval = 24 * time.Hour
 	unwatchedPollInterval = 2 * time.Minute
 	watcherDebounce       = 500 * time.Millisecond
 	recursiveWatchBudget  = 8192
 )
 
 func main() {
+	// Turn on the agentsview-test-fixture deny-list before any scan
+	// runs. The secrets package keeps the filter off by default so unit
+	// tests in this repo (which use the same random-looking fixtures
+	// production scans would suppress) can assert positive rule paths;
+	// the binary always wants the filter on.
+	secrets.EnableFixtureDeny()
+
 	if err := executeCLI(); err != nil {
 		fatal("%v", err)
 	}
@@ -72,11 +82,23 @@ func runServe(cfg config.Config) {
 		fatal("invalid serve config: %v", err)
 	}
 
-	// Write the startup lock immediately after config setup,
+	// When auth is required, ensure a token exists before publishing
+	// startup state so waiting CLI probes can authenticate the first
+	// protected /api/ping after startup completes.
+	if cfg.RequireAuth {
+		if err := cfg.EnsureAuthToken(); err != nil {
+			log.Fatalf("Failed to generate auth token: %v", err)
+		}
+		if cfg.AuthToken != "" {
+			fmt.Printf("Auth enabled. Token: %s\n", cfg.AuthToken)
+		}
+	}
+
+	// Acquire the daemon start lock immediately after config setup,
 	// before opening the DB, so token-use never sees a window
-	// with no lock and no state file during startup.
-	server.WriteStartupLock(cfg.DataDir)
-	defer server.RemoveStartupLock(cfg.DataDir)
+	// with no lock and no runtime record during startup.
+	MarkDaemonStarting(cfg.DataDir)
+	defer UnmarkDaemonStarting(cfg.DataDir)
 
 	applyClassifierConfig(cfg)
 	database := mustOpenDB(cfg)
@@ -103,6 +125,17 @@ func runServe(cfg config.Config) {
 		context.Background(), os.Interrupt, syscall.SIGTERM,
 	)
 	defer stop()
+
+	telemetryReporter := telemetry.NewReporterOrDisabled(telemetry.Options{
+		DataDir: cfg.DataDir,
+		Version: version,
+		Commit:  commit,
+	})
+	defer func() {
+		if err := telemetryReporter.Close(); err != nil {
+			log.Printf("close telemetry: %v", err)
+		}
+	}()
 
 	broadcaster := server.NewBroadcaster(cfg.EventsCoalesceInterval)
 
@@ -172,16 +205,6 @@ func runServe(cfg config.Config) {
 	// background LiteLLM refresh follows immediately.
 	seedPricing(database)
 
-	// When auth is required, ensure a token exists.
-	if cfg.RequireAuth {
-		if err := cfg.EnsureAuthToken(); err != nil {
-			log.Fatalf("Failed to generate auth token: %v", err)
-		}
-		if cfg.AuthToken != "" {
-			fmt.Printf("Auth enabled. Token: %s\n", cfg.AuthToken)
-		}
-	}
-
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
 		RequestedPort: cfg.Port,
@@ -211,22 +234,22 @@ func runServe(cfg config.Config) {
 		fatal("%v", err)
 	}
 
-	// Server is ready — write the definitive state file with the
-	// final port and remove the startup lock. If the state file
-	// write fails, keep the startup lock as a fallback "server
+	// Server is ready — write the definitive kit runtime record with the
+	// final port and release the start lock. If the runtime record
+	// write fails, keep the start lock as a fallback "server
 	// is active" marker so token-use doesn't start a competing
 	// on-demand sync against our live DB.
-	if _, sfErr := server.WriteStateFile(
+	if _, sfErr := WriteDaemonRuntime(
 		rt.Cfg.DataDir, rt.Cfg.Host, rt.Cfg.Port, version, false,
 	); sfErr != nil {
 		log.Printf(
-			"warning: could not write state file: %v"+
-				" (keeping startup lock as fallback)",
+			"warning: could not write daemon runtime record: %v"+
+				" (keeping start lock as fallback)",
 			sfErr,
 		)
 	} else {
-		defer server.RemoveStateFile(rt.Cfg.DataDir, rt.Cfg.Port)
-		server.RemoveStartupLock(rt.Cfg.DataDir)
+		defer RemoveDaemonRuntime(rt.Cfg.DataDir)
+		UnmarkDaemonStarting(rt.Cfg.DataDir)
 	}
 
 	if rt.PublicURL == rt.LocalURL {
@@ -244,8 +267,14 @@ func runServe(cfg config.Config) {
 	}
 	fmt.Printf("Database: %s\n", cfg.DBPath)
 
+	startTelemetryPings(ctx, telemetryReporter)
+
 	if engine != nil {
-		stopWatcher, unwatchedDirs := startFileWatcher(cfg, engine)
+		stopWatcher, unwatchedDirs := startFileWatcher(
+			cfg, engine, func(paths []string) {
+				engine.SyncPaths(paths)
+			},
+		)
 		defer stopWatcher()
 		if len(unwatchedDirs) > 0 {
 			go startUnwatchedPoll(engine)
@@ -254,6 +283,31 @@ func runServe(cfg config.Config) {
 
 	if err := waitForServerRuntime(ctx, srv, rt); err != nil {
 		fatal("%v", err)
+	}
+}
+
+func startTelemetryPings(ctx context.Context, reporter *telemetry.Reporter) {
+	if reporter == nil || !reporter.Enabled() {
+		return
+	}
+	captureTelemetryPing(ctx, reporter)
+	go func() {
+		ticker := time.NewTicker(telemetryPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				captureTelemetryPing(ctx, reporter)
+			}
+		}
+	}()
+}
+
+func captureTelemetryPing(ctx context.Context, reporter *telemetry.Reporter) {
+	if err := reporter.CaptureDaemonActive(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("capture telemetry event: %v", err)
 	}
 }
 
@@ -273,7 +327,13 @@ func mustLoadConfig(cmd *cobra.Command) config.Config {
 const maxLogSize = 10 * 1024 * 1024 // 10 MB
 
 func setupLogFile(dataDir string) {
-	logPath := filepath.Join(dataDir, "debug.log")
+	setupLogFileNamed(dataDir, "debug.log")
+}
+
+// setupLogFileNamed redirects the standard logger to the named file
+// in dataDir, truncating it first if it exceeds maxLogSize.
+func setupLogFileNamed(dataDir, name string) {
+	logPath := filepath.Join(dataDir, name)
 	truncateLogFile(logPath, maxLogSize)
 	f, err := os.OpenFile(
 		logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644,
@@ -435,12 +495,9 @@ func printSyncProgress(p sync.Progress) {
 }
 
 func startFileWatcher(
-	cfg config.Config, engine *sync.Engine,
+	cfg config.Config, engine *sync.Engine, onChange func(paths []string),
 ) (stopWatcher func(), unwatchedDirs []string) {
 	t := time.Now()
-	onChange := func(paths []string) {
-		engine.SyncPaths(paths)
-	}
 	watcher, err := sync.NewWatcher(watcherDebounce, onChange, cfg.WatchExcludePatterns)
 	if err != nil {
 		log.Printf(

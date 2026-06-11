@@ -3,6 +3,9 @@ package db
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileBackedSessionCount_ExcludesNonFileAgents(
@@ -23,11 +26,7 @@ func TestFileBackedSessionCount_ExcludesNonFileAgents(
 	insertSession(t, d, "test-file-session", "myproject")
 
 	count, err := d.FileBackedSessionCount(ctx)
-	requireNoError(t, err, "FileBackedSessionCount")
-	if count != 1 {
-		t.Errorf(
-			"FileBackedSessionCount = %d, want 1 "+
-				"(only claude session)", count,
-		)
-	}
+	require.NoError(t, err, "FileBackedSessionCount")
+	assert.Equal(t, 1, count,
+		"FileBackedSessionCount should be 1 (only claude session)")
 }

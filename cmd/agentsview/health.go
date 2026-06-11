@@ -226,6 +226,7 @@ func printHealthDetail(w io.Writer, s db.Session) {
 		s.ConsecutiveFailureMax)
 	fmt.Fprintf(w, "  Final failure streak: %d\n",
 		s.FinalFailureStreak)
+	fmt.Fprintf(w, "  Secret findings:      %d\n", s.SecretLeakCount)
 	fmt.Fprintf(w, "  Compactions:          %s\n",
 		formatCompactions(
 			s.CompactionCount, s.MidTaskCompactionCount,

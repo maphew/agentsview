@@ -27,6 +27,7 @@
   import { applyHighlight } from "../../utils/highlight.js";
   import { renderMarkdown } from "../../utils/markdown.js";
   import { displayToolName } from "../../utils/toolDisplay.js";
+  import { PinIcon } from "../../icons.js";
   import type { Session } from "../../api/types.js";
 
   interface Props {
@@ -311,9 +312,7 @@
       title={pinned ? "Unpin message" : "Pin message"}
       onclick={handleTogglePin}
     >
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M4.146.146A.5.5 0 014.5 0h7a.5.5 0 01.5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 01-.5.5H8.5v5.5a.5.5 0 01-1 0V10H3.5a.5.5 0 01-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 015 6.708V2.277a3 3 0 01-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 01.146-.354z"/>
-      </svg>
+      <PinIcon size="14" strokeWidth="1.8" aria-hidden="true" />
     </button>
     {#if pinFeedback}
       <span class="pin-feedback">{pinFeedback}</span>

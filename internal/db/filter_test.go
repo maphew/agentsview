@@ -2,15 +2,19 @@ package db
 
 import (
 	"context"
+	"slices"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPruneFilterZeroValue(t *testing.T) {
 	f := PruneFilter{}
 
-	if f.HasFilters() {
-		t.Error("HasFilters() returned true for zero value")
-	}
+	assert.False(t, f.HasFilters(),
+		"HasFilters() returned true for zero value")
 
 	d := testDB(t)
 
@@ -840,21 +844,13 @@ func TestGetMachinesExcludeOneShot(t *testing.T) {
 	})
 
 	all, err := d.GetMachines(context.Background(), false, false)
-	requireNoError(t, err, "GetMachines includeAll")
-	if len(all) != 2 {
-		t.Fatalf("includeAll: got %d machines, want 2", len(all))
-	}
+	require.NoError(t, err, "GetMachines includeAll")
+	require.Len(t, all, 2, "includeAll machines")
 
 	filtered, err := d.GetMachines(context.Background(), true, false)
-	requireNoError(t, err, "GetMachines excludeOneShot")
-	if len(filtered) != 1 {
-		t.Fatalf("excludeOneShot: got %d machines, want 1",
-			len(filtered))
-	}
-	if filtered[0] != "desktop" {
-		t.Errorf("excludeOneShot: got %q, want desktop",
-			filtered[0])
-	}
+	require.NoError(t, err, "GetMachines excludeOneShot")
+	require.Len(t, filtered, 1, "excludeOneShot machines")
+	assert.Equal(t, "desktop", filtered[0], "excludeOneShot machine")
 }
 
 func TestGetStatsExcludeOneShot(t *testing.T) {
@@ -871,35 +867,17 @@ func TestGetStatsExcludeOneShot(t *testing.T) {
 
 	// Include all.
 	stats, err := d.GetStats(context.Background(), false, false)
-	requireNoError(t, err, "GetStats includeAll")
-	if stats.SessionCount != 2 {
-		t.Errorf("includeAll: session_count = %d, want 2",
-			stats.SessionCount)
-	}
-	if stats.MessageCount != 15 {
-		t.Errorf("includeAll: message_count = %d, want 15",
-			stats.MessageCount)
-	}
-	if stats.ProjectCount != 2 {
-		t.Errorf("includeAll: project_count = %d, want 2",
-			stats.ProjectCount)
-	}
+	require.NoError(t, err, "GetStats includeAll")
+	assert.Equal(t, 2, stats.SessionCount, "includeAll: session_count")
+	assert.Equal(t, 15, stats.MessageCount, "includeAll: message_count")
+	assert.Equal(t, 2, stats.ProjectCount, "includeAll: project_count")
 
 	// Exclude one-shot.
 	stats, err = d.GetStats(context.Background(), true, false)
-	requireNoError(t, err, "GetStats excludeOneShot")
-	if stats.SessionCount != 1 {
-		t.Errorf("excludeOneShot: session_count = %d, want 1",
-			stats.SessionCount)
-	}
-	if stats.MessageCount != 10 {
-		t.Errorf("excludeOneShot: message_count = %d, want 10",
-			stats.MessageCount)
-	}
-	if stats.ProjectCount != 1 {
-		t.Errorf("excludeOneShot: project_count = %d, want 1",
-			stats.ProjectCount)
-	}
+	require.NoError(t, err, "GetStats excludeOneShot")
+	assert.Equal(t, 1, stats.SessionCount, "excludeOneShot: session_count")
+	assert.Equal(t, 10, stats.MessageCount, "excludeOneShot: message_count")
+	assert.Equal(t, 1, stats.ProjectCount, "excludeOneShot: project_count")
 }
 
 func TestSessionFilterExcludeAutomated(t *testing.T) {
@@ -1014,6 +992,182 @@ func TestExcludeOneShotWithIncludeAutomated(t *testing.T) {
 	}
 }
 
+func TestSidebarSessionIndexExcludeAutomated(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "normal", "proj", func(s *Session) {
+		s.MessageCount = 5
+		s.UserMessageCount = 2
+	})
+	insertSession(t, d, "review", "proj", func(s *Session) {
+		fm := "You are a code reviewer. Review the code."
+		s.FirstMessage = &fm
+		s.MessageCount = 3
+		s.UserMessageCount = 1
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{
+		ExcludeAutomated: true,
+	})
+	requireNoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"normal"})
+	require.Equal(t, 1, index.Total, "total")
+}
+
+func TestSidebarSessionIndexIncludeAutomated(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "normal", "proj", func(s *Session) {
+		s.MessageCount = 5
+		s.UserMessageCount = 2
+	})
+	insertSession(t, d, "review", "proj", func(s *Session) {
+		fm := "You are a code reviewer. Review the code."
+		s.FirstMessage = &fm
+		s.MessageCount = 3
+		s.UserMessageCount = 1
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{
+		ExcludeAutomated: false,
+	})
+	requireNoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"normal", "review"})
+	require.Equal(t, 2, index.Total, "total")
+}
+
+func TestSidebarSessionIndexExcludeOneShotWithAutomatedIncluded(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "multi", "proj", func(s *Session) {
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+	insertSession(t, d, "oneshot", "proj", func(s *Session) {
+		s.MessageCount = 3
+		s.UserMessageCount = 1
+	})
+	insertSession(t, d, "review", "proj", func(s *Session) {
+		fm := "You are a code reviewer. Review the code."
+		s.FirstMessage = &fm
+		s.MessageCount = 3
+		s.UserMessageCount = 1
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{
+		ExcludeOneShot:   true,
+		ExcludeAutomated: false,
+	})
+	requireNoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"multi", "review"})
+}
+
+func TestSidebarSessionIndexIncludesChildrenForMatchingRoot(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "root", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+	insertSession(t, d, "sub", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = new("root")
+		s.RelationshipType = "subagent"
+	})
+	insertSession(t, d, "fork", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = new("sub")
+		s.RelationshipType = "fork"
+	})
+	insertSession(t, d, "other", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{
+		Agent: "claude",
+	})
+	requireNoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"root", "sub", "fork"})
+}
+
+func TestSidebarSessionIndexReturnsDisplayName(t *testing.T) {
+	d := testDB(t)
+
+	displayName := "Named session"
+	insertSession(t, d, "named", "proj", func(s *Session) {
+		s.DisplayName = &displayName
+		s.MessageCount = 3
+		s.UserMessageCount = 2
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{})
+	require.NoError(t, err, "GetSidebarSessionIndex")
+	require.Len(t, index.Sessions, 1)
+	require.NotNil(t, index.Sessions[0].DisplayName, "display_name")
+	assert.Equal(t, displayName, *index.Sessions[0].DisplayName, "display_name")
+}
+
+func TestSidebarSessionIndexComputesIsTeammate(t *testing.T) {
+	d := testDB(t)
+
+	teammateFirstMessage := "<teammate-message from=\"reviewer\">hi"
+	insertSession(t, d, "teammate", "proj", func(s *Session) {
+		s.FirstMessage = &teammateFirstMessage
+		s.MessageCount = 3
+		s.UserMessageCount = 2
+	})
+	insertSession(t, d, "normal", "proj", func(s *Session) {
+		s.MessageCount = 3
+		s.UserMessageCount = 2
+	})
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{})
+	requireNoError(t, err, "GetSidebarSessionIndex")
+
+	rows := sidebarIndexByID(index.Sessions)
+	require.True(t, rows["teammate"].IsTeammate,
+		"teammate IsTeammate = false, want true")
+	require.False(t, rows["normal"].IsTeammate,
+		"normal IsTeammate = true, want false")
+}
+
+func requireSidebarIndexIDs(
+	t *testing.T, sessions []SidebarSessionIndexRow, wantIDs []string,
+) {
+	t.Helper()
+	gotIDs := make([]string, len(sessions))
+	for i, s := range sessions {
+		gotIDs[i] = s.ID
+	}
+	wantSorted := make([]string, len(wantIDs))
+	copy(wantSorted, wantIDs)
+	slices.Sort(wantSorted)
+
+	gotSorted := make([]string, len(gotIDs))
+	copy(gotSorted, gotIDs)
+	slices.Sort(gotSorted)
+
+	diff := cmp.Diff(wantSorted, gotSorted)
+	assert.Empty(t, diff, "sidebar index sessions mismatch (-want +got)")
+}
+
+func sidebarIndexByID(
+	sessions []SidebarSessionIndexRow,
+) map[string]SidebarSessionIndexRow {
+	rows := make(map[string]SidebarSessionIndexRow, len(sessions))
+	for _, s := range sessions {
+		rows[s.ID] = s
+	}
+	return rows
+}
+
 func TestIsAutomatedSetOnUpsert(t *testing.T) {
 	d := testDB(t)
 
@@ -1051,28 +1205,59 @@ func TestIsAutomatedSetOnUpsert(t *testing.T) {
 
 	ctx := context.Background()
 	normal, err := d.GetSession(ctx, "normal")
-	requireNoError(t, err, "get normal")
-	if normal.IsAutomated {
-		t.Error("normal session should not be automated")
-	}
+	require.NoError(t, err, "get normal")
+	assert.False(t, normal.IsAutomated,
+		"normal session should not be automated")
 
 	review, err := d.GetSession(ctx, "review")
-	requireNoError(t, err, "get review")
-	if !review.IsAutomated {
-		t.Error("single-turn review should be automated")
-	}
+	require.NoError(t, err, "get review")
+	assert.True(t, review.IsAutomated,
+		"single-turn review should be automated")
 
 	multi, err := d.GetSession(ctx, "multi-review")
-	requireNoError(t, err, "get multi-review")
-	if multi.IsAutomated {
-		t.Error("multi-turn review should not be automated")
-	}
+	require.NoError(t, err, "get multi-review")
+	assert.False(t, multi.IsAutomated,
+		"multi-turn review should not be automated")
 
 	sub, err := d.GetSession(ctx, "roborev-sub")
-	requireNoError(t, err, "get roborev-sub")
-	if !sub.IsAutomated {
-		t.Error("single-turn roborev substring should be automated")
-	}
+	require.NoError(t, err, "get roborev-sub")
+	assert.True(t, sub.IsAutomated,
+		"single-turn roborev substring should be automated")
+}
+
+func TestListSessionsHasSecret(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "leaky", "proj", func(s *Session) {
+		s.MessageCount = 2
+		s.UserMessageCount = 2
+	})
+	// secret_leak_count is owned solely by the findings path; UpsertSession
+	// (used by insertSession) does NOT persist it, so set it via the findings
+	// API rather than the Session mutator.
+	require.NoError(t, d.ReplaceSessionSecretFindings("leaky", nil, 3, "v"),
+		"ReplaceSessionSecretFindings")
+	insertSession(t, d, "clean", "proj", func(s *Session) {
+		s.MessageCount = 2
+		s.UserMessageCount = 2
+	})
+	page, err := d.ListSessions(context.Background(), SessionFilter{HasSecret: true})
+	require.NoError(t, err, "ListSessions")
+	require.Len(t, page.Sessions, 1, "HasSecret filter")
+	require.Equal(t, "leaky", page.Sessions[0].ID, "HasSecret filter")
+
+	insertSession(t, d, "stale", "proj", func(s *Session) {
+		s.MessageCount = 2
+		s.UserMessageCount = 2
+	})
+	require.NoError(t, d.ReplaceSessionSecretFindings("stale", nil, 2, "old-rules"),
+		"ReplaceSessionSecretFindings stale")
+	current, err := d.ListSessions(context.Background(), SessionFilter{
+		HasSecret:            true,
+		SecretsRulesVersions: []string{"v"},
+	})
+	require.NoError(t, err, "ListSessions current rules")
+	require.Len(t, current.Sessions, 1, "versioned HasSecret filter")
+	require.Equal(t, "leaky", current.Sessions[0].ID, "versioned HasSecret filter")
 }
 
 func TestIncrementalUpdateClearsAutomated(t *testing.T) {
@@ -1088,20 +1273,17 @@ func TestIncrementalUpdateClearsAutomated(t *testing.T) {
 
 	ctx := context.Background()
 	s, err := d.GetSession(ctx, "s1")
-	requireNoError(t, err, "get before")
-	if !s.IsAutomated {
-		t.Fatal("should start as automated")
-	}
+	require.NoError(t, err, "get before")
+	require.True(t, s.IsAutomated, "should start as automated")
 
 	// Simulate a second user turn via incremental update.
 	err = d.UpdateSessionIncremental(
 		"s1", nil, 6, 2, 100, 12345, 0, 0, false, false,
 	)
-	requireNoError(t, err, "incremental update")
+	require.NoError(t, err, "incremental update")
 
 	s, err = d.GetSession(ctx, "s1")
-	requireNoError(t, err, "get after")
-	if s.IsAutomated {
-		t.Error("should no longer be automated after second user turn")
-	}
+	require.NoError(t, err, "get after")
+	assert.False(t, s.IsAutomated,
+		"should no longer be automated after second user turn")
 }

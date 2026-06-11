@@ -3,8 +3,16 @@ package ssh
 import (
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 )
+
+// nonInteractive is the trailing option block buildSSHArgs appends
+// to every invocation (see sshConnectTimeoutSecs). Kept here so the
+// table below documents the full expected arg vector.
+var nonInteractive = []string{
+	"-o", "BatchMode=yes",
+	"-o", "ConnectTimeout=10",
+}
 
 func TestBuildSSHArgs(t *testing.T) {
 	tests := []struct {
@@ -21,7 +29,9 @@ func TestBuildSSHArgs(t *testing.T) {
 			host: "devbox1",
 			cmd:  "echo hello",
 			want: []string{
-				"ssh", "devbox1", "--", "sh -c 'echo hello'",
+				"ssh", "-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
+				"devbox1", "--", "sh -c 'echo hello'",
 			},
 		},
 		{
@@ -30,7 +40,9 @@ func TestBuildSSHArgs(t *testing.T) {
 			user: "wes",
 			cmd:  "ls -la",
 			want: []string{
-				"ssh", "wes@devbox1", "--", "sh -c 'ls -la'",
+				"ssh", "-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
+				"wes@devbox1", "--", "sh -c 'ls -la'",
 			},
 		},
 		{
@@ -41,6 +53,8 @@ func TestBuildSSHArgs(t *testing.T) {
 			cmd:  "echo hi",
 			want: []string{
 				"ssh", "-p", "2222",
+				"-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
 				"wes@devbox1", "--", "sh -c 'echo hi'",
 			},
 		},
@@ -49,11 +63,13 @@ func TestBuildSSHArgs(t *testing.T) {
 			host: "devbox1",
 			cmd:  "echo hi",
 			want: []string{
-				"ssh", "devbox1", "--", "sh -c 'echo hi'",
+				"ssh", "-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
+				"devbox1", "--", "sh -c 'echo hi'",
 			},
 		},
 		{
-			name: "with ssh opts",
+			name: "with ssh opts before defaults",
 			host: "devbox1",
 			user: "wes",
 			port: 2222,
@@ -66,6 +82,8 @@ func TestBuildSSHArgs(t *testing.T) {
 				"ssh", "-p", "2222",
 				"-i", "/tmp/key",
 				"-o", "StrictHostKeyChecking=no",
+				"-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
 				"wes@devbox1", "--", "sh -c 'ls'",
 			},
 		},
@@ -74,7 +92,9 @@ func TestBuildSSHArgs(t *testing.T) {
 			host: "devbox1",
 			cmd:  `printf "it's fine"`,
 			want: []string{
-				"ssh", "devbox1", "--",
+				"ssh", "-o", "BatchMode=yes",
+				"-o", "ConnectTimeout=10",
+				"devbox1", "--",
 				`sh -c 'printf "it'\''s fine"'`,
 			},
 		},
@@ -85,9 +105,16 @@ func TestBuildSSHArgs(t *testing.T) {
 				tt.host, tt.user, tt.port,
 				tt.sshOpts, tt.cmd,
 			)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("mismatch (-want +got):\n%s", diff)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestBuildSSHArgs_NonInteractiveDefaults locks the security intent
+// independent of arg ordering: remote sync never prompts (BatchMode)
+// and bounds the connect phase (ConnectTimeout).
+func TestBuildSSHArgs_NonInteractiveDefaults(t *testing.T) {
+	got := buildSSHArgs("devbox1", "", 0, nil, "true")
+	assert.Subset(t, got, nonInteractive,
+		"ssh invocation must include non-interactive defaults")
 }

@@ -2,10 +2,14 @@ package parser
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Timestamp constants for test data.
@@ -36,52 +40,35 @@ func generateLargeString(size int) string {
 
 func assertSessionMeta(t *testing.T, s *ParsedSession, wantID, wantProject string, wantAgent AgentType) {
 	t.Helper()
-	if s == nil {
-		t.Fatal("session is nil")
-		return
-	}
-	if s.ID != wantID {
-		t.Errorf("session ID = %q, want %q", s.ID, wantID)
-	}
-	if s.Project != wantProject {
-		t.Errorf("project = %q, want %q", s.Project, wantProject)
-	}
-	if s.Agent != wantAgent {
-		t.Errorf("agent = %q, want %q", s.Agent, wantAgent)
-	}
+	require.NotNil(t, s, "session is nil")
+	assert.Equal(t, wantID, s.ID, "session ID")
+	assert.Equal(t, wantProject, s.Project, "project")
+	assert.Equal(t, wantAgent, s.Agent, "agent")
 }
 
 func assertMessage(t *testing.T, m ParsedMessage, wantRole RoleType, wantContentSnippet string) {
 	t.Helper()
-	if m.Role != wantRole {
-		t.Errorf("role = %q, want %q", m.Role, wantRole)
-	}
-	if wantContentSnippet != "" && !strings.Contains(m.Content, wantContentSnippet) {
-		t.Errorf("content missing snippet %q, got %q", wantContentSnippet, m.Content)
+	assert.Equal(t, wantRole, m.Role, "role")
+	if wantContentSnippet != "" {
+		assert.Contains(t, m.Content, wantContentSnippet)
 	}
 }
 
 func assertMessageCount(t *testing.T, count, want int) {
 	t.Helper()
-	if count != want {
-		t.Fatalf("message count = %d, want %d", count, want)
-	}
+	require.Equal(t, want, count, "message count")
 }
 
 func assertTimestamp(t *testing.T, got time.Time, want time.Time) {
 	t.Helper()
-	if !got.Equal(want) {
-		t.Errorf("timestamp = %v, want %v", got, want)
-	}
+	assert.True(t, got.Equal(want), "timestamp = %v, want %v", got, want)
 }
 
 func assertZeroTimestamp(
 	t *testing.T, ts time.Time, label string,
 ) {
 	t.Helper()
-	if !ts.IsZero() {
-		t.Errorf("%s = %v, want zero", label, ts)
-	}
+	assert.True(t, ts.IsZero(), "%s = %v, want zero", label, ts)
 }
 
 // captureLog redirects log output to a buffer for the
@@ -100,14 +87,8 @@ func assertLogContains(
 ) {
 	t.Helper()
 	got := buf.String()
-	var missing []string
 	for _, s := range substrs {
-		if !strings.Contains(got, s) {
-			missing = append(missing, s)
-		}
-	}
-	if len(missing) > 0 {
-		t.Errorf("log missing substrings %q. Full log:\n%s", missing, got)
+		assert.Contains(t, got, s, "log missing substring %q", s)
 	}
 }
 
@@ -116,32 +97,19 @@ func assertLogNotContains(
 ) {
 	t.Helper()
 	got := buf.String()
-	var unexpected []string
 	for _, s := range substrs {
-		if strings.Contains(got, s) {
-			unexpected = append(unexpected, s)
-		}
-	}
-	if len(unexpected) > 0 {
-		t.Errorf("log should not contain substrings %q. Full log:\n%s", unexpected, got)
+		assert.NotContains(t, got, s, "log should not contain substring %q", s)
 	}
 }
 
 func assertLogEmpty(t *testing.T, buf *bytes.Buffer) {
 	t.Helper()
-	if buf.Len() > 0 {
-		t.Errorf(
-			"expected no log output, got: %q",
-			buf.String(),
-		)
-	}
+	assert.Zero(t, buf.Len(), "expected no log output, got: %q", buf.String())
 }
 
 func assertToolCallField(t *testing.T, i int, field, got, want string) {
 	t.Helper()
-	if got != want {
-		t.Errorf("tool_calls[%d].%s = %q, want %q", i, field, got, want)
-	}
+	assert.Equal(t, want, got, fmt.Sprintf("tool_calls[%d].%s", i, field))
 }
 
 func assertToolCall(t *testing.T, i int, got, want ParsedToolCall) {
@@ -164,9 +132,7 @@ func assertToolCalls(
 	t *testing.T, got, want []ParsedToolCall,
 ) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("tool calls count = %d, want %d",
-			len(got), len(want))
+	if !assert.Equal(t, len(want), len(got), "tool calls count") {
 		return
 	}
 	for i := range want {
@@ -182,11 +148,7 @@ func parseClaudeTestFile(
 	results, err := ParseClaudeSession(
 		path, project, "local",
 	)
-	if err != nil {
-		t.Fatalf("ParseClaudeSession: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("ParseClaudeSession returned no results")
-	}
+	require.NoError(t, err, "ParseClaudeSession")
+	require.NotEmpty(t, results, "ParseClaudeSession returned no results")
 	return results[0].Session, results[0].Messages
 }

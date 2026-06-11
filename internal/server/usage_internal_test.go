@@ -1,16 +1,143 @@
 package server
 
 import (
-	"math"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 )
 
-// approxEqual returns true if a and b are within eps (for
-// float comparisons that have rounding from division).
-func approxEqual(a, b, eps float64) bool {
-	return math.Abs(a-b) <= eps
+type usageSummaryCountsSpy struct {
+	db.Store
+	dailyCalls  int
+	countsCalls int
+}
+
+func (s *usageSummaryCountsSpy) GetDailyUsage(
+	_ context.Context, _ db.UsageFilter,
+) (db.DailyUsageResult, error) {
+	s.dailyCalls++
+	return db.DailyUsageResult{
+		Daily: []db.DailyUsageEntry{{
+			Date:      "2024-06-01",
+			TotalCost: 1,
+		}},
+		Totals: db.UsageTotals{TotalCost: 1},
+		SessionCounts: db.UsageSessionCounts{
+			Total:     1,
+			ByProject: map[string]int{"proj": 1},
+			ByAgent:   map[string]int{"claude": 1},
+		},
+	}, nil
+}
+
+func (s *usageSummaryCountsSpy) GetUsageSessionCounts(
+	_ context.Context, _ db.UsageFilter,
+) (db.UsageSessionCounts, error) {
+	s.countsCalls++
+	return db.UsageSessionCounts{}, nil
+}
+
+func TestUsageSummaryScansCurrentPeriodOnly(t *testing.T) {
+	spy := &usageSummaryCountsSpy{}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  spy,
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/summary?from=2024-06-01&to=2024-06-01",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+
+	assert.Equal(t, 1, spy.dailyCalls, "current summary only")
+	assert.Zero(t, spy.countsCalls)
+}
+
+func TestUsageComparisonScansPriorPeriodOnly(t *testing.T) {
+	spy := &usageSummaryCountsSpy{}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  spy,
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/comparison?from=2024-06-01&to=2024-06-01&current_cost=3",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+
+	assert.Equal(t, 1, spy.dailyCalls, "prior comparison only")
+	assert.Zero(t, spy.countsCalls)
+
+	var out Comparison
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	assert.Equal(t, "2024-05-31", out.PriorFrom)
+	assert.Equal(t, "2024-05-31", out.PriorTo)
+	assert.Equal(t, 1.0, out.PriorTotalCost)
+	assert.Equal(t, 2.0, out.DeltaPct)
+}
+
+func TestUsageComparisonRequiresCurrentCost(t *testing.T) {
+	spy := &usageSummaryCountsSpy{}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  spy,
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/comparison?from=2024-06-01&to=2024-06-01",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+	assert.Zero(t, spy.dailyCalls)
+	assert.Zero(t, spy.countsCalls)
+}
+
+func TestUsageComparisonAllowsZeroCurrentCost(t *testing.T) {
+	spy := &usageSummaryCountsSpy{}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  spy,
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/comparison?from=2024-06-01&to=2024-06-01&current_cost=0",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	assert.Equal(t, 1, spy.dailyCalls, "prior comparison only")
+	assert.Zero(t, spy.countsCalls)
 }
 
 func TestComputeCacheStats_SavingsPassThrough(t *testing.T) {
@@ -32,25 +159,15 @@ func TestComputeCacheStats_SavingsPassThrough(t *testing.T) {
 			cs := computeCacheStats(db.UsageTotals{
 				CacheSavings: tc.in,
 			})
-			if !approxEqual(cs.SavingsVsUncached, tc.in, 1e-9) {
-				t.Errorf(
-					"SavingsVsUncached = %v, want %v",
-					cs.SavingsVsUncached, tc.in,
-				)
-			}
+			assert.InDelta(t, tc.in, cs.SavingsVsUncached, 1e-9)
 		})
 	}
 }
 
 func TestComputeCacheStats_ZeroTotalsIsZero(t *testing.T) {
 	cs := computeCacheStats(db.UsageTotals{})
-	if cs.SavingsVsUncached != 0 {
-		t.Errorf("SavingsVsUncached = %v, want 0",
-			cs.SavingsVsUncached)
-	}
-	if cs.HitRate != 0 {
-		t.Errorf("HitRate = %v, want 0", cs.HitRate)
-	}
+	assert.Zero(t, cs.SavingsVsUncached)
+	assert.Zero(t, cs.HitRate)
 }
 
 func TestComputeCacheStats_HitRate(t *testing.T) {
@@ -63,9 +180,7 @@ func TestComputeCacheStats_HitRate(t *testing.T) {
 		CacheReadTokens: 800,
 	})
 	// denom = 800 + 200 = 1000; hit = 800/1000 = 0.80.
-	if !approxEqual(cs.HitRate, 0.80, 1e-9) {
-		t.Errorf("HitRate = %v, want ~0.80", cs.HitRate)
-	}
+	assert.InDelta(t, 0.80, cs.HitRate, 1e-9)
 }
 
 func TestComputeCacheStats_UncachedPassesInputThrough(t *testing.T) {
@@ -80,17 +195,8 @@ func TestComputeCacheStats_UncachedPassesInputThrough(t *testing.T) {
 		CacheReadTokens:     200,
 		CacheCreationTokens: 50,
 	})
-	if cs.UncachedInputTokens != 100 {
-		t.Errorf("UncachedInputTokens = %d, want 100",
-			cs.UncachedInputTokens)
-	}
+	assert.Equal(t, 100, cs.UncachedInputTokens)
 	// And the cache buckets are reported verbatim alongside it.
-	if cs.CacheReadTokens != 200 {
-		t.Errorf("CacheReadTokens = %d, want 200",
-			cs.CacheReadTokens)
-	}
-	if cs.CacheCreationTokens != 50 {
-		t.Errorf("CacheCreationTokens = %d, want 50",
-			cs.CacheCreationTokens)
-	}
+	assert.Equal(t, 200, cs.CacheReadTokens)
+	assert.Equal(t, 50, cs.CacheCreationTokens)
 }

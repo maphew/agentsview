@@ -32,7 +32,12 @@
   <div class="modal-panel update-panel">
     <div class="modal-header">
       <h3 class="modal-title">Software Update</h3>
-      <button class="modal-close" onclick={close}>
+      <button
+        class="modal-close"
+        onclick={close}
+        title="Close update dialog"
+        aria-label="Close update dialog"
+      >
         &times;
       </button>
     </div>

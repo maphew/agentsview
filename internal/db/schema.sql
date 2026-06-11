@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     is_truncated INTEGER NOT NULL DEFAULT 0,
     deleted_at  TEXT,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    termination_status TEXT
+    termination_status TEXT,
+    secret_leak_count INTEGER NOT NULL DEFAULT 0,
+    secrets_rules_version TEXT NOT NULL DEFAULT ''
 );
 
 -- Messages table with ordinal for efficient range queries
@@ -117,6 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_machine
     ON sessions(machine);
 CREATE INDEX IF NOT EXISTS idx_messages_session_ordinal
     ON messages(session_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_messages_velocity
+    ON messages(session_id, ordinal, role, timestamp, content_length);
 CREATE INDEX IF NOT EXISTS idx_messages_session_role
     ON messages(session_id, role);
 
@@ -186,6 +190,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session
     ON tool_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session_category
+    ON tool_calls(session_id, category);
 -- idx_tool_calls_message backs the ON DELETE CASCADE from
 -- messages(id). Without it SQLite full-scans tool_calls per
 -- deleted message row, which makes ReplaceSessionMessages
@@ -345,3 +351,30 @@ CREATE TABLE IF NOT EXISTS git_cache (
     payload     TEXT NOT NULL,             -- JSON-encoded result
     computed_at TEXT NOT NULL              -- RFC3339
 );
+
+-- Secret findings: persisted detections from internal/secrets.
+-- Located by natural coordinates (no row IDs) so findings survive the
+-- full-resync orphan copy. Only redacted values are stored.
+CREATE TABLE IF NOT EXISTS secret_findings (
+    id              INTEGER PRIMARY KEY,
+    session_id      TEXT NOT NULL
+        REFERENCES sessions(id) ON DELETE CASCADE,
+    rule_name       TEXT NOT NULL,
+    confidence      TEXT NOT NULL,
+    location_kind   TEXT NOT NULL,
+    message_ordinal INTEGER NOT NULL,
+    call_index      INTEGER,
+    event_index     INTEGER,
+    match_start     INTEGER NOT NULL,
+    match_end       INTEGER NOT NULL,
+    match_index     INTEGER NOT NULL,
+    redacted_match  TEXT NOT NULL,
+    rules_version   TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_secret_findings_session
+    ON secret_findings(session_id);
+CREATE INDEX IF NOT EXISTS idx_secret_findings_rule
+    ON secret_findings(rule_name);

@@ -225,6 +225,24 @@
 </script>
 
 <div class="vital">
+  <header class="vital-titlebar">
+    <div>
+      <div class="vital-title">Analysis</div>
+      <div class="vital-subtitle">Session vital signs</div>
+    </div>
+    <button
+      type="button"
+      class="vital-close"
+      title="Close session analysis"
+      aria-label="Close session analysis"
+      onclick={() => ui.closeVitals()}
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M3.22 3.22a.75.75 0 011.06 0L8 6.94l3.72-3.72a.75.75 0 111.06 1.06L9.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L8 9.06l-3.72 3.72a.75.75 0 11-1.06-1.06L6.94 8 3.22 4.28a.75.75 0 010-1.06z"/>
+      </svg>
+    </button>
+  </header>
+
   {#if timing}
     <section class="v-section">
       <header class="v-h">
@@ -495,6 +513,56 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
+  }
+
+  .vital-titlebar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    min-height: 42px;
+    padding: 7px 10px 7px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
+  }
+
+  .vital-title {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  .vital-subtitle {
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.2;
+    margin-top: 1px;
+  }
+
+  .vital-close {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .vital-close:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  .vital-close:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
   }
 
   .v-section {

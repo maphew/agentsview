@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/server"
 	"golang.org/x/term"
 )
 
@@ -64,10 +65,13 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newHealthCommand())
 	root.AddCommand(newUsageCommand())
 	root.AddCommand(newPGCommand())
+	root.AddCommand(newDuckDBCommand())
 	root.AddCommand(newSessionCommand())
 	root.AddCommand(newStatsCommand())
 	root.AddCommand(newClassifierCommand())
+	root.AddCommand(newSecretsCommand())
 	root.AddCommand(newVersionCommand())
+	root.AddCommand(newOpenAPICommand())
 
 	defaultHelp := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
@@ -96,11 +100,43 @@ func newServeCommand() *cobra.Command {
 	return cmd
 }
 
+func newOpenAPICommand() *cobra.Command {
+	return &cobra.Command{
+		Use:          "openapi",
+		Short:        "Print OpenAPI 3.1 schema",
+		GroupID:      groupMeta,
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spec, err := server.OpenAPIJSON(server.VersionInfo{
+				Version:   version,
+				Commit:    commit,
+				BuildDate: buildDate,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(append(spec, '\n'))
+			return err
+		},
+	}
+}
+
 func newSyncCommand() *cobra.Command {
 	var cfg SyncConfig
 	cmd := &cobra.Command{
-		Use:          "sync",
-		Short:        "Sync session data without serving",
+		Use:   "sync",
+		Short: "Sync session data without serving",
+		Long: "Sync session data into the local database without starting the\n" +
+			"HTTP server.\n\n" +
+			"With no --host, sync runs the local sync and then fans out to\n" +
+			"every host listed in the [[remote_hosts]] array in config.toml,\n" +
+			"syncing each over SSH. A failure on one configured host is logged\n" +
+			"and the run continues; the command exits non-zero if any\n" +
+			"configured host failed.\n\n" +
+			"With --host, sync ignores remote_hosts and syncs only that host.\n\n" +
+			"Remote sync uses your existing SSH configuration and requires\n" +
+			"key-based (passwordless) auth; it never prompts for a password.",
 		GroupID:      groupCore,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -135,6 +171,23 @@ func newSyncCommand() *cobra.Command {
 		&cfg.Port, "port", 0,
 		"SSH port for remote sync (default: 22)",
 	)
+	cmd.Flags().StringVar(
+		&cfg.CPUProfile, "cpuprofile", "",
+		"Write CPU profile to file (developer use)",
+	)
+	cmd.Flags().StringVar(
+		&cfg.MemProfile, "memprofile", "",
+		"Write memory profile to file (developer use)",
+	)
+	cmd.Flags().StringVar(
+		&cfg.Trace, "trace", "",
+		"Write runtime trace to file (developer use)",
+	)
+	for _, name := range []string{"cpuprofile", "memprofile", "trace"} {
+		if err := cmd.Flags().MarkHidden(name); err != nil {
+			panic(err)
+		}
+	}
 	return cmd
 }
 
@@ -332,6 +385,7 @@ func newPGCommand() *cobra.Command {
 	cmd.AddCommand(newPGPushCommand())
 	cmd.AddCommand(newPGStatusCommand())
 	cmd.AddCommand(newPGServeCommand())
+	cmd.AddCommand(newPGServiceCommand())
 	return cmd
 }
 
@@ -343,6 +397,14 @@ func newPGPushCommand() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			if cfg.Watch {
+				runPGPushWatch(cfg)
+				return
+			}
+			if cmd.Flags().Changed("debounce") || cmd.Flags().Changed("interval") {
+				fmt.Fprintln(os.Stderr,
+					"warning: --debounce and --interval have no effect without --watch")
+			}
 			runPGPush(cfg)
 		},
 	}
@@ -350,6 +412,9 @@ func newPGPushCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.ProjectsFlag, "projects", "", "Comma-separated list of projects to push (inclusive)")
 	cmd.Flags().StringVar(&cfg.ExcludeProjects, "exclude-projects", "", "Comma-separated list of projects to exclude from push")
 	cmd.Flags().BoolVar(&cfg.AllProjects, "all-projects", false, "Ignore configured project filters for this run")
+	cmd.Flags().BoolVar(&cfg.Watch, "watch", false, "Run continuously, pushing on change plus a periodic floor")
+	cmd.Flags().DurationVar(&cfg.Debounce, "debounce", defaultWatchDebounce, "Coalesce window after a change before pushing (--watch only)")
+	cmd.Flags().DurationVar(&cfg.Interval, "interval", defaultWatchInterval, "Periodic floor push interval (--watch only)")
 	return cmd
 }
 
@@ -385,6 +450,118 @@ func newPGServeCommand() *cobra.Command {
 		"URL prefix for reverse-proxy subpath (e.g. /agentsview)",
 	)
 	config.RegisterServePFlags(cmd.Flags())
+	return cmd
+}
+
+func newDuckDBCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "duckdb",
+		Short:        "DuckDB sync and serve commands",
+		GroupID:      groupData,
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(newDuckDBPushCommand())
+	cmd.AddCommand(newDuckDBStatusCommand())
+	cmd.AddCommand(newDuckDBServeCommand())
+	cmd.AddCommand(newDuckDBQuackCommand())
+	return cmd
+}
+
+func newDuckDBPushCommand() *cobra.Command {
+	var cfg DuckDBPushConfig
+	cmd := &cobra.Command{
+		Use:          "push",
+		Short:        "Push local data to DuckDB",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			runDuckDBPush(cfg)
+		},
+	}
+	cmd.Flags().BoolVar(&cfg.Full, "full", false, "Force full local resync and DuckDB push")
+	cmd.Flags().StringVar(&cfg.ProjectsFlag, "projects", "", "Comma-separated list of projects to push (inclusive)")
+	cmd.Flags().StringVar(&cfg.ExcludeProjects, "exclude-projects", "", "Comma-separated list of projects to exclude from push")
+	cmd.Flags().BoolVar(&cfg.AllProjects, "all-projects", false, "Ignore configured project filters for this run")
+	return cmd
+}
+
+func newDuckDBStatusCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:          "status",
+		Short:        "Show DuckDB sync status",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			runDuckDBStatus()
+		},
+	}
+}
+
+func newDuckDBServeCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "serve",
+		Short:        "Serve from DuckDB (read-only)",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appCfg, basePath, err := loadDuckDBServeConfig(cmd)
+			if err != nil {
+				fatal("%v", err)
+			}
+			runDuckDBServe(appCfg, basePath)
+			return nil
+		},
+	}
+	cmd.Flags().String(
+		"base-path",
+		"",
+		"URL prefix for reverse-proxy subpath (e.g. /agentsview)",
+	)
+	config.RegisterServePFlags(cmd.Flags())
+	return cmd
+}
+
+func newDuckDBQuackCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "quack",
+		Short:        "Quack remote protocol commands",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	var serveCfg DuckDBQuackServeConfig
+	serveCmd := &cobra.Command{
+		Use:          "serve",
+		Short:        "Expose local DuckDB over Quack",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			runDuckDBQuackServe(serveCfg)
+		},
+	}
+	serveCmd.Flags().StringVar(
+		&serveCfg.Bind, "bind", "quack:127.0.0.1:9494",
+		"Quack bind URI",
+	)
+	serveCmd.Flags().StringVar(
+		&serveCfg.Path, "path", "",
+		"DuckDB mirror path (defaults to [duckdb].path)",
+	)
+	serveCmd.Flags().StringVar(
+		&serveCfg.Token, "token", "",
+		"Quack authentication token (generated if omitted)",
+	)
+	serveCmd.Flags().BoolVar(
+		&serveCfg.AllowInsecure, "allow-insecure", false,
+		"Allow non-loopback Quack binding",
+	)
+	cmd.AddCommand(serveCmd)
 	return cmd
 }
 
@@ -431,12 +608,20 @@ func writeRootHelp(w io.Writer, root *cobra.Command) {
 	fmt.Fprintln(w, "  CURSOR_PROJECTS_DIR     Cursor projects directory")
 	fmt.Fprintln(w, "  IFLOW_DIR               iFlow projects directory")
 	fmt.Fprintln(w, "  AMP_DIR                 Amp threads directory")
+	fmt.Fprintln(w, "  ZED_DIR                 Zed data directory")
 	fmt.Fprintln(w, "  QWEN_PROJECTS_DIR       Qwen Code projects directory")
+	fmt.Fprintln(w, "  QCLAW_DIR               QClaw agents directory")
+	fmt.Fprintln(w, "  WORKBUDDY_PROJECTS_DIR  WorkBuddy projects directory")
 	fmt.Fprintln(w, "  PIEBALD_DIR             Piebald data directory")
 	fmt.Fprintln(w, "  AGENTSVIEW_DATA_DIR     Data directory (database, config)")
 	fmt.Fprintln(w, "  AGENTSVIEW_PG_URL       PostgreSQL connection URL for sync")
 	fmt.Fprintln(w, "  AGENTSVIEW_PG_MACHINE   Machine name for PG sync")
 	fmt.Fprintln(w, "  AGENTSVIEW_PG_SCHEMA    PG schema name (default \"agentsview\")")
+	fmt.Fprintln(w, "  AGENTSVIEW_DUCKDB_PATH  DuckDB mirror database path")
+	fmt.Fprintln(w, "  AGENTSVIEW_DUCKDB_URL   Quack connection URL for DuckDB serve")
+	fmt.Fprintln(w, "  AGENTSVIEW_DUCKDB_TOKEN Quack authentication token")
+	fmt.Fprintln(w, "  AGENTSVIEW_DUCKDB_MACHINE")
+	fmt.Fprintln(w, "                          Machine name for DuckDB sync")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Watcher excludes:")
 	fmt.Fprintln(w, "  Add \"watch_exclude_patterns\" to ~/.agentsview/config.toml")
@@ -450,6 +635,16 @@ func writeRootHelp(w io.Writer, root *cobra.Command) {
 	fmt.Fprintln(w, "  codex_sessions_dirs = [\"/codex/a\", \"/codex/b\"]")
 	fmt.Fprintln(w, "  When set, these override default directory. Environment variables")
 	fmt.Fprintln(w, "  override config file arrays.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Remote hosts:")
+	fmt.Fprintln(w, "  Add a [[remote_hosts]] array to ~/.agentsview/config.toml so that")
+	fmt.Fprintln(w, "  \"agentsview sync\" (no --host) also syncs each host over SSH:")
+	fmt.Fprintln(w, "  [[remote_hosts]]")
+	fmt.Fprintln(w, "  host = \"devbox1\"")
+	fmt.Fprintln(w, "  user = \"jesse\"  # optional")
+	fmt.Fprintln(w, "  port = 22        # optional")
+	fmt.Fprintln(w, "  Each host must be unique.")
+	fmt.Fprintln(w, "  Requires key-based (passwordless) SSH to each host.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Data stored in ~/.agentsview/ by default.")
 }

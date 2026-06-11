@@ -4,6 +4,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBroadcaster_EmitFansOutToAllSubscribers(t *testing.T) {
@@ -18,11 +21,9 @@ func TestBroadcaster_EmitFansOutToAllSubscribers(t *testing.T) {
 	for i, sub := range []<-chan Event{sub1, sub2} {
 		select {
 		case ev := <-sub:
-			if ev.Scope != "messages" {
-				t.Errorf("sub %d: got scope %q, want %q", i, ev.Scope, "messages")
-			}
+			assert.Equal(t, "messages", ev.Scope, "sub %d", i)
 		case <-time.After(time.Second):
-			t.Fatalf("sub %d: timed out waiting for event", i)
+			require.Fail(t, "timed out waiting for event", "sub %d", i)
 		}
 	}
 }
@@ -47,7 +48,7 @@ func TestBroadcaster_EmitIsNonBlockingOnSlowSubscriber(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Emit blocked on slow subscriber")
+		require.Fail(t, "Emit blocked on slow subscriber")
 	}
 
 	// Drain what we can — drop count >= extra, exact count not guaranteed.
@@ -57,9 +58,7 @@ func TestBroadcaster_EmitIsNonBlockingOnSlowSubscriber(t *testing.T) {
 		case <-slow:
 			drained++
 		case <-time.After(50 * time.Millisecond):
-			if drained == 0 {
-				t.Fatalf("slow subscriber received nothing")
-			}
+			require.NotZero(t, drained, "slow subscriber received nothing")
 			return
 		}
 	}
@@ -74,9 +73,7 @@ func TestBroadcaster_UnsubscribeStopsDelivery(t *testing.T) {
 
 	select {
 	case ev, ok := <-sub:
-		if ok {
-			t.Fatalf("got event after unsubscribe: %v", ev)
-		}
+		require.False(t, ok, "got event after unsubscribe: %v", ev)
 		// channel closed by unsubscribe — acceptable
 	case <-time.After(100 * time.Millisecond):
 		// no delivery — also acceptable
@@ -96,7 +93,7 @@ func TestBroadcaster_ConcurrentSubscribeAndEmit(t *testing.T) {
 			select {
 			case <-sub:
 			case <-time.After(time.Second):
-				t.Errorf("concurrent subscriber did not receive event")
+				assert.Fail(t, "concurrent subscriber did not receive event")
 			}
 		})
 	}
@@ -112,11 +109,9 @@ func TestBroadcaster_LeadingEdgeEmitsImmediately(t *testing.T) {
 
 	select {
 	case ev := <-sub:
-		if ev.Scope != "messages" {
-			t.Errorf("got scope %q, want %q", ev.Scope, "messages")
-		}
+		assert.Equal(t, "messages", ev.Scope)
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("first emit did not broadcast immediately")
+		require.Fail(t, "first emit did not broadcast immediately")
 	}
 }
 
@@ -131,7 +126,7 @@ func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 	select {
 	case <-sub:
 	case <-time.After(50 * time.Millisecond):
-		t.Fatal("leading-edge emit did not broadcast immediately")
+		require.Fail(t, "leading-edge emit did not broadcast immediately")
 	}
 
 	// Bursts within the window are coalesced; no broadcast yet.
@@ -141,7 +136,7 @@ func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 
 	select {
 	case ev := <-sub:
-		t.Fatalf("got early broadcast during rate-limit window: %v", ev)
+		require.Fail(t, "got early broadcast during rate-limit window", "ev=%v", ev)
 	case <-time.After(interval / 2):
 	}
 
@@ -149,17 +144,15 @@ func TestBroadcaster_CoalescesWithinWindow(t *testing.T) {
 	// carrying the most recent scope.
 	select {
 	case ev := <-sub:
-		if ev.Scope != "sessions" {
-			t.Errorf("trailing scope %q, want %q", ev.Scope, "sessions")
-		}
+		assert.Equal(t, "sessions", ev.Scope, "trailing scope")
 	case <-time.After(interval * 3):
-		t.Fatal("trailing broadcast never arrived")
+		require.Fail(t, "trailing broadcast never arrived")
 	}
 
 	// The three coalesced emits produce exactly one trailing broadcast.
 	select {
 	case ev := <-sub:
-		t.Fatalf("got duplicate broadcast after trailing fire: %v", ev)
+		require.Fail(t, "got duplicate broadcast after trailing fire", "ev=%v", ev)
 	case <-time.After(interval):
 	}
 }
@@ -175,7 +168,7 @@ func TestBroadcaster_LeadingEdgeCancelsPendingTrailing(t *testing.T) {
 	select {
 	case <-sub:
 	case <-time.After(interval):
-		t.Fatal("leading emit did not broadcast")
+		require.Fail(t, "leading emit did not broadcast")
 	}
 
 	// Rate-limited emit schedules a trailing broadcast of "b".
@@ -193,11 +186,9 @@ func TestBroadcaster_LeadingEdgeCancelsPendingTrailing(t *testing.T) {
 	b.Emit("c")
 	select {
 	case ev := <-sub:
-		if ev.Scope != "c" {
-			t.Errorf("leading broadcast scope %q, want %q", ev.Scope, "c")
-		}
+		assert.Equal(t, "c", ev.Scope, "leading broadcast scope")
 	case <-time.After(interval):
-		t.Fatal("second leading emit did not broadcast")
+		require.Fail(t, "second leading emit did not broadcast")
 	}
 
 	// The pre-existing trailing timer for "b" may still fire. If the
@@ -206,7 +197,7 @@ func TestBroadcaster_LeadingEdgeCancelsPendingTrailing(t *testing.T) {
 	// original deadline and assert no extra event arrives.
 	select {
 	case ev := <-sub:
-		t.Fatalf("stale trailing broadcast after leading edge: %v", ev)
+		require.Fail(t, "stale trailing broadcast after leading edge", "ev=%v", ev)
 	case <-time.After(2 * interval):
 	}
 }
@@ -255,7 +246,7 @@ func TestBroadcaster_StaleTrailingCallbackDoesNotConsumeNewerPending(t *testing.
 	// callback supposedly ran.
 	select {
 	case ev := <-sub:
-		t.Fatalf("stale callback consumed newer pending: %v", ev)
+		require.Fail(t, "stale callback consumed newer pending", "ev=%v", ev)
 	case <-time.After(interval / 2):
 	}
 
@@ -266,11 +257,9 @@ func TestBroadcaster_StaleTrailingCallbackDoesNotConsumeNewerPending(t *testing.
 	// arrives.
 	select {
 	case ev := <-sub:
-		if ev.Scope != "d" {
-			t.Errorf("got scope %q, want d", ev.Scope)
-		}
+		assert.Equal(t, "d", ev.Scope)
 	case <-time.After(interval * 3):
-		t.Fatal("new trailing timer did not fire with pending scope")
+		require.Fail(t, "new trailing timer did not fire with pending scope")
 	}
 }
 
@@ -288,10 +277,8 @@ func TestBroadcaster_EmitAfterIntervalBroadcastsImmediately(t *testing.T) {
 	b.Emit("second")
 	select {
 	case ev := <-sub:
-		if ev.Scope != "second" {
-			t.Errorf("got scope %q, want %q", ev.Scope, "second")
-		}
+		assert.Equal(t, "second", ev.Scope)
 	case <-time.After(interval):
-		t.Fatal("emit after quiet interval did not broadcast immediately")
+		require.Fail(t, "emit after quiet interval did not broadcast immediately")
 	}
 }

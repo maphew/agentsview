@@ -10,6 +10,9 @@ import (
 
 	"github.com/tidwall/gjson"
 	"go.kenn.io/agentsview/internal/testjsonl"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetProjectName(t *testing.T) {
@@ -46,10 +49,7 @@ func TestGetProjectName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := GetProjectName(tt.dir)
-			if got != tt.want {
-				t.Errorf("GetProjectName(%q) = %q, want %q",
-					tt.dir, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "GetProjectName(%q)", tt.dir)
 		})
 	}
 }
@@ -87,10 +87,7 @@ func TestExtractProjectFromCwd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.cwd, func(t *testing.T) {
 			got := ExtractProjectFromCwd(tt.cwd)
-			if got != tt.want {
-				t.Errorf("ExtractProjectFromCwd(%q) = %q, want %q",
-					tt.cwd, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "ExtractProjectFromCwd(%q)", tt.cwd)
 		})
 	}
 }
@@ -115,10 +112,7 @@ func TestNeedsProjectReparse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.project, func(t *testing.T) {
 			got := NeedsProjectReparse(tt.project)
-			if got != tt.want {
-				t.Errorf("NeedsProjectReparse(%q) = %v, want %v",
-					tt.project, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "NeedsProjectReparse(%q)", tt.project)
 		})
 	}
 }
@@ -215,17 +209,9 @@ func TestExtractTextContent(t *testing.T) {
 			result := gjson.Parse(tt.json)
 			text, _, hasThinking, hasToolUse, tcs, _ :=
 				ExtractTextContent(result)
-			if text != tt.wantText {
-				t.Errorf("text = %q, want %q", text, tt.wantText)
-			}
-			if hasThinking != tt.wantThink {
-				t.Errorf("hasThinking = %v, want %v",
-					hasThinking, tt.wantThink)
-			}
-			if hasToolUse != tt.wantToolUse {
-				t.Errorf("hasToolUse = %v, want %v",
-					hasToolUse, tt.wantToolUse)
-			}
+			assert.Equal(t, tt.wantText, text, "text")
+			assert.Equal(t, tt.wantThink, hasThinking, "hasThinking")
+			assert.Equal(t, tt.wantToolUse, hasToolUse, "hasToolUse")
 			assertToolCalls(t, tcs, tt.wantToolCalls)
 		})
 	}
@@ -239,38 +225,18 @@ func TestExtractTextContent_AmpSkillNameExtraction(t *testing.T) {
 	text, _, hasThinking, hasToolUse, toolCalls, toolResults :=
 		ExtractTextContent(result)
 
-	if text != "[Skill: walkthrough]" {
-		t.Fatalf("text = %q, want %q", text, "[Skill: walkthrough]")
-	}
-	if hasThinking {
-		t.Fatalf("hasThinking = %v, want false", hasThinking)
-	}
-	if !hasToolUse {
-		t.Fatalf("hasToolUse = %v, want true", hasToolUse)
-	}
-	if len(toolResults) != 0 {
-		t.Fatalf("len(toolResults) = %d, want 0", len(toolResults))
-	}
-	if len(toolCalls) != 1 {
-		t.Fatalf("len(toolCalls) = %d, want 1", len(toolCalls))
-	}
+	require.Equal(t, "[Skill: walkthrough]", text, "text")
+	require.False(t, hasThinking, "hasThinking")
+	require.True(t, hasToolUse, "hasToolUse")
+	require.Empty(t, toolResults, "toolResults")
+	require.Len(t, toolCalls, 1, "toolCalls")
 
 	got := toolCalls[0]
-	if got.ToolUseID != "toolu_amp_skill" {
-		t.Fatalf("ToolUseID = %q, want %q", got.ToolUseID, "toolu_amp_skill")
-	}
-	if got.ToolName != "skill" {
-		t.Fatalf("ToolName = %q, want %q", got.ToolName, "skill")
-	}
-	if got.Category != "Tool" {
-		t.Fatalf("Category = %q, want %q", got.Category, "Tool")
-	}
-	if got.SkillName != "walkthrough" {
-		t.Fatalf("SkillName = %q, want %q", got.SkillName, "walkthrough")
-	}
-	if got.InputJSON != `{"name":"walkthrough"}` {
-		t.Fatalf("InputJSON = %q, want %q", got.InputJSON, `{"name":"walkthrough"}`)
-	}
+	assert.Equal(t, "toolu_amp_skill", got.ToolUseID, "ToolUseID")
+	assert.Equal(t, "skill", got.ToolName, "ToolName")
+	assert.Equal(t, "Tool", got.Category, "Category")
+	assert.Equal(t, "walkthrough", got.SkillName, "SkillName")
+	assert.Equal(t, `{"name":"walkthrough"}`, got.InputJSON, "InputJSON")
 }
 
 func TestExtractToolResults(t *testing.T) {
@@ -307,23 +273,14 @@ func TestExtractToolResults(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := gjson.Parse(tt.json)
 			_, _, _, _, _, trs := ExtractTextContent(result)
-			if len(trs) != len(tt.wantResults) {
-				t.Fatalf("tool_results count = %d, want %d",
-					len(trs), len(tt.wantResults))
-			}
+			require.Len(t, trs, len(tt.wantResults), "tool_results count")
 			for i := range tt.wantResults {
-				if trs[i].ToolUseID != tt.wantResults[i].ToolUseID {
-					t.Errorf("[%d].ToolUseID = %q, want %q",
-						i, trs[i].ToolUseID, tt.wantResults[i].ToolUseID)
-				}
-				if trs[i].ContentLength != tt.wantResults[i].ContentLength {
-					t.Errorf("[%d].ContentLength = %d, want %d",
-						i, trs[i].ContentLength, tt.wantResults[i].ContentLength)
-				}
-				if trs[i].ContentRaw != tt.wantResults[i].ContentRaw {
-					t.Errorf("[%d].ContentRaw = %q, want %q",
-						i, trs[i].ContentRaw, tt.wantResults[i].ContentRaw)
-				}
+				assert.Equalf(t, tt.wantResults[i].ToolUseID, trs[i].ToolUseID,
+					"[%d].ToolUseID", i)
+				assert.Equalf(t, tt.wantResults[i].ContentLength, trs[i].ContentLength,
+					"[%d].ContentLength", i)
+				assert.Equalf(t, tt.wantResults[i].ContentRaw, trs[i].ContentRaw,
+					"[%d].ContentRaw", i)
 			}
 		})
 	}
@@ -354,9 +311,7 @@ func TestDecodeContent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := DecodeContent(tt.raw)
-			if got != tt.want {
-				t.Errorf("DecodeContent(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "DecodeContent(%q)", tt.raw)
 		})
 	}
 }
@@ -369,25 +324,12 @@ func TestExtractTextContent_IflowToolResult(t *testing.T) {
 		"content":{"responseParts":{"functionResponse":{"response":{"output":"result text"}}}}
 	}]`
 	_, _, _, _, _, trs := ExtractTextContent(gjson.Parse(content))
-	if len(trs) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(trs))
-	}
+	require.Len(t, trs, 1, "expected 1 tool result")
 	tr := trs[0]
-	if tr.ToolUseID != "tu_123" {
-		t.Errorf("ToolUseID = %q, want %q", tr.ToolUseID, "tu_123")
-	}
-	if tr.ContentLength != len("result text") {
-		t.Errorf(
-			"ContentLength = %d, want %d",
-			tr.ContentLength, len("result text"),
-		)
-	}
+	assert.Equal(t, "tu_123", tr.ToolUseID, "ToolUseID")
+	assert.Equal(t, len("result text"), tr.ContentLength, "ContentLength")
 	decoded := DecodeContent(tr.ContentRaw)
-	if decoded != "result text" {
-		t.Errorf(
-			"DecodeContent = %q, want %q", decoded, "result text",
-		)
-	}
+	assert.Equal(t, "result text", decoded, "DecodeContent")
 
 	// Object without nested output: both length and decode
 	// should be zero/empty.
@@ -397,15 +339,9 @@ func TestExtractTextContent_IflowToolResult(t *testing.T) {
 		"content":{"other":"data"}
 	}]`
 	_, _, _, _, _, trs2 := ExtractTextContent(gjson.Parse(noOutput))
-	if len(trs2) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(trs2))
-	}
-	if trs2[0].ContentLength != 0 {
-		t.Errorf("ContentLength = %d, want 0", trs2[0].ContentLength)
-	}
-	if d := DecodeContent(trs2[0].ContentRaw); d != "" {
-		t.Errorf("DecodeContent = %q, want empty", d)
-	}
+	require.Len(t, trs2, 1, "expected 1 tool result")
+	assert.Zero(t, trs2[0].ContentLength, "ContentLength")
+	assert.Empty(t, DecodeContent(trs2[0].ContentRaw), "DecodeContent")
 }
 
 func TestFormatToolUseVariants(t *testing.T) {
@@ -671,9 +607,7 @@ func TestFormatToolUseVariants(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			block := gjson.Parse(tt.json)
 			got := formatToolUse(block)
-			if got != tt.want {
-				t.Errorf("formatToolUse = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "formatToolUse")
 		})
 	}
 }
@@ -766,31 +700,15 @@ func TestParseTimestamp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := parseTimestamp(tt.input)
 			if tt.wantOK {
-				if got.IsZero() {
-					t.Fatalf(
-						"parseTimestamp(%q) = zero, want %v",
-						tt.input, tt.wantUTC,
-					)
-				}
-				if !got.Equal(tt.wantUTC) {
-					t.Errorf(
-						"parseTimestamp(%q) = %v, want %v",
-						tt.input, got, tt.wantUTC,
-					)
-				}
-				if got.Location() != time.UTC {
-					t.Errorf(
-						"parseTimestamp(%q) location = %v, want UTC",
-						tt.input, got.Location(),
-					)
-				}
+				require.Falsef(t, got.IsZero(),
+					"parseTimestamp(%q) = zero, want %v", tt.input, tt.wantUTC)
+				assert.Truef(t, got.Equal(tt.wantUTC),
+					"parseTimestamp(%q) = %v, want %v", tt.input, got, tt.wantUTC)
+				assert.Equalf(t, time.UTC, got.Location(),
+					"parseTimestamp(%q) location", tt.input)
 			} else {
-				if !got.IsZero() {
-					t.Errorf(
-						"parseTimestamp(%q) = %v, want zero",
-						tt.input, got,
-					)
-				}
+				assert.Truef(t, got.IsZero(),
+					"parseTimestamp(%q) = %v, want zero", tt.input, got)
 			}
 		})
 	}
@@ -808,9 +726,7 @@ func TestClaudeSessionTimestampSemantics(t *testing.T) {
 		assertTimestamp(t, sess.StartedAt, wantTS)
 		assertTimestamp(t, sess.EndedAt, wantTS)
 
-		if len(msgs) != 1 {
-			t.Fatalf("got %d messages, want 1", len(msgs))
-		}
+		require.Len(t, msgs, 1, "messages")
 		assertTimestamp(t, msgs[0].Timestamp, wantTS)
 	})
 
@@ -824,9 +740,7 @@ func TestClaudeSessionTimestampSemantics(t *testing.T) {
 		)
 		assertTimestamp(t, sess.StartedAt, wantUTC)
 
-		if len(msgs) != 1 {
-			t.Fatalf("got %d messages, want 1", len(msgs))
-		}
+		require.Len(t, msgs, 1, "messages")
 		assertTimestamp(t, msgs[0].Timestamp, wantUTC)
 	})
 
@@ -836,9 +750,7 @@ func TestClaudeSessionTimestampSemantics(t *testing.T) {
 			t, "ts-bad.jsonl", content, "proj",
 		)
 		assertZeroTimestamp(t, sess.StartedAt, "StartedAt")
-		if len(msgs) != 1 {
-			t.Fatalf("got %d messages, want 1", len(msgs))
-		}
+		require.Len(t, msgs, 1, "messages")
 		assertZeroTimestamp(t, msgs[0].Timestamp, "msg timestamp")
 	})
 
@@ -852,9 +764,7 @@ func TestClaudeSessionTimestampSemantics(t *testing.T) {
 
 		wantTS := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 		assertTimestamp(t, sess.StartedAt, wantTS)
-		if len(msgs) != 1 {
-			t.Fatalf("got %d messages, want 1", len(msgs))
-		}
+		require.Len(t, msgs, 1, "messages")
 		assertTimestamp(t, msgs[0].Timestamp, wantTS)
 		assertLogEmpty(t, buf)
 	})
@@ -882,16 +792,13 @@ func TestClaudeSessionTimestampSemantics(t *testing.T) {
 		_, err := ParseClaudeSession(
 			path, "proj", "local",
 		)
-		if err != nil {
-			t.Fatalf("ParseClaudeSession: %v", err)
-		}
+		require.NoError(t, err, "ParseClaudeSession")
 
 		assertLogContains(t, buf,
 			"unparseable timestamp", "x...",
 		)
-		if buf.Len() > 1000 {
-			t.Errorf("log output too long: %d bytes", buf.Len())
-		}
+		assert.LessOrEqualf(t, buf.Len(), 1000,
+			"log output too long: %d bytes", buf.Len())
 		assertLogNotContains(t, buf, longInvalid)
 	})
 }
@@ -901,11 +808,7 @@ func createTestFile(
 ) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(
-		path, []byte(content), 0o644,
-	); err != nil {
-		t.Fatalf("create %s: %v", name, err)
-	}
+	require.NoErrorf(t, os.WriteFile(path, []byte(content), 0o644), "create %s", name)
 	return path
 }
 
@@ -965,12 +868,8 @@ func TestIsClaudeSystemMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isClaudeSystemMessage(tt.content)
-			if got != tt.want {
-				t.Errorf(
-					"isClaudeSystemMessage(%q) = %v, want %v",
-					tt.content, got, tt.want,
-				)
-			}
+			assert.Equalf(t, tt.want, got,
+				"isClaudeSystemMessage(%q)", tt.content)
 		})
 	}
 }
@@ -1047,18 +946,10 @@ func TestExtractCommandText(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := extractCommandText(tt.content)
-			if ok != tt.ok {
-				t.Errorf(
-					"extractCommandText(%q) ok = %v, want %v",
-					tt.content, ok, tt.ok,
-				)
-			}
-			if got != tt.want {
-				t.Errorf(
-					"extractCommandText(%q) = %q, want %q",
-					tt.content, got, tt.want,
-				)
-			}
+			assert.Equalf(t, tt.ok, ok,
+				"extractCommandText(%q) ok", tt.content)
+			assert.Equalf(t, tt.want, got,
+				"extractCommandText(%q)", tt.content)
 		})
 	}
 }
@@ -1078,21 +969,11 @@ func TestCodexUserMessageCount(t *testing.T) {
 
 	path := createTestFile(t, "codex-umc.jsonl", content)
 	sess, msgs, err := ParseCodexSession(path, "local", false)
-	if err != nil {
-		t.Fatalf("ParseCodexSession: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("session is nil")
-		return
-	}
-	if len(msgs) != 4 {
-		t.Fatalf("got %d messages, want 4", len(msgs))
-	}
+	require.NoError(t, err, "ParseCodexSession")
+	require.NotNil(t, sess, "session")
+	require.Len(t, msgs, 4, "messages")
 	// 2 user messages with real text content.
-	if sess.UserMessageCount != 2 {
-		t.Errorf("UserMessageCount = %d, want 2",
-			sess.UserMessageCount)
-	}
+	assert.Equal(t, 2, sess.UserMessageCount, "UserMessageCount")
 }
 
 func TestCodexSessionTimestampSemantics(t *testing.T) {
@@ -1104,14 +985,10 @@ func TestCodexSessionTimestampSemantics(t *testing.T) {
 		sess, msgs, err := ParseCodexSession(
 			path, "local", false,
 		)
-		if err != nil {
-			t.Fatalf("ParseCodexSession: %v", err)
-		}
+		require.NoError(t, err, "ParseCodexSession")
 
 		assertZeroTimestamp(t, sess.StartedAt, "StartedAt")
-		if len(msgs) != 1 {
-			t.Fatalf("got %d messages, want 1", len(msgs))
-		}
+		require.Len(t, msgs, 1, "messages")
 		assertZeroTimestamp(t, msgs[0].Timestamp, "msg timestamp")
 		assertLogContains(t, buf,
 			"unparseable timestamp", "garbage",
@@ -1127,9 +1004,7 @@ func TestCodexSessionTimestampSemantics(t *testing.T) {
 		_, _, err := ParseCodexSession(
 			path, "local", false,
 		)
-		if err != nil {
-			t.Fatalf("ParseCodexSession: %v", err)
-		}
+		require.NoError(t, err, "ParseCodexSession")
 
 		assertLogContains(t, buf,
 			"unparseable timestamp", "...",
@@ -1152,26 +1027,22 @@ func TestParseCodexSessionOversizedLineSkipped(t *testing.T) {
 		`[{"type":"input_text","text":"`
 	suffix := `"}]}}` + "\n"
 
-	normalLine := prefix + "hello" + suffix
+	firstLine := prefix + "hello" + suffix
+	secondLine := prefix + "goodbye" + suffix
 	oversizedLine := prefix +
 		strings.Repeat("x", maxLineSize+1) + suffix
 
-	// Place the oversized line between two normal lines.
-	content := meta + normalLine + oversizedLine + normalLine
+	// Place the oversized line between two normal lines. The two
+	// normal messages differ so the assertion isolates oversized-line
+	// skipping from the re-emitted-prompt dedup.
+	content := meta + firstLine + oversizedLine + secondLine
 	path := createTestFile(t, "oversized.jsonl", content)
 	sess, msgs, err := ParseCodexSession(
 		path, "local", false,
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("session is nil")
-	}
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages, want 2 (oversized skipped)",
-			len(msgs))
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, sess, "session")
+	require.Len(t, msgs, 2, "messages (oversized skipped)")
 }
 
 func TestExtractCwdFromSession(t *testing.T) {
@@ -1196,18 +1067,13 @@ func TestExtractCwdFromSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := createTestFile(t, "test.jsonl", tt.content)
 			got := ExtractCwdFromSession(path)
-			if got != tt.want {
-				t.Errorf("ExtractCwdFromSession = %q, want %q",
-					got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "ExtractCwdFromSession")
 		})
 	}
 
 	t.Run("missing file", func(t *testing.T) {
 		got := ExtractCwdFromSession("/nonexistent/path.jsonl")
-		if got != "" {
-			t.Errorf("ExtractCwdFromSession = %q, want empty", got)
-		}
+		assert.Empty(t, got, "ExtractCwdFromSession")
 	})
 }
 
@@ -1217,16 +1083,9 @@ func TestParseCodexSession_WorktreeBranchFallback(t *testing.T) {
 	path := createTestFile(t, "codex-worktree.jsonl", content)
 
 	sess, _, err := ParseCodexSession(path, "local", false)
-	if err != nil {
-		t.Fatalf("ParseCodexSession: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("session is nil")
-		return
-	}
-	if sess.Project != "agentsview" {
-		t.Fatalf("project = %q, want %q", sess.Project, "agentsview")
-	}
+	require.NoError(t, err, "ParseCodexSession")
+	require.NotNil(t, sess, "session")
+	assert.Equal(t, "agentsview", sess.Project, "project")
 }
 
 func TestExtractClaudeProjectHints(t *testing.T) {
@@ -1235,13 +1094,8 @@ func TestExtractClaudeProjectHints(t *testing.T) {
 		path := createTestFile(t, "hints.jsonl", content)
 
 		cwd, branch := ExtractClaudeProjectHints(path)
-		if cwd != "/Users/alice/code/my-app-worktree-fix" {
-			t.Fatalf("cwd = %q, want %q",
-				cwd, "/Users/alice/code/my-app-worktree-fix")
-		}
-		if branch != "worktree-fix" {
-			t.Fatalf("branch = %q, want %q", branch, "worktree-fix")
-		}
+		require.Equal(t, "/Users/alice/code/my-app-worktree-fix", cwd, "cwd")
+		require.Equal(t, "worktree-fix", branch, "branch")
 	})
 
 	t.Run("missing branch still returns cwd", func(t *testing.T) {
@@ -1249,23 +1103,16 @@ func TestExtractClaudeProjectHints(t *testing.T) {
 		path := createTestFile(t, "hints-nobranch.jsonl", content)
 
 		cwd, branch := ExtractClaudeProjectHints(path)
-		if cwd != "/Users/alice/code/my-app" {
-			t.Fatalf("cwd = %q, want %q",
-				cwd, "/Users/alice/code/my-app")
-		}
-		if branch != "" {
-			t.Fatalf("branch = %q, want empty", branch)
-		}
+		require.Equal(t, "/Users/alice/code/my-app", cwd, "cwd")
+		require.Empty(t, branch, "branch")
 	})
 
 	t.Run("missing file", func(t *testing.T) {
 		cwd, branch := ExtractClaudeProjectHints(
 			"/nonexistent/path.jsonl",
 		)
-		if cwd != "" || branch != "" {
-			t.Fatalf("got cwd=%q branch=%q, want both empty",
-				cwd, branch)
-		}
+		require.Empty(t, cwd, "cwd")
+		require.Empty(t, branch, "branch")
 	})
 }
 
@@ -1360,10 +1207,7 @@ func TestFormatGeminiToolCall(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			tc := gjson.Parse(tt.json)
 			got := formatGeminiToolCall(tc)
-			if got != tt.want {
-				t.Errorf("formatGeminiToolCall = %q, want %q",
-					got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "formatGeminiToolCall")
 		})
 	}
 }
@@ -1388,38 +1232,22 @@ func TestGeminiUserMessageCount(t *testing.T) {
 	sess, msgs, err := ParseGeminiSession(
 		path, "my_project", "local",
 	)
-	if err != nil {
-		t.Fatalf("ParseGeminiSession: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("session is nil")
-		return
-	}
-	if len(msgs) != 4 {
-		t.Fatalf("got %d messages, want 4", len(msgs))
-	}
-	if sess.UserMessageCount != 2 {
-		t.Errorf("UserMessageCount = %d, want 2",
-			sess.UserMessageCount)
-	}
+	require.NoError(t, err, "ParseGeminiSession")
+	require.NotNil(t, sess, "session")
+	require.Len(t, msgs, 4, "messages")
+	assert.Equal(t, 2, sess.UserMessageCount, "UserMessageCount")
 }
 
 func TestGeminiSessionID(t *testing.T) {
 	data := []byte(`{"sessionId":"abc-123","messages":[]}`)
 	got := GeminiSessionID(data)
-	if got != "abc-123" {
-		t.Errorf("GeminiSessionID = %q, want %q", got, "abc-123")
-	}
+	assert.Equal(t, "abc-123", got, "GeminiSessionID")
 
 	got = GeminiSessionID([]byte("{\"sessionId\":\"jsonl-123\"}\n{\"type\":\"user\"}\n"))
-	if got != "jsonl-123" {
-		t.Errorf("GeminiSessionID JSONL = %q, want %q", got, "jsonl-123")
-	}
+	assert.Equal(t, "jsonl-123", got, "GeminiSessionID JSONL")
 
 	got = GeminiSessionID([]byte(`{}`))
-	if got != "" {
-		t.Errorf("GeminiSessionID empty = %q, want empty", got)
-	}
+	assert.Empty(t, got, "GeminiSessionID empty")
 }
 
 func TestClaudeUserMessageCount(t *testing.T) {
@@ -1477,25 +1305,12 @@ func TestClaudeUserMessageCount(t *testing.T) {
 			results, err := ParseClaudeSession(
 				path, "test-proj", "local",
 			)
-			if err != nil {
-				t.Fatalf("ParseClaudeSession: %v", err)
-			}
-			if len(results) == 0 {
-				t.Fatal("ParseClaudeSession returned no results")
-			}
+			require.NoError(t, err, "ParseClaudeSession")
+			require.NotEmpty(t, results, "ParseClaudeSession returned no results")
 			sess := results[0].Session
 			msgs := results[0].Messages
-			if len(msgs) != tt.wantMsgCount {
-				t.Fatalf("message count = %d, want %d",
-					len(msgs), tt.wantMsgCount)
-			}
-			if sess.UserMessageCount != tt.wantUserCount {
-				t.Errorf(
-					"UserMessageCount = %d, want %d",
-					sess.UserMessageCount,
-					tt.wantUserCount,
-				)
-			}
+			require.Len(t, msgs, tt.wantMsgCount, "message count")
+			assert.Equal(t, tt.wantUserCount, sess.UserMessageCount, "UserMessageCount")
 		})
 	}
 }
@@ -1509,30 +1324,16 @@ func TestParseClaudeToolResults(t *testing.T) {
 	path := createTestFile(t, "tool-results.jsonl", content)
 
 	results, err := ParseClaudeSession(path, "test-project", "local")
-	if err != nil {
-		t.Fatalf("ParseClaudeSession: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("ParseClaudeSession returned no results")
-	}
+	require.NoError(t, err, "ParseClaudeSession")
+	require.NotEmpty(t, results, "ParseClaudeSession returned no results")
 	msgs := results[0].Messages
 
 	// Should have 2 messages: assistant tool_use + user tool_result
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages, want 2", len(msgs))
-	}
+	require.Len(t, msgs, 2, "messages")
 
 	// User message should have ToolResults populated
 	userMsg := msgs[1]
-	if len(userMsg.ToolResults) != 1 {
-		t.Fatalf("ToolResults count = %d, want 1", len(userMsg.ToolResults))
-	}
-	if userMsg.ToolResults[0].ToolUseID != "toolu_abc" {
-		t.Errorf("ToolUseID = %q, want toolu_abc",
-			userMsg.ToolResults[0].ToolUseID)
-	}
-	if userMsg.ToolResults[0].ContentLength != 27 {
-		t.Errorf("ContentLength = %d, want 27",
-			userMsg.ToolResults[0].ContentLength)
-	}
+	require.Len(t, userMsg.ToolResults, 1, "ToolResults count")
+	assert.Equal(t, "toolu_abc", userMsg.ToolResults[0].ToolUseID, "ToolUseID")
+	assert.Equal(t, 27, userMsg.ToolResults[0].ContentLength, "ContentLength")
 }

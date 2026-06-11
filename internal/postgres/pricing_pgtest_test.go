@@ -4,8 +4,10 @@ package postgres
 
 import (
 	"context"
-	"math"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/config"
 )
@@ -20,39 +22,24 @@ func TestLoadPricingMapAppliesCustomWhenTableMissing(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	if _, err := store.DB().ExecContext(
-		ctx, `DROP TABLE model_pricing`,
-	); err != nil {
-		t.Fatalf("drop model_pricing: %v", err)
-	}
+	_, err := store.DB().ExecContext(ctx, `DROP TABLE model_pricing`)
+	require.NoError(t, err, "drop model_pricing")
 
 	store.SetCustomPricing(map[string]config.CustomModelRate{
 		"acme-ultra-2.1": {Input: 9.0, Output: 18.0},
 	})
 
 	out, err := store.loadPricingMap(ctx)
-	if err != nil {
-		t.Fatalf("loadPricingMap: %v", err)
-	}
+	require.NoError(t, err, "loadPricingMap")
 
 	got, ok := out["acme-ultra-2.1"]
-	if !ok {
-		t.Fatalf("custom model missing from pricing map")
-	}
-	if math.Abs(got.input-9.0) > 0.001 {
-		t.Errorf("input = %.4f, want 9.0", got.input)
-	}
-	if math.Abs(got.output-18.0) > 0.001 {
-		t.Errorf("output = %.4f, want 18.0", got.output)
-	}
+	require.True(t, ok, "custom model missing from pricing map")
+	assert.InDelta(t, 9.0, got.input, 0.001)
+	assert.InDelta(t, 18.0, got.output, 0.001)
 
 	// Fallback pricing must still populate the map so real models
 	// continue to resolve when custom_model_pricing only covers a
 	// subset.
-	if len(out) < 2 {
-		t.Errorf(
-			"pricing map only has %d entries, expected fallback + custom",
-			len(out),
-		)
-	}
+	assert.GreaterOrEqual(t, len(out), 2,
+		"pricing map should have fallback + custom entries")
 }

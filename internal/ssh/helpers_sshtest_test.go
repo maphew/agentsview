@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -27,9 +28,7 @@ func testSSHPort(t *testing.T) int {
 		p = "2222"
 	}
 	port, err := strconv.Atoi(p)
-	if err != nil {
-		t.Fatalf("invalid TEST_SSH_PORT: %v", err)
-	}
+	require.NoError(t, err, "invalid TEST_SSH_PORT")
 	return port
 }
 
@@ -67,9 +66,7 @@ func testDB(t *testing.T) *db.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("opening test db: %v", err)
-	}
+	require.NoError(t, err, "opening test db")
 	t.Cleanup(func() { database.Close() })
 	return database
 }

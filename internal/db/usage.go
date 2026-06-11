@@ -9,7 +9,15 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+
+	pricingpkg "go.kenn.io/agentsview/internal/pricing"
 )
+
+func lookupModelRates(
+	pricing map[string]modelRates, model string,
+) (modelRates, bool) {
+	return pricingpkg.Resolve(pricing, model)
+}
 
 // UsageFilter controls the date range, agent, and timezone
 // for daily usage aggregation queries.
@@ -31,8 +39,15 @@ type UsageFilter struct {
 	Breakdowns       bool   // populate Project/AgentBreakdowns per day
 }
 
-func (f UsageFilter) appendUsageRowFilterClauses(
-	query string, args []any,
+func (f UsageFilter) appendUsageBranchFilterClauses(
+	where string, args []any, modelCol string,
+) (string, []any) {
+	where, args = f.appendUsageSourceFilterClauses(where, args, modelCol)
+	return f.appendUsageSessionFilterClauses(where, args)
+}
+
+func (f UsageFilter) appendUsageSourceFilterClauses(
+	where string, args []any, modelCol string,
 ) (string, []any) {
 	appendCSV := func(
 		q string, a []any, col, csv string, include bool,
@@ -47,9 +62,9 @@ func (f UsageFilter) appendUsageRowFilterClauses(
 		}
 		if len(vals) == 1 {
 			if include {
-				q += " AND " + col + " = ?"
+				q += "\n\tAND " + col + " = ?"
 			} else {
-				q += " AND " + col + " != ?"
+				q += "\n\tAND " + col + " != ?"
 			}
 			a = append(a, vals[0])
 		} else {
@@ -58,40 +73,73 @@ func (f UsageFilter) appendUsageRowFilterClauses(
 				ph[i] = "?"
 				a = append(a, v)
 			}
-			q += " AND " + col + " " + op +
+			q += "\n\tAND " + col + " " + op +
 				" (" + strings.Join(ph, ",") + ")"
 		}
 		return q, a
 	}
 
-	query, args = appendCSV(query, args, "u.agent", f.Agent, true)
-	query, args = appendCSV(query, args, "u.project", f.Project, true)
-	query, args = appendCSV(query, args, "u.machine", f.Machine, true)
-	query, args = appendCSV(query, args, "u.model", f.Model, true)
+	where, args = appendCSV(where, args, modelCol, f.Model, true)
+	where, args = appendCSV(where, args, modelCol, f.ExcludeModel, false)
 
-	query, args = appendCSV(
-		query, args, "u.project", f.ExcludeProject, false)
-	query, args = appendCSV(
-		query, args, "u.agent", f.ExcludeAgent, false)
-	query, args = appendCSV(
-		query, args, "u.model", f.ExcludeModel, false)
+	return where, args
+}
+
+func (f UsageFilter) appendUsageSessionFilterClauses(
+	where string, args []any,
+) (string, []any) {
+	appendCSV := func(
+		q string, a []any, col, csv string, include bool,
+	) (string, []any) {
+		if csv == "" {
+			return q, a
+		}
+		vals := strings.Split(csv, ",")
+		op := "IN"
+		if !include {
+			op = "NOT IN"
+		}
+		if len(vals) == 1 {
+			if include {
+				q += "\n\tAND " + col + " = ?"
+			} else {
+				q += "\n\tAND " + col + " != ?"
+			}
+			a = append(a, vals[0])
+		} else {
+			ph := make([]string, len(vals))
+			for i, v := range vals {
+				ph[i] = "?"
+				a = append(a, v)
+			}
+			q += "\n\tAND " + col + " " + op +
+				" (" + strings.Join(ph, ",") + ")"
+		}
+		return q, a
+	}
+
+	where, args = appendCSV(where, args, "s.agent", f.Agent, true)
+	where, args = appendCSV(where, args, "s.project", f.Project, true)
+	where, args = appendCSV(where, args, "s.machine", f.Machine, true)
+	where, args = appendCSV(where, args, "s.project", f.ExcludeProject, false)
+	where, args = appendCSV(where, args, "s.agent", f.ExcludeAgent, false)
 
 	if f.MinUserMessages > 0 {
-		query += " AND u.user_message_count >= ?"
+		where += "\n\tAND s.user_message_count >= ?"
 		args = append(args, f.MinUserMessages)
 	}
 	if f.ExcludeOneShot {
-		query += " AND u.user_message_count > 1"
+		where += "\n\tAND s.user_message_count > 1"
 	}
 	if f.ExcludeAutomated {
-		query += " AND COALESCE(u.is_automated, 0) = 0"
+		where += "\n\tAND COALESCE(s.is_automated, 0) = 0"
 	}
 	if f.ActiveSince != "" {
-		query += " AND u.session_activity_at >= ?"
+		where += "\n\tAND COALESCE(s.ended_at, s.started_at, s.created_at) >= ?"
 		args = append(args, f.ActiveSince)
 	}
 
-	return query, args
+	return where, args
 }
 
 // location loads the timezone or returns the system local timezone.
@@ -126,7 +174,21 @@ const usageMessageEligibility = `
     AND m.model != '<synthetic>'
     AND s.deleted_at IS NULL`
 
-const usageRowsSQL = `
+const usageMessageSourceEligibility = `
+    m.token_usage != ''
+    AND m.model != ''
+    AND m.model != '<synthetic>'`
+
+const usageEventEligibility = `
+    ue.model != ''
+    AND s.deleted_at IS NULL`
+
+const usageEventSourceEligibility = `
+    ue.model != ''`
+
+const usageSessionEligibility = `s.deleted_at IS NULL`
+
+const usageRowsSQLTemplate = `
 SELECT
 	m.session_id,
 	m.ordinal AS message_ordinal,
@@ -155,7 +217,7 @@ SELECT
 	COALESCE(s.started_at, '') AS started_at
 FROM messages m
 JOIN sessions s ON m.session_id = s.id
-WHERE ` + usageMessageEligibility + `
+WHERE %s
 
 UNION ALL
 
@@ -190,8 +252,189 @@ SELECT
 	COALESCE(s.started_at, '') AS started_at
 FROM usage_events ue
 JOIN sessions s ON s.id = ue.session_id
-WHERE ue.model != ''
-  AND s.deleted_at IS NULL`
+WHERE %s`
+
+func usageRowsSQLWithWhere(
+	messageWhere, usageEventWhere string,
+) string {
+	return fmt.Sprintf(
+		usageRowsSQLTemplate,
+		messageWhere,
+		usageEventWhere,
+	)
+}
+
+const dailyUsageRowsSQLTemplate = `
+SELECT
+	m.session_id,
+	m.ordinal AS message_ordinal,
+	'message' AS usage_source,
+	COALESCE(m.timestamp, s.started_at) AS ts,
+	m.model,
+	m.token_usage,
+	0 AS input_tokens,
+	0 AS output_tokens,
+	0 AS cache_creation_input_tokens,
+	0 AS cache_read_input_tokens,
+	NULL AS cost_usd,
+	m.claude_message_id,
+	m.claude_request_id,
+	'' AS usage_dedup_key,
+	s.project,
+	s.agent
+FROM messages m
+JOIN sessions s ON m.session_id = s.id
+WHERE %s
+
+UNION ALL
+
+SELECT
+	ue.session_id,
+	ue.message_ordinal,
+	ue.source AS usage_source,
+	COALESCE(ue.occurred_at, s.started_at) AS ts,
+	ue.model,
+	'' AS token_usage,
+	ue.input_tokens,
+	ue.output_tokens,
+	ue.cache_creation_input_tokens,
+	ue.cache_read_input_tokens,
+	ue.cost_usd,
+	'' AS claude_message_id,
+	'' AS claude_request_id,
+	CASE
+		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
+		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
+	END AS usage_dedup_key,
+	s.project,
+	s.agent
+FROM usage_events ue
+JOIN sessions s ON s.id = ue.session_id
+WHERE %s`
+
+const dailyUsageMessageRowsSQLTemplate = `
+SELECT
+	m.session_id,
+	m.ordinal AS message_ordinal,
+	'message' AS usage_source,
+	COALESCE(m.timestamp, s.started_at) AS ts,
+	m.model,
+	m.token_usage,
+	0 AS input_tokens,
+	0 AS output_tokens,
+	0 AS cache_creation_input_tokens,
+	0 AS cache_read_input_tokens,
+	NULL AS cost_usd,
+	m.claude_message_id,
+	m.claude_request_id,
+	'' AS usage_dedup_key,
+	s.project,
+	s.agent
+FROM %s m
+JOIN sessions s ON m.session_id = s.id
+WHERE %s`
+
+const dailyUsageEventRowsSQLTemplate = `
+SELECT
+	ue.session_id,
+	ue.message_ordinal,
+	ue.source AS usage_source,
+	COALESCE(ue.occurred_at, s.started_at) AS ts,
+	ue.model,
+	'' AS token_usage,
+	ue.input_tokens,
+	ue.output_tokens,
+	ue.cache_creation_input_tokens,
+	ue.cache_read_input_tokens,
+	ue.cost_usd,
+	'' AS claude_message_id,
+	'' AS claude_request_id,
+	CASE
+		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
+		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
+	END AS usage_dedup_key,
+	s.project,
+	s.agent
+FROM %s ue
+JOIN sessions s ON s.id = ue.session_id
+WHERE %s`
+
+func dailyUsageRowsSQLWithWhere(
+	messageWhere, usageEventWhere string,
+) string {
+	return fmt.Sprintf(
+		dailyUsageRowsSQLTemplate,
+		messageWhere,
+		usageEventWhere,
+	)
+}
+
+func dailyUsageRowsSQLWithTimestampCTEs(
+	messageTimestampWhere, eventTimestampWhere string,
+	messageTimestampJoinWhere, eventTimestampJoinWhere string,
+	messageFallbackWhere, eventFallbackWhere string,
+) string {
+	return `
+WITH
+message_timestamp_rows AS MATERIALIZED (
+	SELECT
+		m.session_id,
+		m.ordinal,
+		m.timestamp,
+		m.model,
+		m.token_usage,
+		m.claude_message_id,
+		m.claude_request_id
+	FROM messages m
+	WHERE ` + messageTimestampWhere + `
+),
+usage_event_timestamp_rows AS MATERIALIZED (
+	SELECT
+		ue.id,
+		ue.session_id,
+		ue.message_ordinal,
+		ue.source,
+		ue.occurred_at,
+		ue.model,
+		ue.input_tokens,
+		ue.output_tokens,
+		ue.cache_creation_input_tokens,
+		ue.cache_read_input_tokens,
+		ue.cost_usd,
+		ue.dedup_key
+	FROM usage_events ue
+	WHERE ` + eventTimestampWhere + `
+)
+` + fmt.Sprintf(
+		dailyUsageMessageRowsSQLTemplate,
+		"message_timestamp_rows",
+		messageTimestampJoinWhere,
+	) + `
+
+UNION ALL
+
+` + fmt.Sprintf(
+		dailyUsageEventRowsSQLTemplate,
+		"usage_event_timestamp_rows",
+		eventTimestampJoinWhere,
+	) + `
+
+UNION ALL
+
+` + fmt.Sprintf(
+		dailyUsageMessageRowsSQLTemplate,
+		"messages",
+		messageFallbackWhere,
+	) + `
+
+UNION ALL
+
+` + fmt.Sprintf(
+		dailyUsageEventRowsSQLTemplate,
+		"usage_events",
+		eventFallbackWhere,
+	)
+}
 
 type usageScanRow struct {
 	sessionID                string
@@ -221,7 +464,33 @@ type usageScanRow struct {
 	startedAt                string
 }
 
-func usageRowSelect() string {
+type dailyUsageScanRow struct {
+	sessionID                string
+	messageOrdinal           sql.NullInt64
+	usageSource              string
+	ts                       string
+	model                    string
+	tokenJSON                string
+	inputTokens              int
+	outputTokens             int
+	cacheCreationInputTokens int
+	cacheReadInputTokens     int
+	costUSD                  sql.NullFloat64
+	claudeMessageID          string
+	claudeRequestID          string
+	usageDedupKey            string
+	project                  string
+	agent                    string
+}
+
+type topSessionMetadata struct {
+	displayName string
+	agent       string
+	project     string
+	startedAt   string
+}
+
+func usageRowSelectFromRows(rowsSQL string) string {
 	return `
 SELECT
 	u.session_id,
@@ -249,8 +518,166 @@ SELECT
 	u.session_activity_at,
 	u.display_name,
 	u.started_at
-FROM (` + usageRowsSQL + `) u
+FROM (` + rowsSQL + `) u
 WHERE 1=1`
+}
+
+func usageRowSelect() string {
+	return usageRowSelectFromRows(usageRowsSQLWithWhere(
+		usageMessageEligibility,
+		usageEventEligibility,
+	))
+}
+
+func dailyUsageRowSelectFromRows(rowsSQL string) string {
+	return `
+SELECT
+	u.session_id,
+	u.message_ordinal,
+	u.usage_source,
+	u.ts,
+	u.model,
+	u.token_usage,
+	u.input_tokens,
+	u.output_tokens,
+	u.cache_creation_input_tokens,
+	u.cache_read_input_tokens,
+	u.cost_usd,
+	u.claude_message_id,
+	u.claude_request_id,
+	u.usage_dedup_key,
+	u.project,
+	u.agent
+FROM (` + rowsSQL + `) u
+WHERE 1=1`
+}
+
+type usageBounds struct {
+	from string
+	to   string
+}
+
+func (b usageBounds) bounded() bool {
+	return b.from != "" || b.to != ""
+}
+
+func usageBoundsForFilter(f UsageFilter) usageBounds {
+	var b usageBounds
+	if f.From != "" {
+		b.from = paddedUTCBound(f.From+"T00:00:00Z", -14)
+	}
+	if f.To != "" {
+		b.to = paddedUTCBound(f.To+"T23:59:59Z", 14)
+	}
+	return b
+}
+
+func appendUsageColumnBounds(
+	where, col string, b usageBounds, args []any,
+) (string, []any) {
+	if b.from != "" {
+		where += "\n\tAND " + col + " >= ?"
+		args = append(args, b.from)
+	}
+	if b.to != "" {
+		where += "\n\tAND " + col + " <= ?"
+		args = append(args, b.to)
+	}
+	return where, args
+}
+
+func dailyUsageRowsSQLForBounds(
+	f UsageFilter, b usageBounds,
+) (string, []any) {
+	if !b.bounded() {
+		var messageArgs []any
+		messageWhere, messageArgs := f.appendUsageBranchFilterClauses(
+			usageMessageEligibility, messageArgs, "m.model")
+		var eventArgs []any
+		eventWhere, eventArgs := f.appendUsageBranchFilterClauses(
+			usageEventEligibility, eventArgs, "ue.model")
+		rowsSQL := dailyUsageRowsSQLWithWhere(messageWhere, eventWhere)
+		args := make([]any, 0, len(messageArgs)+len(eventArgs))
+		args = append(args, messageArgs...)
+		args = append(args, eventArgs...)
+		return rowsSQL, args
+	}
+
+	messageTimestampSourceWhere := usageMessageSourceEligibility +
+		"\n\tAND m.timestamp IS NOT NULL"
+	var messageTimestampArgs []any
+	messageTimestampSourceWhere, messageTimestampArgs =
+		f.appendUsageSourceFilterClauses(
+			messageTimestampSourceWhere, messageTimestampArgs, "m.model")
+	messageTimestampSourceWhere, messageTimestampArgs = appendUsageColumnBounds(
+		messageTimestampSourceWhere, "m.timestamp", b, messageTimestampArgs)
+	var messageTimestampJoinArgs []any
+	messageTimestampJoinWhere, messageTimestampJoinArgs :=
+		f.appendUsageSessionFilterClauses(
+			usageSessionEligibility, messageTimestampJoinArgs)
+
+	eventTimestampSourceWhere := usageEventSourceEligibility +
+		"\n\tAND ue.occurred_at IS NOT NULL"
+	var eventTimestampArgs []any
+	eventTimestampSourceWhere, eventTimestampArgs =
+		f.appendUsageSourceFilterClauses(
+			eventTimestampSourceWhere, eventTimestampArgs, "ue.model")
+	eventTimestampSourceWhere, eventTimestampArgs = appendUsageColumnBounds(
+		eventTimestampSourceWhere, "ue.occurred_at", b, eventTimestampArgs)
+	var eventTimestampJoinArgs []any
+	eventTimestampJoinWhere, eventTimestampJoinArgs :=
+		f.appendUsageSessionFilterClauses(
+			usageSessionEligibility, eventTimestampJoinArgs)
+
+	messageFallbackWhere := usageMessageEligibility +
+		"\n\tAND m.timestamp IS NULL"
+	var messageFallbackArgs []any
+	messageFallbackWhere, messageFallbackArgs =
+		f.appendUsageBranchFilterClauses(
+			messageFallbackWhere, messageFallbackArgs, "m.model")
+	messageFallbackWhere, messageFallbackArgs = appendUsageColumnBounds(
+		messageFallbackWhere, "s.started_at", b, messageFallbackArgs)
+
+	eventFallbackWhere := usageEventEligibility +
+		"\n\tAND ue.occurred_at IS NULL"
+	var eventFallbackArgs []any
+	eventFallbackWhere, eventFallbackArgs =
+		f.appendUsageBranchFilterClauses(
+			eventFallbackWhere, eventFallbackArgs, "ue.model")
+	eventFallbackWhere, eventFallbackArgs = appendUsageColumnBounds(
+		eventFallbackWhere, "s.started_at", b, eventFallbackArgs)
+
+	rowsSQL := dailyUsageRowsSQLWithTimestampCTEs(
+		messageTimestampSourceWhere,
+		eventTimestampSourceWhere,
+		messageTimestampJoinWhere,
+		eventTimestampJoinWhere,
+		messageFallbackWhere,
+		eventFallbackWhere,
+	)
+	args := make(
+		[]any, 0,
+		len(messageTimestampArgs)+len(eventTimestampArgs)+
+			len(messageTimestampJoinArgs)+len(eventTimestampJoinArgs)+
+			len(messageFallbackArgs)+len(eventFallbackArgs),
+	)
+	args = append(args, messageTimestampArgs...)
+	args = append(args, eventTimestampArgs...)
+	args = append(args, messageTimestampJoinArgs...)
+	args = append(args, eventTimestampJoinArgs...)
+	args = append(args, messageFallbackArgs...)
+	args = append(args, eventFallbackArgs...)
+	return rowsSQL, args
+}
+
+func usageRowQuery(f UsageFilter) (string, []any) {
+	rowsSQL, args := dailyUsageRowsSQLForBounds(f, usageBoundsForFilter(f))
+	query := dailyUsageRowSelectFromRows(rowsSQL)
+	return query, args
+}
+
+func topSessionsUsageRowQuery(f UsageFilter) (string, []any) {
+	return usageRowQuery(f)
 }
 
 func scanUsageRow(rows *sql.Rows) (usageScanRow, error) {
@@ -285,8 +712,31 @@ func scanUsageRow(rows *sql.Rows) (usageScanRow, error) {
 	return r, err
 }
 
-func usageAmounts(
-	r usageScanRow, pricing map[string]modelRates,
+func scanDailyUsageRow(rows *sql.Rows) (dailyUsageScanRow, error) {
+	var r dailyUsageScanRow
+	err := rows.Scan(
+		&r.sessionID,
+		&r.messageOrdinal,
+		&r.usageSource,
+		&r.ts,
+		&r.model,
+		&r.tokenJSON,
+		&r.inputTokens,
+		&r.outputTokens,
+		&r.cacheCreationInputTokens,
+		&r.cacheReadInputTokens,
+		&r.costUSD,
+		&r.claudeMessageID,
+		&r.claudeRequestID,
+		&r.usageDedupKey,
+		&r.project,
+		&r.agent,
+	)
+	return r, err
+}
+
+func dailyUsageAmounts(
+	r dailyUsageScanRow, pricing map[string]modelRates,
 ) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64) {
 	if r.usageSource == "message" {
 		usage := gjson.Parse(r.tokenJSON)
@@ -303,7 +753,7 @@ func usageAmounts(
 		cacheRdTok = r.cacheReadInputTokens
 	}
 
-	rates := pricing[r.model]
+	rates, _ := lookupModelRates(pricing, r.model)
 	if r.costUSD.Valid {
 		cost = r.costUSD.Float64
 	} else {
@@ -319,6 +769,56 @@ func usageAmounts(
 		(rates.input - rates.cacheCreation) / 1_000_000
 	savings = readDelta + crDelta
 	return
+}
+
+func (db *DB) loadTopSessionMetadata(
+	ctx context.Context, sessionIDs []string,
+) (map[string]topSessionMetadata, error) {
+	out := make(map[string]topSessionMetadata, len(sessionIDs))
+	if len(sessionIDs) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(sessionIDs))
+	args := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `
+SELECT
+	id,
+	COALESCE(NULLIF(display_name, ''), NULLIF(first_message, ''), NULLIF(project, ''), id) AS display_name,
+	agent,
+	project,
+	COALESCE(started_at, '') AS started_at
+FROM sessions
+WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := db.getReader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying top session metadata: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var meta topSessionMetadata
+		if err := rows.Scan(
+			&id,
+			&meta.displayName,
+			&meta.agent,
+			&meta.project,
+			&meta.startedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning top session metadata: %w", err)
+		}
+		out[id] = meta
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating top session metadata: %w", err)
+	}
+	return out, nil
 }
 
 // DailyUsageEntry holds token counts and cost for one day.
@@ -384,8 +884,9 @@ type UsageTotals struct {
 
 // DailyUsageResult wraps the daily entries and totals.
 type DailyUsageResult struct {
-	Daily  []DailyUsageEntry `json:"daily"`
-	Totals UsageTotals       `json:"totals"`
+	Daily         []DailyUsageEntry  `json:"daily"`
+	Totals        UsageTotals        `json:"totals"`
+	SessionCounts UsageSessionCounts `json:"sessionCounts,omitempty"`
 }
 
 // modelRates holds per-model pricing in rate-per-token form.
@@ -471,25 +972,11 @@ func (db *DB) GetDailyUsage(
 			fmt.Errorf("loading pricing: %w", err)
 	}
 
-	query := usageRowSelect()
-
-	var args []any
-
 	// Filter on usage timestamp (not only session started_at) so
 	// long-lived sessions that span date boundaries are included.
-	// Pad by ±14h to cover all timezone offsets — the actual
+	// Pad by +/-14h to cover all timezone offsets; the actual
 	// date filtering happens post-query via localDate.
-	if f.From != "" {
-		padded := paddedUTCBound(f.From+"T00:00:00Z", -14)
-		query += " AND u.ts >= ?"
-		args = append(args, padded)
-	}
-	if f.To != "" {
-		padded := paddedUTCBound(f.To+"T23:59:59Z", 14)
-		query += " AND u.ts <= ?"
-		args = append(args, padded)
-	}
-	query, args = f.appendUsageRowFilterClauses(query, args)
+	query, args := usageRowQuery(f)
 	query += ` ORDER BY u.ts ASC, u.session_id ASC,
 		COALESCE(u.message_ordinal, -1) ASC`
 
@@ -521,6 +1008,7 @@ func (db *DB) GetDailyUsage(
 		msgID, reqID string
 	}
 	seen := make(map[dedupKey]struct{})
+	seenSessions := make(map[string]UsageSessionInfo)
 
 	// totalSavings is the running sum of per-message cache
 	// savings using each row's actual per-model rates. We sum
@@ -530,7 +1018,7 @@ func (db *DB) GetDailyUsage(
 	var totalSavings float64
 
 	for rows.Next() {
-		r, scanErr := scanUsageRow(rows)
+		r, scanErr := scanDailyUsageRow(rows)
 		if scanErr != nil {
 			return DailyUsageResult{},
 				fmt.Errorf("scanning daily usage row: %w", scanErr)
@@ -564,8 +1052,15 @@ func (db *DB) GetDailyUsage(
 			seen[key] = struct{}{}
 		}
 
+		if _, ok := seenSessions[r.sessionID]; !ok {
+			seenSessions[r.sessionID] = UsageSessionInfo{
+				Project: r.project,
+				Agent:   r.agent,
+			}
+		}
+
 		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings :=
-			usageAmounts(r, pricing)
+			dailyUsageAmounts(r, pricing)
 		totalSavings += savings
 
 		key := accumKey{
@@ -707,9 +1202,11 @@ func (db *DB) GetDailyUsage(
 			daily = []DailyUsageEntry{}
 		}
 		totals.CacheSavings = totalSavings
+		sessionCounts := NewUsageSessionCounts(seenSessions)
 		return DailyUsageResult{
-			Daily:  daily,
-			Totals: totals,
+			Daily:         daily,
+			Totals:        totals,
+			SessionCounts: sessionCounts,
 		}, nil
 	}
 
@@ -867,9 +1364,11 @@ func (db *DB) GetDailyUsage(
 	}
 
 	totals.CacheSavings = totalSavings
+	sessionCounts := NewUsageSessionCounts(seenSessions)
 	return DailyUsageResult{
-		Daily:  daily,
-		Totals: totals,
+		Daily:         daily,
+		Totals:        totals,
+		SessionCounts: sessionCounts,
 	}, nil
 }
 
@@ -902,21 +1401,7 @@ func (db *DB) GetTopSessionsByCost(
 			fmt.Errorf("loading pricing: %w", err)
 	}
 
-	query := usageRowSelect()
-
-	var args []any
-
-	if f.From != "" {
-		padded := paddedUTCBound(f.From+"T00:00:00Z", -14)
-		query += " AND u.ts >= ?"
-		args = append(args, padded)
-	}
-	if f.To != "" {
-		padded := paddedUTCBound(f.To+"T23:59:59Z", 14)
-		query += " AND u.ts <= ?"
-		args = append(args, padded)
-	}
-	query, args = f.appendUsageRowFilterClauses(query, args)
+	query, args := topSessionsUsageRowQuery(f)
 	// Deterministic order so the dedup "winner" (the session
 	// that gets credit for a duplicate message.id + request.id
 	// pair) is stable across runs: earliest timestamp wins,
@@ -934,10 +1419,6 @@ func (db *DB) GetTopSessionsByCost(
 	loc := f.location()
 
 	type sessAccum struct {
-		displayName string
-		agent       string
-		project     string
-		startedAt   string
 		totalTokens int
 		cost        float64
 	}
@@ -955,7 +1436,7 @@ func (db *DB) GetTopSessionsByCost(
 	seen := make(map[dedupKey]struct{})
 
 	for rows.Next() {
-		r, err := scanUsageRow(rows)
+		r, err := scanDailyUsageRow(rows)
 		if err != nil {
 			return nil,
 				fmt.Errorf("scanning top sessions row: %w", err)
@@ -991,16 +1472,11 @@ func (db *DB) GetTopSessionsByCost(
 		}
 
 		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _ :=
-			usageAmounts(r, pricing)
+			dailyUsageAmounts(r, pricing)
 
 		sa, ok := accum[r.sessionID]
 		if !ok {
-			sa = &sessAccum{
-				displayName: r.displayName,
-				agent:       r.agent,
-				project:     r.project,
-				startedAt:   r.startedAt,
-			}
+			sa = &sessAccum{}
 			accum[r.sessionID] = sa
 			order = append(order, r.sessionID)
 		}
@@ -1021,10 +1497,7 @@ func (db *DB) GetTopSessionsByCost(
 		}
 		result = append(result, TopSessionEntry{
 			SessionID:   id,
-			DisplayName: sa.displayName,
-			Agent:       sa.agent,
-			Project:     sa.project,
-			StartedAt:   sa.startedAt,
+			DisplayName: id,
 			TotalTokens: sa.totalTokens,
 			Cost:        sa.cost,
 		})
@@ -1041,7 +1514,189 @@ func (db *DB) GetTopSessionsByCost(
 		result = result[:limit]
 	}
 
+	sessionIDs := make([]string, len(result))
+	for i := range result {
+		sessionIDs[i] = result[i].SessionID
+	}
+	metadata, err := db.loadTopSessionMetadata(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result {
+		if meta, ok := metadata[result[i].SessionID]; ok {
+			result[i].DisplayName = meta.displayName
+			result[i].Agent = meta.agent
+			result[i].Project = meta.project
+			result[i].StartedAt = meta.startedAt
+		}
+	}
+
 	return result, nil
+}
+
+// SessionUsage is the per-session token + cost summary returned by
+// the `session usage` command. Cost is an estimate from the
+// model_pricing catalog unless an agent reported cost directly
+// (usage_events.cost_usd). CostUSD is non-zero only when HasCost is
+// true; a partial total (some models unpriced) is never emitted.
+type SessionUsage struct {
+	SessionID         string   `json:"session_id"`
+	Agent             string   `json:"agent"`
+	Project           string   `json:"project"`
+	TotalOutputTokens int      `json:"total_output_tokens"`
+	PeakContextTokens int      `json:"peak_context_tokens"`
+	HasTokenData      bool     `json:"has_token_data"`
+	CostUSD           float64  `json:"cost_usd"`
+	HasCost           bool     `json:"has_cost"`
+	Models            []string `json:"models"`
+	UnpricedModels    []string `json:"unpriced_models,omitempty"`
+}
+
+// sessionRowCost computes one usage row's cost and reports whether
+// it was priced and whether it contributes to the estimate. A row
+// contributes when it carries an explicit cost or any tokens. It does
+// an explicit map lookup so callers can distinguish "unpriced" from
+// "$0".
+func sessionRowCost(
+	r usageScanRow, pricing map[string]modelRates,
+) (cost float64, priced, contributes bool) {
+	var inTok, outTok, crTok, rdTok int
+	if r.usageSource == "message" {
+		usage := gjson.Parse(r.tokenJSON)
+		inTok = int(usage.Get("input_tokens").Int())
+		outTok = int(usage.Get("output_tokens").Int())
+		crTok = int(usage.Get("cache_creation_input_tokens").Int())
+		rdTok = int(usage.Get("cache_read_input_tokens").Int())
+	} else {
+		inTok = r.inputTokens
+		outTok = r.outputTokens
+		crTok = r.cacheCreationInputTokens
+		rdTok = r.cacheReadInputTokens
+	}
+
+	if r.costUSD.Valid {
+		return r.costUSD.Float64, true, true
+	}
+	if inTok == 0 && outTok == 0 && crTok == 0 && rdTok == 0 {
+		return 0, true, false
+	}
+	rates, ok := lookupModelRates(pricing, r.model)
+	if !ok {
+		return 0, false, true
+	}
+	cost = (float64(inTok)*rates.input +
+		float64(outTok)*rates.output +
+		float64(crTok)*rates.cacheCreation +
+		float64(rdTok)*rates.cacheRead) / 1_000_000
+	return cost, true, true
+}
+
+// GetSessionUsage returns one session's token totals and cost
+// estimate. It starts from GetSession (so metadata and session-level
+// token aggregates are reported even when there are no per-message
+// usage rows), then aggregates cost over the session's own usage
+// rows. Dedup is intra-session only; this reports the session's own
+// usage, which can diverge from the dashboard's cross-session
+// credited total for fork/subagent sessions. Returns (nil, nil) when
+// the session does not exist.
+func (db *DB) GetSessionUsage(
+	ctx context.Context, sessionID string,
+) (*SessionUsage, error) {
+	sess, err := db.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, nil
+	}
+
+	pricing, err := db.loadPricingMap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loading pricing: %w", err)
+	}
+
+	query := usageRowSelect() + ` AND u.session_id = ?
+		ORDER BY u.ts ASC, u.session_id ASC,
+		COALESCE(u.message_ordinal, -1) ASC`
+	rows, err := db.getReader().QueryContext(ctx, query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("querying session usage: %w", err)
+	}
+	defer rows.Close()
+
+	var cost float64
+	contributing := false
+	allPriced := true
+	modelsSet := make(map[string]struct{})
+	unpricedSet := make(map[string]struct{})
+
+	type dedupKey struct{ msgID, reqID string }
+	seen := make(map[dedupKey]struct{})
+
+	for rows.Next() {
+		r, scanErr := scanUsageRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scanning session usage row: %w", scanErr)
+		}
+		if r.claudeMessageID != "" && r.claudeRequestID != "" {
+			key := dedupKey{r.claudeMessageID, r.claudeRequestID}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		} else if r.usageDedupKey != "" {
+			key := dedupKey{"usage", r.usageDedupKey}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+
+		c, priced, contributes := sessionRowCost(r, pricing)
+		if !contributes {
+			continue
+		}
+		contributing = true
+		modelsSet[r.model] = struct{}{}
+		if priced {
+			cost += c
+		} else {
+			allPriced = false
+			unpricedSet[r.model] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session usage rows: %w", err)
+	}
+
+	out := &SessionUsage{
+		SessionID:         sess.ID,
+		Agent:             sess.Agent,
+		Project:           sess.Project,
+		TotalOutputTokens: sess.TotalOutputTokens,
+		PeakContextTokens: sess.PeakContextTokens,
+		HasTokenData:      sess.HasTotalOutputTokens || sess.HasPeakContextTokens,
+		Models:            sortedSetKeys(modelsSet),
+		HasCost:           contributing && allPriced,
+	}
+	if out.HasCost {
+		out.CostUSD = cost
+	}
+	if len(unpricedSet) > 0 {
+		out.UnpricedModels = sortedSetKeys(unpricedSet)
+	}
+	return out, nil
+}
+
+// sortedSetKeys returns the map keys sorted; never nil so JSON
+// renders "[]" rather than "null".
+func sortedSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // UsageSessionCounts holds distinct session counts grouped by
@@ -1050,6 +1705,26 @@ type UsageSessionCounts struct {
 	Total     int            `json:"total"`
 	ByProject map[string]int `json:"byProject"`
 	ByAgent   map[string]int `json:"byAgent"`
+}
+
+type UsageSessionInfo struct {
+	Project string
+	Agent   string
+}
+
+func NewUsageSessionCounts(
+	seen map[string]UsageSessionInfo,
+) UsageSessionCounts {
+	out := UsageSessionCounts{
+		Total:     len(seen),
+		ByProject: make(map[string]int),
+		ByAgent:   make(map[string]int),
+	}
+	for _, info := range seen {
+		out.ByProject[info.Project]++
+		out.ByAgent[info.Agent]++
+	}
+	return out
 }
 
 // GetUsageSessionCounts returns distinct session counts grouped
@@ -1063,21 +1738,7 @@ type UsageSessionCounts struct {
 func (db *DB) GetUsageSessionCounts(
 	ctx context.Context, f UsageFilter,
 ) (UsageSessionCounts, error) {
-	query := usageRowSelect()
-
-	var args []any
-
-	if f.From != "" {
-		padded := paddedUTCBound(f.From+"T00:00:00Z", -14)
-		query += " AND u.ts >= ?"
-		args = append(args, padded)
-	}
-	if f.To != "" {
-		padded := paddedUTCBound(f.To+"T23:59:59Z", 14)
-		query += " AND u.ts <= ?"
-		args = append(args, padded)
-	}
-	query, args = f.appendUsageRowFilterClauses(query, args)
+	query, args := usageRowQuery(f)
 	// Deterministic ordering so the Claude dedup winner — the
 	// session that "owns" a shared message — is stable across
 	// runs. Matches GetDailyUsage / GetTopSessionsByCost so all
@@ -1116,7 +1777,7 @@ func (db *DB) GetUsageSessionCounts(
 	dedup := make(map[dedupKey]struct{})
 
 	for rows.Next() {
-		r, err := scanUsageRow(rows)
+		r, err := scanDailyUsageRow(rows)
 		if err != nil {
 			return UsageSessionCounts{},
 				fmt.Errorf("scanning session counts: %w", err)

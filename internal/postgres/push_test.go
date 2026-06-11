@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -91,23 +94,9 @@ func TestReadPushBoundaryStateValidity(t *testing.T) {
 				syncStateReaderStub{value: tc.raw},
 				cutoff,
 			)
-			if err != nil {
-				t.Fatalf(
-					"readBoundaryAndFingerprints: %v", err,
-				)
-			}
-			if valid != tc.wantValid {
-				t.Fatalf(
-					"valid = %v, want %v",
-					valid, tc.wantValid,
-				)
-			}
-			if len(got) != tc.wantLen {
-				t.Fatalf(
-					"len(state) = %d, want %d",
-					len(got), tc.wantLen,
-				)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantValid, valid)
+			require.Len(t, got, tc.wantLen)
 		})
 	}
 }
@@ -122,12 +111,7 @@ func TestLocalSessionSyncMarkerNormalizesSecondPrecisionTimestamps(t *testing.T)
 		EndedAt:   &endedAt,
 	})
 
-	if got != endedAt {
-		t.Fatalf(
-			"localSessionSyncMarker = %q, want %q",
-			got, endedAt,
-		)
-	}
+	require.Equal(t, endedAt, got)
 }
 
 func TestSessionPushFingerprintDiffers(t *testing.T) {
@@ -186,27 +170,26 @@ func TestSessionPushFingerprintDiffers(t *testing.T) {
 				return s
 			},
 		},
+		{
+			name: "automated classification change",
+			modify: func(s db.Session) db.Session {
+				s.IsAutomated = true
+				return s
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			modified := tc.modify(base)
 			fp2 := sessionPushFingerprint(modified, "")
-			if fp1 == fp2 {
-				t.Fatalf(
-					"fingerprint should differ after %s",
-					tc.name,
-				)
-			}
+			require.NotEqual(t, fp1, fp2,
+				"fingerprint should differ after %s", tc.name)
 		})
 	}
 
-	if fp1 != sessionPushFingerprint(base, "") {
-		t.Fatal(
-			"identical sessions should produce " +
-				"identical fingerprints",
-		)
-	}
+	assert.Equal(t, fp1, sessionPushFingerprint(base, ""),
+		"identical sessions should produce identical fingerprints")
 }
 
 func TestSessionPushFingerprintIncludesUsageEventFingerprint(
@@ -224,9 +207,8 @@ func TestSessionPushFingerprintIncludesUsageEventFingerprint(
 
 	withoutUsage := sessionPushFingerprint(base, "")
 	withUsage := sessionPushFingerprint(base, "usage-fp")
-	if withoutUsage == withUsage {
-		t.Fatal("usage event fingerprint should affect session fingerprint")
-	}
+	assert.NotEqual(t, withoutUsage, withUsage,
+		"usage event fingerprint should affect session fingerprint")
 }
 
 func TestSessionPushFingerprintNoFieldCollisions(
@@ -242,11 +224,10 @@ func TestSessionPushFingerprintNoFieldCollisions(
 		Project:   "bcd",
 		CreatedAt: "2026-03-11T12:00:00Z",
 	}
-	if sessionPushFingerprint(s1, "") == sessionPushFingerprint(s2, "") {
-		t.Fatal(
-			"length-prefixed fingerprints should not collide",
-		)
-	}
+	assert.NotEqual(t,
+		sessionPushFingerprint(s1, ""),
+		sessionPushFingerprint(s2, ""),
+		"length-prefixed fingerprints should not collide")
 }
 
 func TestFinalizePushStatePersistsEmptyBoundary(
@@ -255,42 +236,18 @@ func TestFinalizePushStatePersistsEmptyBoundary(
 	const cutoff = "2026-03-11T12:34:56.123Z"
 
 	store := &syncStateStoreStub{}
-	if err := finalizePushState(
+	require.NoError(t, finalizePushState(
 		store, cutoff, nil, nil, map[string]string{},
-	); err != nil {
-		t.Fatalf("finalizePushState: %v", err)
-	}
-	if got := store.values["last_push_at"]; got != cutoff {
-		t.Fatalf(
-			"last_push_at = %q, want %q", got, cutoff,
-		)
-	}
+	))
+	assert.Equal(t, cutoff, store.values["last_push_at"])
 
 	raw := store.values[lastPushBoundaryStateKey]
-	if raw == "" {
-		t.Fatal(
-			"last_push_boundary_state should be written",
-		)
-	}
+	require.NotEmpty(t, raw, "last_push_boundary_state should be written")
 
 	var state pushBoundaryState
-	if err := json.Unmarshal(
-		[]byte(raw), &state,
-	); err != nil {
-		t.Fatalf("unmarshal boundary state: %v", err)
-	}
-	if state.Cutoff != cutoff {
-		t.Fatalf(
-			"boundary cutoff = %q, want %q",
-			state.Cutoff, cutoff,
-		)
-	}
-	if len(state.Fingerprints) != 0 {
-		t.Fatalf(
-			"boundary fingerprints = %v, want empty",
-			state.Fingerprints,
-		)
-	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &state))
+	assert.Equal(t, cutoff, state.Cutoff)
+	assert.Empty(t, state.Fingerprints)
 }
 
 func TestFinalizePushStateMergesPriorFingerprints(
@@ -311,43 +268,22 @@ func TestFinalizePushStateMergesPriorFingerprints(
 	}
 
 	store := &syncStateStoreStub{}
-	if err := finalizePushState(
+	require.NoError(t, finalizePushState(
 		store, cutoff, cycle2Sessions,
 		priorFingerprints,
 		map[string]string{"sess-002": sessionPushFingerprint(cycle2Sessions[0], "")},
-	); err != nil {
-		t.Fatalf("finalizePushState: %v", err)
-	}
+	))
 
 	raw := store.values[lastPushBoundaryStateKey]
-	if raw == "" {
-		t.Fatal(
-			"last_push_boundary_state should be written",
-		)
-	}
+	require.NotEmpty(t, raw, "last_push_boundary_state should be written")
 
 	var state pushBoundaryState
-	if err := json.Unmarshal(
-		[]byte(raw), &state,
-	); err != nil {
-		t.Fatalf("unmarshal boundary state: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &state))
 
-	if len(state.Fingerprints) != 2 {
-		t.Fatalf(
-			"len(fingerprints) = %d, want 2",
-			len(state.Fingerprints),
-		)
-	}
-	if state.Fingerprints["sess-001"] != "fp-001" {
-		t.Fatalf(
-			"sess-001 fingerprint = %q, want %q",
-			state.Fingerprints["sess-001"], "fp-001",
-		)
-	}
-	if _, ok := state.Fingerprints["sess-002"]; !ok {
-		t.Fatal("sess-002 fingerprint should be present")
-	}
+	require.Len(t, state.Fingerprints, 2)
+	assert.Equal(t, "fp-001", state.Fingerprints["sess-001"])
+	_, ok := state.Fingerprints["sess-002"]
+	assert.True(t, ok, "sess-002 fingerprint should be present")
 }
 
 func TestSanitizePG(t *testing.T) {
@@ -400,51 +336,27 @@ func TestSanitizePG(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizePG(tc.input)
-			if got != tc.want {
-				t.Errorf(
-					"sanitizePG(%q) = %q, want %q",
-					tc.input, got, tc.want,
-				)
-			}
+			assert.Equal(t, tc.want, sanitizePG(tc.input))
 		})
 	}
 }
 
 func TestNilIfEmptySanitizes(t *testing.T) {
-	got := nilIfEmpty("hello\x00world")
-	if got != "helloworld" {
-		t.Errorf(
-			"nilIfEmpty with null byte = %q, want %q",
-			got, "helloworld",
-		)
-	}
+	assert.Equal(t, any("helloworld"), nilIfEmpty("hello\x00world"))
 
-	if nilIfEmpty("") != nil {
-		t.Error("nilIfEmpty(\"\") should be nil")
-	}
+	assert.Nil(t, nilIfEmpty(""), "nilIfEmpty(\"\") should be nil")
 
 	// A string that reduces to empty after sanitization
 	// should return nil, not "".
-	if nilIfEmpty("\x00") != nil {
-		t.Error("nilIfEmpty(\"\\x00\") should be nil")
-	}
+	assert.Nil(t, nilIfEmpty("\x00"), "nilIfEmpty(\"\\x00\") should be nil")
 }
 
 func TestNilStrSanitizes(t *testing.T) {
 	s := "hello\xe2world"
-	got := nilStr(&s)
-	if got != "helloworld" {
-		t.Errorf(
-			"nilStr with invalid UTF-8 = %q, want %q",
-			got, "helloworld",
-		)
-	}
+	assert.Equal(t, any("helloworld"), nilStr(&s))
 
 	// A *string that reduces to empty after sanitization
 	// should return nil.
 	nul := "\x00"
-	if nilStr(&nul) != nil {
-		t.Error("nilStr(\"\\x00\") should be nil")
-	}
+	assert.Nil(t, nilStr(&nul), "nilStr(\"\\x00\") should be nil")
 }

@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseVSCodeCopilotSession(t *testing.T) {
@@ -120,59 +123,33 @@ func TestParseVSCodeCopilotSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "test-session.json")
-			if err := os.WriteFile(
+			require.NoError(t, os.WriteFile(
 				path, []byte(tt.json), 0644,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 
 			sess, msgs, err := ParseVSCodeCopilotSession(
 				path, "testproject", "local",
 			)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			if tt.wantNil {
-				if sess != nil {
-					t.Fatal("expected nil session")
-				}
+				assert.Nil(t, sess, "expected nil session")
 				return
 			}
 
-			if sess == nil {
-				t.Fatal("expected non-nil session")
-				return
+			require.NotNil(t, sess, "expected non-nil session")
+
+			assert.Len(t, msgs, tt.wantMessages, "messages")
+
+			if tt.wantTitle != "" {
+				assert.Equal(t, tt.wantTitle, sess.FirstMessage, "first message")
 			}
 
-			if len(msgs) != tt.wantMessages {
-				t.Errorf(
-					"messages: got %d, want %d",
-					len(msgs), tt.wantMessages,
-				)
+			if tt.wantAgent != "" {
+				assert.Equal(t, tt.wantAgent, sess.Agent, "agent")
 			}
 
-			if tt.wantTitle != "" &&
-				sess.FirstMessage != tt.wantTitle {
-				t.Errorf(
-					"first message: got %q, want %q",
-					sess.FirstMessage, tt.wantTitle,
-				)
-			}
-
-			if tt.wantAgent != "" && sess.Agent != tt.wantAgent {
-				t.Errorf(
-					"agent: got %q, want %q",
-					sess.Agent, tt.wantAgent,
-				)
-			}
-
-			if sess.Project != "testproject" {
-				t.Errorf(
-					"project: got %q, want %q",
-					sess.Project, "testproject",
-				)
-			}
+			assert.Equal(t, "testproject", sess.Project, "project")
 
 			if tt.wantToolUse {
 				found := false
@@ -182,9 +159,7 @@ func TestParseVSCodeCopilotSession(t *testing.T) {
 						break
 					}
 				}
-				if !found {
-					t.Error("expected tool use in messages")
-				}
+				assert.True(t, found, "expected tool use in messages")
 			}
 		})
 	}
@@ -194,12 +169,9 @@ func TestParseVSCodeCopilotSession_NonExistent(t *testing.T) {
 	sess, msgs, err := ParseVSCodeCopilotSession(
 		"/nonexistent/path.json", "proj", "local",
 	)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if sess != nil || msgs != nil {
-		t.Fatal("expected nil for non-existent file")
-	}
+	require.NoError(t, err, "expected nil error")
+	assert.Nil(t, sess, "expected nil session for non-existent file")
+	assert.Nil(t, msgs, "expected nil messages for non-existent file")
 }
 
 func TestParseVSCodeCopilotSession_MixedTextAndTools(t *testing.T) {
@@ -222,14 +194,10 @@ func TestParseVSCodeCopilotSession_MixedTextAndTools(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
-	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(data), 0644))
 
 	_, msgs, err := ParseVSCodeCopilotSession(path, "proj", "local")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Find assistant message
 	var assistant *ParsedMessage
@@ -239,31 +207,18 @@ func TestParseVSCodeCopilotSession_MixedTextAndTools(t *testing.T) {
 			break
 		}
 	}
-	if assistant == nil {
-		t.Fatal("no assistant message")
-		return
-	}
+	require.NotNil(t, assistant, "no assistant message")
 
-	if !assistant.HasToolUse {
-		t.Error("expected HasToolUse=true")
-	}
+	assert.True(t, assistant.HasToolUse, "expected HasToolUse=true")
 
 	// Content should include both tool markers and text
-	if len(assistant.Content) == 0 {
-		t.Error("expected non-empty content")
-	}
+	assert.NotEmpty(t, assistant.Content, "expected non-empty content")
 
 	// Tool calls should have InputJSON populated
-	if len(assistant.ToolCalls) != 1 {
-		t.Fatalf("got %d tool calls, want 1", len(assistant.ToolCalls))
-	}
+	require.Len(t, assistant.ToolCalls, 1)
 	tc := assistant.ToolCalls[0]
-	if tc.InputJSON == "" {
-		t.Error("expected non-empty InputJSON")
-	}
-	if tc.Category != "Read" {
-		t.Errorf("category: got %q, want %q", tc.Category, "Read")
-	}
+	assert.NotEmpty(t, tc.InputJSON, "expected non-empty InputJSON")
+	assert.Equal(t, "Read", tc.Category, "category")
 }
 
 func TestParseVSCodeCopilotSession_TerminalToolData(t *testing.T) {
@@ -285,14 +240,10 @@ func TestParseVSCodeCopilotSession_TerminalToolData(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
-	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(data), 0644))
 
 	_, msgs, err := ParseVSCodeCopilotSession(path, "proj", "local")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	var assistant *ParsedMessage
 	for i := range msgs {
@@ -301,43 +252,16 @@ func TestParseVSCodeCopilotSession_TerminalToolData(t *testing.T) {
 			break
 		}
 	}
-	if assistant == nil {
-		t.Fatal("no assistant message")
-		return
-	}
+	require.NotNil(t, assistant, "no assistant message")
 
-	if len(assistant.ToolCalls) != 1 {
-		t.Fatalf("got %d tool calls, want 1", len(assistant.ToolCalls))
-	}
+	require.Len(t, assistant.ToolCalls, 1)
 	tc := assistant.ToolCalls[0]
-	if tc.Category != "Bash" {
-		t.Errorf("category: got %q, want %q", tc.Category, "Bash")
-	}
-	if tc.InputJSON == "" {
-		t.Error("expected non-empty InputJSON")
-	}
+	assert.Equal(t, "Bash", tc.Category, "category")
+	assert.NotEmpty(t, tc.InputJSON, "expected non-empty InputJSON")
 
 	// Content should include the command
-	if !containsStr(assistant.Content, "npm test") {
-		t.Errorf("content should contain command, got: %s", assistant.Content)
-	}
-}
-
-func containsStr(haystack, needle string) bool {
-	return len(haystack) >= len(needle) &&
-		(haystack == needle ||
-			len(haystack) > len(needle) &&
-				(haystack[:len(needle)] == needle ||
-					containsSubstring(haystack, needle)))
-}
-
-func containsSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	assert.Contains(t, assistant.Content, "npm test",
+		"content should contain command, got: %s", assistant.Content)
 }
 
 func TestExtractProjectFromURI(t *testing.T) {
@@ -352,13 +276,8 @@ func TestExtractProjectFromURI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.uri, func(t *testing.T) {
-			got := extractProjectFromURI(tt.uri)
-			if got != tt.want {
-				t.Errorf(
-					"extractProjectFromURI(%q) = %q, want %q",
-					tt.uri, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, extractProjectFromURI(tt.uri),
+				"extractProjectFromURI(%q)", tt.uri)
 		})
 	}
 }
@@ -368,23 +287,15 @@ func TestReadVSCodeWorkspaceManifest(t *testing.T) {
 
 	// Valid workspace.json
 	content := `{"folder":"file:///Users/dev/projects/agentsview"}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "workspace.json"),
 		[]byte(content), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
-	project := ReadVSCodeWorkspaceManifest(dir)
-	if project != "agentsview" {
-		t.Errorf("got %q, want %q", project, "agentsview")
-	}
+	assert.Equal(t, "agentsview", ReadVSCodeWorkspaceManifest(dir))
 
 	// Non-existent dir
-	project = ReadVSCodeWorkspaceManifest("/nonexistent")
-	if project != "" {
-		t.Errorf("expected empty, got %q", project)
-	}
+	assert.Empty(t, ReadVSCodeWorkspaceManifest("/nonexistent"))
 }
 
 func TestDiscoverVSCodeCopilotSessions(t *testing.T) {
@@ -395,49 +306,31 @@ func TestDiscoverVSCodeCopilotSessions(t *testing.T) {
 	chatDir := filepath.Join(
 		root, "workspaceStorage", hash, "chatSessions",
 	)
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(chatDir, 0755))
 
 	// workspace.json
 	wsJSON := `{"folder":"file:///Users/dev/projects/myproject"}`
 	wsPath := filepath.Join(
 		root, "workspaceStorage", hash, "workspace.json",
 	)
-	if err := os.WriteFile(
-		wsPath, []byte(wsJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(wsPath, []byte(wsJSON), 0644))
 
 	// Chat session file
 	sessionJSON := `{"version":3,"sessionId":"sess1","requests":[{"requestId":"r1","message":{"text":"hi"},"response":[{"value":"hello"}],"timestamp":1755340000000}]}`
 	sessPath := filepath.Join(chatDir, "sess1.json")
-	if err := os.WriteFile(
-		sessPath, []byte(sessionJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(sessPath, []byte(sessionJSON), 0644))
 
 	// globalStorage/emptyWindowChatSessions
 	globalDir := filepath.Join(
 		root, "globalStorage", "emptyWindowChatSessions",
 	)
-	if err := os.MkdirAll(globalDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(globalDir, 0755))
 	globalPath := filepath.Join(globalDir, "global-sess.json")
-	if err := os.WriteFile(
-		globalPath, []byte(sessionJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(globalPath, []byte(sessionJSON), 0644))
 
 	files := DiscoverVSCodeCopilotSessions(root)
 
-	if len(files) != 2 {
-		t.Fatalf("got %d files, want 2", len(files))
-	}
+	require.Len(t, files, 2)
 
 	// Check workspace session
 	var wsFile, globalFile DiscoveredFile
@@ -450,17 +343,10 @@ func TestDiscoverVSCodeCopilotSessions(t *testing.T) {
 		}
 	}
 
-	if wsFile.Path == "" {
-		t.Error("missing workspace session file")
-	}
-	if wsFile.Agent != AgentVSCodeCopilot {
-		t.Errorf("agent: got %q, want %q",
-			wsFile.Agent, AgentVSCodeCopilot)
-	}
+	assert.NotEmpty(t, wsFile.Path, "missing workspace session file")
+	assert.Equal(t, AgentVSCodeCopilot, wsFile.Agent, "agent")
 
-	if globalFile.Path == "" {
-		t.Error("missing global session file")
-	}
+	assert.NotEmpty(t, globalFile.Path, "missing global session file")
 }
 
 func TestNormalizeVSCodeToolName(t *testing.T) {
@@ -488,10 +374,7 @@ func TestNormalizeVSCodeToolName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeVSCodeToolName(tt.input)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, normalizeVSCodeToolName(tt.input))
 		})
 	}
 }
@@ -550,26 +433,16 @@ func TestExtractVSCopilotInputJSON(t *testing.T) {
 			got := extractVSCopilotInputJSON(inv, past, td)
 
 			if tt.wantKey == "" {
-				if got != "" {
-					t.Errorf("expected empty, got %q", got)
-				}
+				assert.Empty(t, got, "expected empty")
 				return
 			}
 
 			var m map[string]any
-			if err := json.Unmarshal(
-				[]byte(got), &m,
-			); err != nil {
-				t.Fatalf("invalid JSON: %v", err)
-			}
+			err := json.Unmarshal([]byte(got), &m)
+			require.NoError(t, err, "invalid JSON")
 			val, ok := m[tt.wantKey].(string)
-			if !ok || val != tt.wantVal {
-				t.Errorf(
-					"got %q=%q, want %q=%q",
-					tt.wantKey, val,
-					tt.wantKey, tt.wantVal,
-				)
-			}
+			assert.True(t, ok, "value not a string")
+			assert.Equal(t, tt.wantVal, val, "value for key %q", tt.wantKey)
 		})
 	}
 }
@@ -641,52 +514,29 @@ func TestParseVSCodeCopilotSession_JSONL(t *testing.T) {
 			path := filepath.Join(dir, "test-session.jsonl")
 
 			content := strings.Join(tt.lines, "\n") + "\n"
-			if err := os.WriteFile(
+			require.NoError(t, os.WriteFile(
 				path, []byte(content), 0644,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 
 			sess, msgs, err := ParseVSCodeCopilotSession(
 				path, "testproject", "local",
 			)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			if tt.wantNil {
-				if sess != nil {
-					t.Fatal("expected nil session")
-				}
+				assert.Nil(t, sess, "expected nil session")
 				return
 			}
 
-			if sess == nil {
-				t.Fatal("expected non-nil session")
-				return
+			require.NotNil(t, sess, "expected non-nil session")
+
+			assert.Len(t, msgs, tt.wantMessages, "messages")
+
+			if tt.wantTitle != "" {
+				assert.Equal(t, tt.wantTitle, sess.FirstMessage, "first message")
 			}
 
-			if len(msgs) != tt.wantMessages {
-				t.Errorf(
-					"messages: got %d, want %d",
-					len(msgs), tt.wantMessages,
-				)
-			}
-
-			if tt.wantTitle != "" &&
-				sess.FirstMessage != tt.wantTitle {
-				t.Errorf(
-					"first message: got %q, want %q",
-					sess.FirstMessage, tt.wantTitle,
-				)
-			}
-
-			if sess.Agent != AgentVSCodeCopilot {
-				t.Errorf(
-					"agent: got %q, want %q",
-					sess.Agent, AgentVSCodeCopilot,
-				)
-			}
+			assert.Equal(t, AgentVSCodeCopilot, sess.Agent, "agent")
 
 			if tt.wantToolUse {
 				found := false
@@ -696,9 +546,7 @@ func TestParseVSCodeCopilotSession_JSONL(t *testing.T) {
 						break
 					}
 				}
-				if !found {
-					t.Error("expected tool use in messages")
-				}
+				assert.True(t, found, "expected tool use in messages")
 			}
 		})
 	}
@@ -718,12 +566,8 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
-				if m["sessionId"] != "s1" {
-					t.Errorf("sessionId: got %v", m["sessionId"])
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
+				assert.Equal(t, "s1", m["sessionId"], "sessionId")
 			},
 		},
 		{
@@ -734,13 +578,9 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
 				a := m["a"].(map[string]any)
-				if a["b"] != "new" {
-					t.Errorf("got %v, want new", a["b"])
-				}
+				assert.Equal(t, "new", a["b"])
 			},
 		},
 		{
@@ -751,16 +591,10 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
 				items := m["items"].([]any)
-				if len(items) != 3 {
-					t.Fatalf("len: got %d, want 3", len(items))
-				}
-				if items[2] != "c" {
-					t.Errorf("items[2]: got %v", items[2])
-				}
+				require.Len(t, items, 3, "len")
+				assert.Equal(t, "c", items[2], "items[2]")
 			},
 		},
 		{
@@ -771,16 +605,10 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
 				items := m["items"].([]any)
-				if len(items) != 3 {
-					t.Fatalf("len: got %d, want 3", len(items))
-				}
-				if items[0] != "a" || items[1] != "b" || items[2] != "c" {
-					t.Errorf("items: got %v", items)
-				}
+				require.Len(t, items, 3, "len")
+				assert.Equal(t, []any{"a", "b", "c"}, items, "items")
 			},
 		},
 		{
@@ -791,19 +619,11 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
 				items := m["items"].([]any)
-				if len(items) != 3 {
-					t.Fatalf("len: got %d, want 3",
-						len(items))
-				}
+				require.Len(t, items, 3, "len")
 				// Negative index clamped to 0: inserted at front
-				if items[0] != "z" {
-					t.Errorf("items[0]: got %v, want z",
-						items[0])
-				}
+				assert.Equal(t, "z", items[0], "items[0]")
 			},
 		},
 		{
@@ -814,15 +634,10 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
-				if _, ok := m["b"]; ok {
-					t.Error("expected b to be deleted")
-				}
-				if m["a"] != "keep" {
-					t.Errorf("a: got %v", m["a"])
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
+				_, ok := m["b"]
+				assert.False(t, ok, "expected b to be deleted")
+				assert.Equal(t, "keep", m["a"], "a")
 			},
 		},
 		{
@@ -833,22 +648,16 @@ func TestReconstructJSONL(t *testing.T) {
 			},
 			check: func(t *testing.T, data []byte) {
 				var m map[string]any
-				if err := json.Unmarshal(data, &m); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, json.Unmarshal(data, &m))
 				arr := m["arr"].([]any)
-				if arr[1] != "Y" {
-					t.Errorf("arr[1]: got %v", arr[1])
-				}
+				assert.Equal(t, "Y", arr[1], "arr[1]")
 			},
 		},
 		{
 			name:  "empty file returns nil",
 			lines: []string{},
 			check: func(t *testing.T, data []byte) {
-				if data != nil {
-					t.Errorf("expected nil, got %s", data)
-				}
+				assert.Nil(t, data, "expected nil")
 			},
 		},
 	}
@@ -859,22 +668,16 @@ func TestReconstructJSONL(t *testing.T) {
 			path := filepath.Join(dir, "test.jsonl")
 
 			content := strings.Join(tt.lines, "\n") + "\n"
-			if err := os.WriteFile(
+			require.NoError(t, os.WriteFile(
 				path, []byte(content), 0644,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 
 			data, err := reconstructJSONL(path)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
+				require.Error(t, err, "expected error")
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 			tt.check(t, data)
 		})
 	}
@@ -887,67 +690,52 @@ func TestDiscoverVSCodeCopilot_JSONLDedup(t *testing.T) {
 	chatDir := filepath.Join(
 		root, "workspaceStorage", hash, "chatSessions",
 	)
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(chatDir, 0755))
 
 	wsJSON := `{"folder":"file:///Users/dev/projects/myproject"}`
 	wsPath := filepath.Join(
 		root, "workspaceStorage", hash, "workspace.json",
 	)
-	if err := os.WriteFile(
-		wsPath, []byte(wsJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(wsPath, []byte(wsJSON), 0644))
 
 	// Session with both .json and .jsonl - jsonl should win
 	sessionJSON := `{"version":3,"sessionId":"dup1","requests":[{"requestId":"r1","message":{"text":"hi"},"response":[{"value":"hello"}],"timestamp":1755340000000}]}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(chatDir, "dup1.json"),
 		[]byte(sessionJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	jsonlContent := `{"kind":0,"v":{"version":3,"sessionId":"dup1","creationDate":1755340000000,"requests":[{"requestId":"r1","timestamp":1755340000000,"message":{"text":"hi"},"response":[{"value":"hello"}]}]}}` + "\n"
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(chatDir, "dup1.jsonl"),
 		[]byte(jsonlContent), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	// Session with only .jsonl
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(chatDir, "only-jsonl.jsonl"),
 		[]byte(jsonlContent), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	// Session with only .json
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(chatDir, "only-json.json"),
 		[]byte(sessionJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	files := DiscoverVSCodeCopilotSessions(root)
 
 	// Should get 3 files: dup1.jsonl, only-jsonl.jsonl, only-json.json
-	if len(files) != 3 {
+	if !assert.Len(t, files, 3, "expected 3 files") {
 		for _, f := range files {
 			t.Logf("  %s", f.Path)
 		}
-		t.Fatalf("got %d files, want 3", len(files))
+		t.FailNow()
 	}
 
 	// Verify dup1.json was excluded (dup1.jsonl present)
 	for _, f := range files {
-		if filepath.Base(f.Path) == "dup1.json" {
-			t.Error("dup1.json should be excluded when dup1.jsonl exists")
-		}
+		assert.NotEqual(t, "dup1.json", filepath.Base(f.Path),
+			"dup1.json should be excluded when dup1.jsonl exists")
 	}
 }
 
@@ -960,14 +748,8 @@ func TestFindVSCodeCopilotSourceFile(t *testing.T) {
 		dir, "workspaceStorage", "hash1", "chatSessions",
 	)
 	sessionPath := filepath.Join(chatDir, uuid+".json")
-	if err := os.MkdirAll(chatDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		sessionPath, []byte("{}"), 0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(chatDir, 0o755))
+	require.NoError(t, os.WriteFile(sessionPath, []byte("{}"), 0o644))
 
 	tests := []struct {
 		name string
@@ -988,9 +770,7 @@ func TestFindVSCodeCopilotSourceFile(t *testing.T) {
 			got := FindVSCodeCopilotSourceFile(
 				tt.dir, tt.id,
 			)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

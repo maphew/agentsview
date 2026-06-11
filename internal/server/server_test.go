@@ -439,6 +439,230 @@ func (te *testEnv) get(
 	return te.getWithContext(t, context.Background(), path)
 }
 
+func TestOpenAPIEndpointDocumentsExistingAPIRoutes(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/openapi.json")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	contentType := w.Header().Get("Content-Type")
+	assert.True(t,
+		strings.Contains(contentType, "application/json") ||
+			strings.Contains(contentType, "application/openapi+json"),
+		"Content-Type = %q", contentType)
+
+	var spec struct {
+		OpenAPI string `json:"openapi"`
+		Info    struct {
+			Title   string `json:"title"`
+			Version string `json:"version"`
+		} `json:"info"`
+		Paths map[string]map[string]any `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &spec))
+	require.Equal(t, "3.1.0", spec.OpenAPI)
+	assert.Equal(t, "AgentsView API", spec.Info.Title)
+	assert.NotEmpty(t, spec.Info.Version)
+
+	require.Contains(t, spec.Paths, "/api/v1/sessions")
+	assert.Contains(t, spec.Paths["/api/v1/sessions"], "get")
+	require.Contains(t, spec.Paths, "/api/v1/sessions/{id}")
+	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}"], "get")
+	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}"], "delete")
+	require.Contains(t, spec.Paths, "/api/v1/sessions/{id}/messages")
+	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}/messages"], "get")
+	require.Contains(t, spec.Paths, "/api/v1/settings")
+	assert.Contains(t, spec.Paths["/api/v1/settings"], "put")
+}
+
+func TestOpenAPIEndpointDocumentsEnumsAndRequestBodies(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/openapi.json")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	type openAPISchema struct {
+		Ref        string                   `json:"$ref"`
+		Enum       []string                 `json:"enum"`
+		Properties map[string]openAPISchema `json:"properties"`
+	}
+	type openAPIParameter struct {
+		Name   string        `json:"name"`
+		In     string        `json:"in"`
+		Schema openAPISchema `json:"schema"`
+	}
+	type openAPIRequestBody struct {
+		Content map[string]struct {
+			Schema openAPISchema `json:"schema"`
+		} `json:"content"`
+	}
+	type openAPIOperation struct {
+		Parameters  []openAPIParameter  `json:"parameters"`
+		RequestBody *openAPIRequestBody `json:"requestBody"`
+	}
+	var spec struct {
+		Paths      map[string]map[string]openAPIOperation `json:"paths"`
+		Components struct {
+			Schemas map[string]openAPISchema `json:"schemas"`
+		} `json:"components"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &spec))
+	resolveSchema := func(schema openAPISchema) openAPISchema {
+		if schema.Ref == "" {
+			return schema
+		}
+		const prefix = "#/components/schemas/"
+		require.True(t,
+			strings.HasPrefix(schema.Ref, prefix),
+			"unsupported schema ref %q", schema.Ref)
+		name := strings.TrimPrefix(schema.Ref, prefix)
+		resolved, ok := spec.Components.Schemas[name]
+		require.True(t, ok, "schema ref %q missing target", schema.Ref)
+		return resolved
+	}
+
+	for _, tt := range []struct {
+		path   string
+		method string
+		name   string
+		want   []string
+	}{
+		{
+			path:   "/api/v1/sessions/{id}/messages",
+			method: "get",
+			name:   "direction",
+			want:   []string{"asc", "desc"},
+		},
+		{
+			path:   "/api/v1/search",
+			method: "get",
+			name:   "sort",
+			want:   []string{"relevance", "recency"},
+		},
+		{
+			path:   "/api/v1/search/content",
+			method: "get",
+			name:   "mode",
+			want:   []string{"substring", "regex", "fts"},
+		},
+		{
+			path:   "/api/v1/sessions/{id}/md",
+			method: "get",
+			name:   "depth",
+			want:   []string{"1", "all"},
+		},
+		{
+			path:   "/api/v1/analytics/activity",
+			method: "get",
+			name:   "granularity",
+			want:   []string{"day", "week", "month"},
+		},
+		{
+			path:   "/api/v1/analytics/heatmap",
+			method: "get",
+			name:   "metric",
+			want:   []string{"messages", "sessions", "output_tokens"},
+		},
+	} {
+		pathItem, ok := spec.Paths[tt.path]
+		require.True(t, ok, "spec missing path %s", tt.path)
+		op, ok := pathItem[tt.method]
+		require.True(t, ok, "spec missing operation %s %s", tt.method, tt.path)
+
+		var got []string
+		for _, param := range op.Parameters {
+			if param.Name == tt.name && param.In == "query" {
+				got = param.Schema.Enum
+				break
+			}
+		}
+		require.NotNil(t, got,
+			"%s %s missing query parameter %q", tt.method, tt.path, tt.name)
+		assert.Equal(t, tt.want, got)
+	}
+
+	for _, tt := range []struct {
+		path     string
+		method   string
+		property string
+	}{
+		{
+			path:     "/api/v1/sessions/{id}/rename",
+			method:   "patch",
+			property: "display_name",
+		},
+		{
+			path:     "/api/v1/settings/worktree-mappings",
+			method:   "post",
+			property: "path_prefix",
+		},
+		{
+			path:     "/api/v1/config/github",
+			method:   "post",
+			property: "token",
+		},
+	} {
+		pathItem, ok := spec.Paths[tt.path]
+		require.True(t, ok, "spec missing path %s", tt.path)
+		op, ok := pathItem[tt.method]
+		require.True(t, ok, "spec missing operation %s %s", tt.method, tt.path)
+		require.NotNil(t, op.RequestBody,
+			"%s %s missing requestBody", tt.method, tt.path)
+		jsonContent, ok := op.RequestBody.Content["application/json"]
+		require.True(t, ok,
+			"%s %s missing application/json body", tt.method, tt.path)
+		schema := resolveSchema(jsonContent.Schema)
+		require.Contains(t, schema.Properties, tt.property)
+	}
+
+	pathItem, ok := spec.Paths["/api/v1/config/terminal"]
+	require.True(t, ok, "spec missing path /api/v1/config/terminal")
+	op, ok := pathItem["post"]
+	require.True(t, ok, "spec missing operation post /api/v1/config/terminal")
+	require.NotNil(t, op.RequestBody,
+		"post /api/v1/config/terminal missing requestBody")
+	jsonContent, ok := op.RequestBody.Content["application/json"]
+	require.True(t, ok,
+		"post /api/v1/config/terminal missing application/json body")
+	schema := resolveSchema(jsonContent.Schema)
+	mode, ok := schema.Properties["mode"]
+	require.True(t, ok, "post /api/v1/config/terminal missing mode property")
+	mode = resolveSchema(mode)
+	assert.Equal(t, []string{"auto", "custom", "clipboard"}, mode.Enum)
+}
+
+func TestOpenAPIEndpointDocumentsImportResponseContentTypes(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/openapi.json")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	type openAPIResponse struct {
+		Content map[string]struct{} `json:"content"`
+	}
+	type openAPIOperation struct {
+		Responses map[string]openAPIResponse `json:"responses"`
+	}
+	var spec struct {
+		Paths map[string]map[string]openAPIOperation `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &spec))
+
+	for _, path := range []string{
+		"/api/v1/import/claude-ai",
+		"/api/v1/import/chatgpt",
+	} {
+		pathItem, ok := spec.Paths[path]
+		require.True(t, ok, "spec missing path %s", path)
+		op, ok := pathItem["post"]
+		require.True(t, ok, "spec missing operation post %s", path)
+		response, ok := op.Responses["200"]
+		require.True(t, ok, "post %s missing 200 response", path)
+		require.Contains(t, response.Content, "text/event-stream")
+		require.Contains(t, response.Content, "application/json")
+	}
+}
+
 func (te *testEnv) post(
 	t *testing.T, path string, body string,
 ) *httptest.ResponseRecorder {
@@ -503,6 +727,16 @@ func decode[T any](
 			err, w.Body.String())
 	}
 	return result
+}
+
+func sidebarIndexRowsByID(
+	sessions []db.SidebarSessionIndexRow,
+) map[string]db.SidebarSessionIndexRow {
+	rows := make(map[string]db.SidebarSessionIndexRow, len(sessions))
+	for _, s := range sessions {
+		rows[s.ID] = s
+	}
+	return rows
 }
 
 func assertStatus(
@@ -611,6 +845,18 @@ func parseSSE(body string) []SSEEvent {
 		events = append(events, currentEvent)
 	}
 	return events
+}
+
+func TestHumaScanSecretsEmitsSummaryEvent(t *testing.T) {
+	t.Parallel()
+	te := setup(t)
+
+	w := te.post(t, "/api/v1/secrets/scan", "")
+
+	assert.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	events := parseSSE(w.Body.String())
+	assert.NotEmpty(t, events)
+	assert.Equal(t, "summary", events[len(events)-1].Event)
 }
 
 func (te *testEnv) waitForSSEEvent(t *testing.T, w *flushRecorder, expectedEvent string, timeout time.Duration) {
@@ -794,6 +1040,68 @@ func TestListSessions_ExcludeOneShotDefault(t *testing.T) {
 	if len(resp.Sessions) != 3 {
 		t.Fatalf("include: expected 3 sessions, got %d",
 			len(resp.Sessions))
+	}
+}
+
+func TestSidebarIndexReturnsSkinnyRows(t *testing.T) {
+	te := setup(t)
+
+	displayName := "Important investigation"
+	te.seedSession(t, "named", "my-app", 5, func(s *db.Session) {
+		s.DisplayName = &displayName
+		s.UserMessageCount = 2
+	})
+	teammateFirstMessage := "<teammate-message from=\"codex\">review"
+	te.seedSession(t, "teammate", "my-app", 5, func(s *db.Session) {
+		s.FirstMessage = &teammateFirstMessage
+		s.UserMessageCount = 2
+	})
+	te.seedSession(t, "review", "my-app", 3, func(s *db.Session) {
+		fm := "You are a code reviewer. Review the code."
+		s.FirstMessage = &fm
+		s.UserMessageCount = 1
+	})
+
+	w := te.get(t, "/api/v1/sessions/sidebar-index")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[db.SidebarSessionIndex](t, w)
+	rows := sidebarIndexRowsByID(resp.Sessions)
+
+	if got := rows["named"].DisplayName; got == nil || *got != displayName {
+		t.Fatalf("display_name = %v, want %q", got, displayName)
+	}
+	if !rows["teammate"].IsTeammate {
+		t.Fatal("teammate is_teammate = false, want true")
+	}
+	if _, ok := rows["review"]; ok {
+		t.Fatal("automated review row returned without include_automated=true")
+	}
+
+	w = te.get(t, "/api/v1/sessions/sidebar-index?include_automated=true")
+	assertStatus(t, w, http.StatusOK)
+	resp = decode[db.SidebarSessionIndex](t, w)
+	rows = sidebarIndexRowsByID(resp.Sessions)
+	if _, ok := rows["review"]; !ok {
+		t.Fatal("automated review row missing with include_automated=true")
+	}
+}
+
+func TestSidebarIndexValidatesParams(t *testing.T) {
+	tests := []string{
+		"/api/v1/sessions/sidebar-index?min_messages=bad",
+		"/api/v1/sessions/sidebar-index?max_messages=bad",
+		"/api/v1/sessions/sidebar-index?min_user_messages=bad",
+		"/api/v1/sessions/sidebar-index?date=2024-99-99",
+		"/api/v1/sessions/sidebar-index?date_from=2024-06-02&date_to=2024-06-01",
+		"/api/v1/sessions/sidebar-index?active_since=not-a-timestamp",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			te := setup(t)
+			w := te.get(t, path)
+			assertStatus(t, w, http.StatusBadRequest)
+		})
 	}
 }
 
@@ -1505,6 +1813,23 @@ func TestHostHeaderRejectsDNSRebinding(t *testing.T) {
 	assertStatus(t, w, http.StatusForbidden)
 }
 
+func TestHostHeaderRejectionBodyIsDescriptive(t *testing.T) {
+	te := setup(t)
+
+	// A forwarded port produces a Host the server does not trust.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	req.Host = "127.0.0.1:18080"
+	w := httptest.NewRecorder()
+	te.srv.Handler().ServeHTTP(w, req)
+
+	assertStatus(t, w, http.StatusForbidden)
+	body := w.Body.String()
+	// The body must name the rejected Host and point at the fix so a
+	// user can self-diagnose without devtools.
+	assert.Contains(t, body, "127.0.0.1:18080")
+	assert.Contains(t, body, "--public-url")
+}
+
 func TestHostHeaderAllowsLegitimate(t *testing.T) {
 	te := setup(t)
 
@@ -2064,6 +2389,24 @@ func TestAuthRequiredButNoToken(t *testing.T) {
 			w.Code,
 		)
 	}
+}
+
+func TestAuthRequiredProtectsPing(t *testing.T) {
+	te := setup(t, func(c *config.Config) {
+		c.RequireAuth = true
+		c.AuthToken = "secret-token"
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	w := httptest.NewRecorder()
+	te.srv.Handler().ServeHTTP(w, req)
+	assertStatus(t, w, http.StatusUnauthorized)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w = httptest.NewRecorder()
+	te.srv.Handler().ServeHTTP(w, req)
+	assertStatus(t, w, http.StatusOK)
 }
 
 func TestGetGithubConfig(t *testing.T) {

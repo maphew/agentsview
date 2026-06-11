@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_sessions_parent
+    ON sessions (parent_session_id)
+    WHERE parent_session_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS messages (
     session_id     TEXT NOT NULL,
     ordinal        INT NOT NULL,
@@ -100,6 +104,9 @@ CREATE TABLE IF NOT EXISTS messages (
         REFERENCES sessions(id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_messages_velocity
+    ON messages (session_id, ordinal, role, timestamp, content_length);
+
 CREATE TABLE IF NOT EXISTS usage_events (
     id BIGSERIAL PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -129,6 +136,36 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_session
 
 CREATE INDEX IF NOT EXISTS idx_usage_events_occurred
     ON usage_events (occurred_at);
+
+CREATE TABLE IF NOT EXISTS starred_sessions (
+    session_id TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS pinned_messages (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    message_id  INT NOT NULL,
+    ordinal     INT NOT NULL,
+    source_uuid TEXT NOT NULL DEFAULT '',
+    note        TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id) ON DELETE CASCADE,
+    UNIQUE (session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_session
+    ON pinned_messages (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_created
+    ON pinned_messages (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_source_uuid
+    ON pinned_messages (session_id, source_uuid)
+    WHERE source_uuid <> '';
 
 CREATE TABLE IF NOT EXISTS model_pricing (
     model_pattern TEXT PRIMARY KEY,
@@ -162,6 +199,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_dedup
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session
     ON tool_calls (session_id);
 
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session_category
+    ON tool_calls (session_id, category);
+
 CREATE TABLE IF NOT EXISTS tool_result_events (
     id                        BIGSERIAL PRIMARY KEY,
     session_id                TEXT NOT NULL,
@@ -188,6 +228,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_result_events_dedup
         session_id, tool_call_message_ordinal,
         call_index, event_index
     );
+
+CREATE TABLE IF NOT EXISTS secret_findings (
+    id               BIGINT GENERATED ALWAYS AS IDENTITY
+                         PRIMARY KEY,
+    session_id       TEXT NOT NULL
+                         REFERENCES sessions(id)
+                         ON DELETE CASCADE,
+    rule_name        TEXT NOT NULL,
+    confidence       TEXT NOT NULL,
+    location_kind    TEXT NOT NULL,
+    message_ordinal  INTEGER NOT NULL,
+    call_index       INTEGER,
+    event_index      INTEGER,
+    match_start      INTEGER NOT NULL,
+    match_end        INTEGER NOT NULL,
+    match_index      INTEGER NOT NULL,
+    redacted_match   TEXT NOT NULL,
+    rules_version    TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_secret_findings_session
+    ON secret_findings (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_secret_findings_rule
+    ON secret_findings (rule_name);
 `
 
 // EnsureSchema creates the schema (if needed), then runs
@@ -460,6 +526,16 @@ func EnsureSchema(
 			`termination_status TEXT`,
 			"adding sessions.termination_status",
 		},
+		{
+			"sessions", "secret_leak_count",
+			`secret_leak_count INTEGER NOT NULL DEFAULT 0`,
+			"adding sessions.secret_leak_count",
+		},
+		{
+			"sessions", "secrets_rules_version",
+			`secrets_rules_version TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.secrets_rules_version",
+		},
 	}
 	step = time.Now()
 	existingColumns, err := loadExistingColumns(ctx, db, alters)
@@ -511,6 +587,12 @@ func EnsureSchema(
 	}
 	log.Printf(
 		"pg schema: partial indexes step completed in %s",
+		time.Since(step).Round(time.Millisecond),
+	)
+	step = time.Now()
+	createContentSearchIndexesPG(ctx, db)
+	log.Printf(
+		"pg schema: content search index step completed in %s",
 		time.Since(step).Round(time.Millisecond),
 	)
 	step = time.Now()
@@ -572,6 +654,13 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 		 ON messages(session_id) WHERE is_sidechain = TRUE`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_source_uuid
 		 ON messages(source_uuid) WHERE source_uuid != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_usage_timestamp
+		 ON messages(timestamp, session_id, ordinal)
+		 WHERE token_usage != ''
+		   AND model != ''
+		   AND model != '<synthetic>'`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_has_secret
+		 ON sessions(secret_leak_count) WHERE secret_leak_count > 0`,
 	}
 	for _, ddl := range indexes {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {
@@ -579,6 +668,51 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// createContentSearchIndexesPG adds a pg_trgm GIN index on messages.content so
+// the content search (ILIKE '%pattern%') is index-accelerated instead of
+// sequentially scanning the messages table as history grows.
+//
+// It is best-effort and never fails schema setup. pg_trgm is a trusted
+// extension on PostgreSQL 13+, but a role without CREATE privilege (or a
+// managed instance that blocks it) must still get a working — if slower —
+// store. Each statement runs in its own implicit transaction, so a failed
+// CREATE EXTENSION does not poison the rest of EnsureSchema. The gin_trgm_ops
+// operator class lives in whatever schema pg_trgm was installed in, which may
+// not be on the connection search_path (Open sets it to the target schema
+// only), so the opclass is schema-qualified to the extension's namespace.
+func createContentSearchIndexesPG(ctx context.Context, db *sql.DB) {
+	if _, err := db.ExecContext(ctx,
+		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+	); err != nil {
+		log.Printf(
+			"pg schema: pg_trgm unavailable, content search will scan: %v", err,
+		)
+		return
+	}
+	var extSchema string
+	if err := db.QueryRowContext(ctx,
+		`SELECT n.nspname FROM pg_extension e
+		 JOIN pg_namespace n ON n.oid = e.extnamespace
+		 WHERE e.extname = 'pg_trgm'`,
+	).Scan(&extSchema); err != nil {
+		log.Printf("pg schema: locating pg_trgm schema failed: %v", err)
+		return
+	}
+	quotedExt, err := quoteIdentifier(extSchema)
+	if err != nil {
+		log.Printf("pg schema: invalid pg_trgm schema %q: %v", extSchema, err)
+		return
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(
+		`CREATE INDEX IF NOT EXISTS idx_messages_content_trgm
+		 ON messages USING gin (content %s.gin_trgm_ops)`, quotedExt,
+	)); err != nil {
+		log.Printf(
+			"pg schema: creating messages.content trigram index failed: %v", err,
+		)
+	}
 }
 
 // backfillIsAutomatedPG verifies is_automated for all PG
@@ -1163,7 +1297,7 @@ func CheckSchemaCompat(
 ) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, created_at, deleted_at, updated_at,
-			termination_status
+			termination_status, secret_leak_count, secrets_rules_version
 		 FROM sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf(
@@ -1190,6 +1324,27 @@ func CheckSchemaCompat(
 	if err != nil {
 		return fmt.Errorf(
 			"messages table missing required columns: %w",
+			err,
+		)
+	}
+	rows.Close()
+	rows, err = db.QueryContext(ctx,
+		`SELECT session_id, created_at
+		 FROM starred_sessions LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"starred_sessions table missing required columns: %w",
+			err,
+		)
+	}
+	rows.Close()
+	rows, err = db.QueryContext(ctx,
+		`SELECT id, session_id, message_id, ordinal,
+			source_uuid, note, created_at
+		 FROM pinned_messages LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"pinned_messages table missing required columns: %w",
 			err,
 		)
 	}
@@ -1223,6 +1378,17 @@ func CheckSchemaCompat(
 			"usage_events table missing required columns: %w",
 			err,
 		)
+	}
+	rows.Close()
+
+	rows, err = db.QueryContext(ctx,
+		`SELECT id, session_id, rule_name, confidence, location_kind,
+			message_ordinal, call_index, event_index,
+			match_start, match_end, match_index,
+			redacted_match, rules_version
+		 FROM secret_findings LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf("secret_findings table missing required columns: %w", err)
 	}
 	rows.Close()
 	return nil

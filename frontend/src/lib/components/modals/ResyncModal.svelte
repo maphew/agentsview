@@ -8,6 +8,12 @@
   let errorMessage: string = $state("");
 
   function startResync() {
+    if (sync.readOnly) {
+      errorMessage =
+        "Full resync is unavailable for read-only backends.";
+      view = "error";
+      return;
+    }
     const started = sync.triggerResync(
       () => {
         view = "done";
@@ -19,7 +25,7 @@
     );
     if (started) {
       view = "progress";
-    } else {
+    } else if (!errorMessage) {
       errorMessage = "A sync is already in progress.";
       view = "error";
     }
@@ -67,7 +73,12 @@
     <div class="modal-header">
       <h3 class="modal-title">Full Resync</h3>
       {#if view !== "progress"}
-        <button class="modal-close" onclick={close}>
+        <button
+          class="modal-close"
+          onclick={close}
+          title="Close resync dialog"
+          aria-label="Close resync dialog"
+        >
           &times;
         </button>
       {/if}

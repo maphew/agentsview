@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // startTestWatcherNoCleanup sets up a watcher without registering
@@ -22,12 +23,9 @@ func startTestWatcherNoCleanup(
 	t.Helper()
 	dir := t.TempDir()
 	w, err := NewWatcher(debounce, onChange, nil)
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
-	if _, _, err := w.WatchRecursive(dir); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
+	_, _, err = w.WatchRecursive(dir)
+	require.NoError(t, err, "WatchRecursive")
 	w.Start()
 	return w, dir
 }
@@ -66,18 +64,13 @@ func TestWatcherCallsOnChange(t *testing.T) {
 	})
 
 	path := filepath.Join(dir, "test.jsonl")
-	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
 
 	select {
 	case gotPaths := <-pathsCh:
-		if len(gotPaths) == 0 {
-			t.Fatal("onChange called with empty paths")
-		}
-		if !slices.Contains(gotPaths, path) {
-			t.Fatalf("onChange did not contain expected path %s, got %v", path, gotPaths)
-		}
+		require.NotEmpty(t, gotPaths, "onChange called with empty paths")
+		require.True(t, slices.Contains(gotPaths, path),
+			"onChange did not contain expected path %s, got %v", path, gotPaths)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for onChange callback")
 	}
@@ -91,9 +84,7 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 	})
 
 	subdir := filepath.Join(dir, "newdir")
-	if err := os.Mkdir(subdir, 0o755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(subdir, 0o755))
 
 	// Wait for fsnotify to process the mkdir and add the watch
 	pollUntil(t, func() bool {
@@ -101,9 +92,7 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 	})
 
 	nestedPath := filepath.Join(subdir, "nested.jsonl")
-	if err := os.WriteFile(nestedPath, []byte("nested"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(nestedPath, []byte("nested"), 0o644))
 
 	deadline := time.Now().Add(5 * time.Second)
 	found := false
@@ -117,9 +106,7 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 		}
 	}
 
-	if !found {
-		t.Fatal("timed out waiting for nested file change")
-	}
+	require.True(t, found, "timed out waiting for nested file change")
 }
 
 func TestWatcherStopIsClean(t *testing.T) {
@@ -154,9 +141,7 @@ func TestWatcherStopIdempotency(t *testing.T) {
 	)
 
 	stressPath := filepath.Join(dir2, "stress.txt")
-	if err := os.WriteFile(stressPath, []byte("data"), 0o644); err != nil {
-		t.Fatalf("stress write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(stressPath, []byte("data"), 0o644), "stress write")
 
 	// Wait for fsnotify to process it before concurrent stop
 	select {
@@ -193,9 +178,7 @@ func TestWatcherIgnoresNonWriteCreate(t *testing.T) {
 	t.Cleanup(func() { w.Stop() })
 
 	path := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
 
 	// Wait for the initial write event to clear
 	select {
@@ -205,9 +188,7 @@ func TestWatcherIgnoresNonWriteCreate(t *testing.T) {
 	}
 
 	// Now do a chmod (should be ignored)
-	if err := os.Chmod(path, 0o666); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
+	require.NoError(t, os.Chmod(path, 0o666))
 
 	// We can manually flush and see if anything triggers, but since the
 	// event won't even be recorded, flush won't do anything. We just wait a bit.
@@ -224,9 +205,7 @@ func TestWatcherHandlesRemoveAndRename(t *testing.T) {
 	w, err := NewWatcher(time.Millisecond, func(paths []string) {
 		pathsCh <- paths
 	}, nil)
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 	base := time.Unix(0, 0)
@@ -244,12 +223,8 @@ func TestWatcherHandlesRemoveAndRename(t *testing.T) {
 	w.flush()
 
 	got := <-pathsCh
-	if !slices.Contains(got, "/tmp/remove.json") {
-		t.Fatalf("remove event missing from %v", got)
-	}
-	if !slices.Contains(got, "/tmp/rename.json") {
-		t.Fatalf("rename event missing from %v", got)
-	}
+	assert.Contains(t, got, "/tmp/remove.json")
+	assert.Contains(t, got, "/tmp/rename.json")
 }
 
 func TestWatcherDebounceLogic(t *testing.T) {
@@ -276,9 +251,7 @@ func TestWatcherDebounceLogic(t *testing.T) {
 	w.mu.Unlock()
 
 	path := filepath.Join(dir, "recent_dir")
-	if err := os.Mkdir(path, 0o755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(path, 0o755))
 
 	// Wait for fsnotify to process the mkdir and add the watch
 	pollUntil(t, func() bool {
@@ -303,9 +276,8 @@ func TestWatcherDebounceLogic(t *testing.T) {
 
 	select {
 	case gotPaths := <-pathsCh:
-		if len(gotPaths) != 1 || gotPaths[0] != path {
-			t.Fatalf("expected [%s], got %v", path, gotPaths)
-		}
+		require.Len(t, gotPaths, 1, "expected [%s], got %v", path, gotPaths)
+		assert.Equal(t, path, gotPaths[0])
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected onChange to be called after debounce elapsed")
 	}
@@ -321,9 +293,7 @@ func TestWatcherDebounceLogic(t *testing.T) {
 
 func TestWatchRecursive_ExcludesDirectoryNames(t *testing.T) {
 	w, err := NewWatcher(time.Second, func(_ []string) {}, []string{".git", "node_modules"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
@@ -332,61 +302,40 @@ func TestWatchRecursive_ExcludesDirectoryNames(t *testing.T) {
 	excludedGit := filepath.Join(root, "project", ".git", "objects")
 	excludedModules := filepath.Join(root, "project", "node_modules", "pkg")
 	for _, p := range []string{included, excludedGit, excludedModules} {
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatalf("MkdirAll(%s): %v", p, err)
-		}
+		require.NoError(t, os.MkdirAll(p, 0o755), "MkdirAll(%s)", p)
 	}
 
-	if _, _, err := w.WatchRecursive(root); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	_, _, err = w.WatchRecursive(root)
+	require.NoError(t, err, "WatchRecursive")
 
 	got := w.watcher.WatchList()
-	if slices.Contains(got, filepath.Join(root, "project", ".git")) {
-		t.Fatal(".git should be excluded from watch list")
-	}
-	if slices.Contains(got, filepath.Join(root, "project", "node_modules")) {
-		t.Fatal("node_modules should be excluded from watch list")
-	}
-	if !slices.Contains(got, included) {
-		t.Fatalf("expected included dir %s in watch list", included)
-	}
+	assert.NotContains(t, got, filepath.Join(root, "project", ".git"),
+		".git should be excluded from watch list")
+	assert.NotContains(t, got, filepath.Join(root, "project", "node_modules"),
+		"node_modules should be excluded from watch list")
+	assert.Contains(t, got, included, "expected included dir in watch list")
 }
 
 func TestWatchRecursiveBudget_DegradesWhenBudgetExhausted(t *testing.T) {
 	root := t.TempDir()
 	for i := range 5 {
-		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir-%d", i)), 0o755); err != nil {
-			t.Fatalf("MkdirAll: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir-%d", i)), 0o755))
 	}
 
 	w, err := NewWatcher(time.Second, func(_ []string) {}, nil)
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
 	result := w.WatchRecursiveBudgeted(root, 3)
-	if result.Watched != 3 {
-		t.Fatalf("Watched = %d, want 3", result.Watched)
-	}
-	if !result.BudgetExhausted {
-		t.Fatal("BudgetExhausted = false, want true")
-	}
+	assert.Equal(t, 3, result.Watched)
+	assert.True(t, result.BudgetExhausted, "BudgetExhausted = false, want true")
 }
 
 func TestIsWatchResourceExhaustion(t *testing.T) {
-	if !isWatchResourceExhaustion(syscall.EMFILE) {
-		t.Fatal("EMFILE should be resource exhaustion")
-	}
-	if !isWatchResourceExhaustion(syscall.ENOSPC) {
-		t.Fatal("ENOSPC should be resource exhaustion")
-	}
-	if isWatchResourceExhaustion(os.ErrNotExist) {
-		t.Fatal("ErrNotExist should not be resource exhaustion")
-	}
+	assert.True(t, isWatchResourceExhaustion(syscall.EMFILE), "EMFILE should be resource exhaustion")
+	assert.True(t, isWatchResourceExhaustion(syscall.ENOSPC), "ENOSPC should be resource exhaustion")
+	assert.False(t, isWatchResourceExhaustion(os.ErrNotExist), "ErrNotExist should not be resource exhaustion")
 }
 
 func TestWatcherAutoWatchesNewDirs_RespectsExcludes(t *testing.T) {
@@ -394,37 +343,28 @@ func TestWatcherAutoWatchesNewDirs_RespectsExcludes(t *testing.T) {
 	w, err := NewWatcher(20*time.Millisecond, func(paths []string) {
 		pathsCh <- paths
 	}, []string{".git"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	t.Cleanup(func() { w.Stop() })
 
 	root := t.TempDir()
-	if _, _, err := w.WatchRecursive(root); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	_, _, err = w.WatchRecursive(root)
+	require.NoError(t, err, "WatchRecursive")
 	w.Start()
 
 	gitDir := filepath.Join(root, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("Mkdir(.git): %v", err)
-	}
+	require.NoError(t, os.Mkdir(gitDir, 0o755), "Mkdir(.git)")
 
 	time.Sleep(100 * time.Millisecond)
-	if slices.Contains(w.watcher.WatchList(), gitDir) {
-		t.Fatal("newly created excluded dir should not be watched")
-	}
+	assert.NotContains(t, w.watcher.WatchList(), gitDir,
+		"newly created excluded dir should not be watched")
 
 	fileInGit := filepath.Join(gitDir, "config")
-	if err := os.WriteFile(fileInGit, []byte("x"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(fileInGit, []byte("x"), 0o644))
 
 	select {
 	case paths := <-pathsCh:
-		if slices.Contains(paths, fileInGit) {
-			t.Fatal("changes inside excluded dir should not trigger onChange")
-		}
+		assert.NotContains(t, paths, fileInGit,
+			"changes inside excluded dir should not trigger onChange")
 	case <-time.After(200 * time.Millisecond):
 		// no events from excluded dir; expected
 	}
@@ -432,37 +372,26 @@ func TestWatcherAutoWatchesNewDirs_RespectsExcludes(t *testing.T) {
 
 func TestWatchRecursive_RootUnderExcludedAncestorStillWatchesDescendants(t *testing.T) {
 	w, err := NewWatcher(time.Second, func(_ []string) {}, []string{"venv"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
 	base := t.TempDir()
 	root := filepath.Join(base, "venv", "project")
 	included := filepath.Join(root, "src")
-	if err := os.MkdirAll(included, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s): %v", included, err)
-	}
+	require.NoError(t, os.MkdirAll(included, 0o755), "MkdirAll(%s)", included)
 
-	if _, _, err := w.WatchRecursive(root); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	_, _, err = w.WatchRecursive(root)
+	require.NoError(t, err, "WatchRecursive")
 
 	got := w.watcher.WatchList()
-	if !slices.Contains(got, root) {
-		t.Fatalf("expected root %s in watch list", root)
-	}
-	if !slices.Contains(got, included) {
-		t.Fatalf("expected included dir %s in watch list", included)
-	}
+	assert.Contains(t, got, root, "expected root in watch list")
+	assert.Contains(t, got, included, "expected included dir in watch list")
 }
 
 func TestWatchRecursive_ExcludesSlashPatternRelativeToRoot(t *testing.T) {
 	w, err := NewWatcher(time.Second, func(_ []string) {}, []string{"foo/bar"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
@@ -470,29 +399,20 @@ func TestWatchRecursive_ExcludesSlashPatternRelativeToRoot(t *testing.T) {
 	excluded := filepath.Join(root, "foo", "bar")
 	includedSibling := filepath.Join(root, "foo", "baz")
 	for _, p := range []string{excluded, includedSibling} {
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatalf("MkdirAll(%s): %v", p, err)
-		}
+		require.NoError(t, os.MkdirAll(p, 0o755), "MkdirAll(%s)", p)
 	}
 
-	if _, _, err := w.WatchRecursive(root); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	_, _, err = w.WatchRecursive(root)
+	require.NoError(t, err, "WatchRecursive")
 
 	got := w.watcher.WatchList()
-	if slices.Contains(got, excluded) {
-		t.Fatalf("expected %s to be excluded", excluded)
-	}
-	if !slices.Contains(got, includedSibling) {
-		t.Fatalf("expected %s to be included", includedSibling)
-	}
+	assert.NotContains(t, got, excluded, "expected %s to be excluded", excluded)
+	assert.Contains(t, got, includedSibling, "expected %s to be included", includedSibling)
 }
 
 func TestWatchRecursive_OverlappingRoots_UsesMostSpecificRoot(t *testing.T) {
 	w, err := NewWatcher(time.Second, func(_ []string) {}, []string{"venv"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
@@ -501,25 +421,17 @@ func TestWatchRecursive_OverlappingRoots_UsesMostSpecificRoot(t *testing.T) {
 	nestedRoot := filepath.Join(parentRoot, "venv", "project")
 	included := filepath.Join(nestedRoot, "src")
 	for _, p := range []string{parentRoot, included} {
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatalf("MkdirAll(%s): %v", p, err)
-		}
+		require.NoError(t, os.MkdirAll(p, 0o755), "MkdirAll(%s)", p)
 	}
 
-	if _, _, err := w.WatchRecursive(parentRoot); err != nil {
-		t.Fatalf("WatchRecursive(parent): %v", err)
-	}
-	if _, _, err := w.WatchRecursive(nestedRoot); err != nil {
-		t.Fatalf("WatchRecursive(nested): %v", err)
-	}
+	_, _, err = w.WatchRecursive(parentRoot)
+	require.NoError(t, err, "WatchRecursive(parent)")
+	_, _, err = w.WatchRecursive(nestedRoot)
+	require.NoError(t, err, "WatchRecursive(nested)")
 
 	got := w.watcher.WatchList()
-	if !slices.Contains(got, nestedRoot) {
-		t.Fatalf("expected nested root %s in watch list", nestedRoot)
-	}
-	if !slices.Contains(got, included) {
-		t.Fatalf("expected included dir %s in watch list", included)
-	}
+	assert.Contains(t, got, nestedRoot, "expected nested root in watch list")
+	assert.Contains(t, got, included, "expected included dir in watch list")
 }
 
 func TestWatcherExcludedCreateDir_DoesNotTriggerOnChange(t *testing.T) {
@@ -527,27 +439,21 @@ func TestWatcherExcludedCreateDir_DoesNotTriggerOnChange(t *testing.T) {
 	w, err := NewWatcher(20*time.Millisecond, func(paths []string) {
 		pathsCh <- paths
 	}, []string{".git"})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
+	require.NoError(t, err, "NewWatcher")
 	t.Cleanup(func() { w.Stop() })
 
 	root := t.TempDir()
-	if _, _, err := w.WatchRecursive(root); err != nil {
-		t.Fatalf("WatchRecursive: %v", err)
-	}
+	_, _, err = w.WatchRecursive(root)
+	require.NoError(t, err, "WatchRecursive")
 	w.Start()
 
 	gitDir := filepath.Join(root, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("Mkdir(.git): %v", err)
-	}
+	require.NoError(t, os.Mkdir(gitDir, 0o755), "Mkdir(.git)")
 
 	select {
 	case paths := <-pathsCh:
-		if slices.Contains(paths, gitDir) {
-			t.Fatal("excluded directory create should not trigger onChange")
-		}
+		assert.NotContains(t, paths, gitDir,
+			"excluded directory create should not trigger onChange")
 	case <-time.After(250 * time.Millisecond):
 		// Expected: no callback for excluded dir creation.
 	}
@@ -555,16 +461,9 @@ func TestWatcherExcludedCreateDir_DoesNotTriggerOnChange(t *testing.T) {
 
 func TestNewWatcher_NilOnChange(t *testing.T) {
 	_, err := NewWatcher(time.Second, nil, nil)
-	if err == nil {
-		t.Fatal("NewWatcher(nil) should return error")
-	}
-
-	if !errors.Is(err, os.ErrInvalid) {
-		t.Errorf("expected wrapped os.ErrInvalid, got %v", err)
-	}
+	require.Error(t, err, "NewWatcher(nil) should return error")
+	require.ErrorIs(t, err, os.ErrInvalid)
 
 	expectedMsg := "onChange callback is nil"
-	if err.Error() != expectedMsg+": "+os.ErrInvalid.Error() {
-		t.Errorf("expected error message to contain %q, got %q", expectedMsg, err.Error())
-	}
+	assert.Equal(t, expectedMsg+": "+os.ErrInvalid.Error(), err.Error())
 }

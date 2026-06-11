@@ -1,5 +1,5 @@
 import type { SessionTiming } from "./types/timing.js";
-import { ApiError, getAuthToken, getBase } from "./client.js";
+import { ApiError, getAuthToken, getBase } from "./runtime.js";
 
 /** Fetch the per-session timing summary computed by the backend.
  *  Mirrors the Go GetSessionTiming handler at

@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -139,13 +139,10 @@ func TestPrintStatsHuman_Populated(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := printStatsHuman(&buf, stats); err != nil {
-		t.Fatalf("printStatsHuman: %v", err)
-	}
+	require.NoError(t, printStatsHuman(&buf, stats), "printStatsHuman")
 	out := buf.String()
-	if len(out) < 200 {
-		t.Fatalf("output suspiciously short (%d bytes):\n%s", len(out), out)
-	}
+	require.GreaterOrEqual(t, len(out), 200,
+		"output suspiciously short (%d bytes):\n%s", len(out), out)
 
 	// Guard every major section header so accidental drops are caught.
 	wants := []string{
@@ -164,15 +161,13 @@ func TestPrintStatsHuman_Populated(t *testing.T) {
 		"Outcomes",
 	}
 	for _, w := range wants {
-		if !strings.Contains(out, w) {
-			t.Errorf("missing section heading %q in output:\n%s", w, out)
-		}
+		assert.Contains(t, out, w,
+			"missing section heading %q in output", w)
 	}
 
 	// Thousands separators must be applied to large counts.
-	if !strings.Contains(out, "11,905") {
-		t.Errorf("expected thousands separator for 11,905, got:\n%s", out)
-	}
+	assert.Contains(t, out, "11,905",
+		"expected thousands separator for 11,905")
 }
 
 // TestPrintStatsHuman_Empty guards the zero-session short
@@ -193,21 +188,16 @@ func TestPrintStatsHuman_Empty(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := printStatsHuman(&buf, stats); err != nil {
-		t.Fatalf("printStatsHuman: %v", err)
-	}
+	require.NoError(t, printStatsHuman(&buf, stats), "printStatsHuman")
 	out := buf.String()
-	if !strings.Contains(out, "no sessions") {
-		t.Errorf("expected zero-session placeholder in output:\n%s", out)
-	}
+	assert.Contains(t, out, "no sessions",
+		"expected zero-session placeholder in output")
 	// No optional section headers should appear.
 	for _, banned := range []string{
 		"Archetypes", "Velocity", "Cache economics", "Outcomes",
 	} {
-		if strings.Contains(out, banned) {
-			t.Errorf("section %q must not appear for empty window:\n%s",
-				banned, out)
-		}
+		assert.NotContains(t, out, banned,
+			"section %q must not appear for empty window", banned)
 	}
 }
 
@@ -227,9 +217,8 @@ func TestFmtInt64(t *testing.T) {
 		{-1234, "-1,234"},
 	}
 	for _, c := range cases {
-		if got := fmtInt64(c.in); got != c.want {
-			t.Errorf("fmtInt64(%d) = %q, want %q", c.in, got, c.want)
-		}
+		assert.Equal(t, c.want, fmtInt64(c.in),
+			"fmtInt64(%d)", c.in)
 	}
 }
 
@@ -239,9 +228,8 @@ func TestStatsCommand_OutcomeFlagsRegistered(t *testing.T) {
 		"include-git-outcomes",
 		"include-github-outcomes",
 	} {
-		if cmd.Flags().Lookup(name) == nil {
-			t.Fatalf("missing --%s flag", name)
-		}
+		assert.NotNil(t, cmd.Flags().Lookup(name),
+			"missing --%s flag", name)
 	}
 }
 
@@ -286,14 +274,11 @@ func TestStatsGolden(t *testing.T) {
 		"--until", "2026-04-15",
 		"--timezone", "UTC",
 	)
-	if err != nil {
-		t.Fatalf("stats: %v\noutput:\n%s", err, out)
-	}
+	require.NoError(t, err, "stats output:\n%s", out)
 
 	var got map[string]any
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal stats output: %v\noutput:\n%s", err, out)
-	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got),
+		"unmarshal stats output, output:\n%s", out)
 	delete(got, "generated_at")
 
 	goldenPath := filepath.Join(
@@ -301,35 +286,25 @@ func TestStatsGolden(t *testing.T) {
 	)
 	if *updateGolden {
 		buf, err := json.MarshalIndent(got, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal golden: %v", err)
-		}
+		require.NoError(t, err, "marshal golden")
 		buf = append(buf, '\n')
-		if err := os.MkdirAll(
+		require.NoError(t, os.MkdirAll(
 			filepath.Dir(goldenPath), 0o755,
-		); err != nil {
-			t.Fatalf("mkdir testdata: %v", err)
-		}
-		if err := os.WriteFile(
+		), "mkdir testdata")
+		require.NoError(t, os.WriteFile(
 			goldenPath, buf, 0o644,
-		); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
+		), "write golden")
 		t.Logf("rewrote %s (%d bytes)", goldenPath, len(buf))
 		return
 	}
 
 	raw, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden: %v (run with -update to generate)", err)
-	}
+	require.NoError(t, err, "read golden (run with -update to generate)")
 	var want map[string]any
-	if err := json.Unmarshal(raw, &want); err != nil {
-		t.Fatalf("unmarshal golden: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &want), "unmarshal golden")
 	delete(want, "generated_at")
 
-	if !reflect.DeepEqual(got, want) {
+	if !assert.Equal(t, want, got) {
 		gotBuf, _ := json.MarshalIndent(got, "", "  ")
 		wantBuf, _ := json.MarshalIndent(want, "", "  ")
 		t.Fatalf(
@@ -363,12 +338,10 @@ func TestStatsGolden(t *testing.T) {
 func buildGoldenFixtureDB(t *testing.T, dbPath string) {
 	t.Helper()
 	d, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open fixture db: %v", err)
-	}
+	require.NoError(t, err, "open fixture db")
 	t.Cleanup(func() { d.Close() })
 
-	if err := d.UpsertModelPricing([]db.ModelPricing{
+	require.NoError(t, d.UpsertModelPricing([]db.ModelPricing{
 		{
 			ModelPattern:         "claude-sonnet-4-20250514",
 			InputPerMTok:         3.0,
@@ -383,9 +356,7 @@ func buildGoldenFixtureDB(t *testing.T, dbPath string) {
 			CacheCreationPerMTok: 18.75,
 			CacheReadPerMTok:     1.50,
 		},
-	}); err != nil {
-		t.Fatalf("seed pricing: %v", err)
-	}
+	}), "seed pricing")
 
 	for _, spec := range goldenFixtureSessions {
 		seedGoldenSession(t, d, spec)
@@ -539,9 +510,7 @@ func seedGoldenSession(
 		TotalOutputTokens:    totalOutput,
 		HasTotalOutputTokens: totalOutput > 0,
 	}
-	if err := d.UpsertSession(session); err != nil {
-		t.Fatalf("upsert %s: %v", spec.id, err)
-	}
+	require.NoError(t, d.UpsertSession(session), "upsert %s", spec.id)
 
 	if spec.outcome != "" || spec.healthGrade != "" ||
 		spec.retryCount > 0 || spec.editChurn > 0 ||
@@ -551,22 +520,19 @@ func seedGoldenSession(
 			g := spec.healthGrade
 			grade = &g
 		}
-		if err := d.UpdateSessionSignals(spec.id, db.SessionSignalUpdate{
+		require.NoError(t, d.UpdateSessionSignals(spec.id, db.SessionSignalUpdate{
 			Outcome:         spec.outcome,
 			HealthGrade:     grade,
 			ToolRetryCount:  spec.retryCount,
 			EditChurnCount:  spec.editChurn,
 			CompactionCount: spec.compactions,
-		}); err != nil {
-			t.Fatalf("update signals %s: %v", spec.id, err)
-		}
+		}), "update signals %s", spec.id)
 	}
 
 	msgs := buildGoldenMessages(spec)
 	if len(msgs) > 0 {
-		if err := d.InsertMessages(msgs); err != nil {
-			t.Fatalf("insert messages %s: %v", spec.id, err)
-		}
+		require.NoError(t, d.InsertMessages(msgs),
+			"insert messages %s", spec.id)
 	}
 }
 

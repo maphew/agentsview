@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { SearchIcon } from "../../icons.js";
   import { tick, onDestroy } from "svelte";
   import { ui } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
@@ -150,9 +151,7 @@
 >
   <div class="palette">
     <div class="palette-input-wrap">
-      <svg class="search-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85zm-5.44.656a5 5 0 110-10 5 5 0 010 10z"/>
-      </svg>
+      <SearchIcon class="search-icon" size="14" strokeWidth="2" aria-hidden="true" />
       <input
         bind:this={inputRef}
         type="text"
@@ -279,7 +278,7 @@
     border-bottom: 1px solid var(--border-default);
   }
 
-  .search-icon {
+  :global(.search-icon) {
     flex-shrink: 0;
     color: var(--text-muted);
   }

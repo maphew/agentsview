@@ -1,4 +1,11 @@
 <script lang="ts">
+  import {
+    CheckIcon,
+    CopyIcon,
+    ExternalLinkIcon,
+    PinIcon,
+    XIcon,
+  } from "../../icons.js";
   import { pins } from "../../stores/pins.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { router } from "../../stores/router.svelte.js";
@@ -83,9 +90,7 @@
 
 <div class="pinned-page">
   <div class="pinned-header">
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" class="pin-icon">
-      <path d="M4.146.146A.5.5 0 014.5 0h7a.5.5 0 01.5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 01-.5.5H8.5v5.5a.5.5 0 01-1 0V10H3.5a.5.5 0 01-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 015 6.708V2.277a3 3 0 01-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 01.146-.354z"/>
-    </svg>
+    <PinIcon size="18" strokeWidth="2" class="pin-icon" aria-hidden="true" />
     <h2>Pinned Messages</h2>
     {#if pins.pins.length > 0}
       <span class="pin-count">{pins.pins.length}</span>
@@ -103,9 +108,7 @@
     </div>
   {:else if pins.pins.length === 0}
     <div class="empty-state">
-      <svg width="40" height="40" viewBox="0 0 16 16" fill="currentColor" class="empty-icon">
-        <path d="M4.146.146A.5.5 0 014.5 0h7a.5.5 0 01.5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 01-.5.5H8.5v5.5a.5.5 0 01-1 0V10H3.5a.5.5 0 01-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 015 6.708V2.277a3 3 0 01-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 01.146-.354z"/>
-      </svg>
+      <PinIcon size="40" strokeWidth="1.6" class="empty-icon" aria-hidden="true" />
       <p class="empty-title">No pinned messages</p>
       <p class="empty-desc">
         Pin messages from any session by clicking the pin icon in the message header.
@@ -151,10 +154,7 @@
               onclick={() => navigateToPin(pin.session_id, pin.ordinal)}
               title="Go to message"
             >
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8.636 3.5a.5.5 0 00-.5-.5H1.5A1.5 1.5 0 000 4.5v10A1.5 1.5 0 001.5 16h10a1.5 1.5 0 001.5-1.5V7.864a.5.5 0 00-1 0V14.5a.5.5 0 01-.5.5h-10a.5.5 0 01-.5-.5v-10a.5.5 0 01.5-.5h6.636a.5.5 0 00.5-.5z"/>
-                <path d="M16 .5a.5.5 0 00-.5-.5h-5a.5.5 0 000 1h3.793L6.146 9.146a.5.5 0 10.708.708L15 1.707V5.5a.5.5 0 001 0v-5z"/>
-              </svg>
+              <ExternalLinkIcon size="10" strokeWidth="2.2" aria-hidden="true" />
               <span>{info.project}</span>
             </button>
             <div class="pin-card-actions">
@@ -172,14 +172,9 @@
                 onclick={() => handleCopy(pin.id, pin.content)}
               >
                 {#if copiedId === pin.id}
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                  </svg>
+                  <CheckIcon size="12" strokeWidth="2.4" aria-hidden="true" />
                 {:else}
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/>
-                    <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/>
-                  </svg>
+                  <CopyIcon size="12" strokeWidth="2" aria-hidden="true" />
                 {/if}
               </button>
               <button
@@ -187,9 +182,7 @@
                 title="Unpin"
                 onclick={() => pins.unpin(pin.session_id, pin.message_id)}
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M4.646 4.646a.5.5 0 01.708 0L8 7.293l2.646-2.647a.5.5 0 01.708.708L8.707 8l2.647 2.646a.5.5 0 01-.708.708L8 8.707l-2.646 2.647a.5.5 0 01-.708-.708L7.293 8 4.646 5.354a.5.5 0 010-.708z"/>
-                </svg>
+                <XIcon size="12" strokeWidth="2.4" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -213,7 +206,7 @@
     margin-bottom: 28px;
   }
 
-  .pin-icon {
+  :global(.pin-icon) {
     color: var(--accent-blue);
   }
 
@@ -246,7 +239,7 @@
     color: var(--text-muted);
   }
 
-  .empty-icon {
+  :global(.empty-icon) {
     opacity: 0.15;
     margin-bottom: 16px;
   }

@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { Session } from "../../api/types.js";
-  import { sessions } from "../../stores/sessions.svelte.js";
+  import {
+    sessions,
+    type SessionGroupInput,
+  } from "../../stores/sessions.svelte.js";
   import { starred } from "../../stores/starred.svelte.js";
   import { formatRelativeTime, truncate } from "../../utils/format.js";
   import { agentColor as getAgentColor, agentLabel } from "../../utils/agents.js";
@@ -8,10 +10,17 @@
     normalizeMessagePreview,
     previewMessage,
   } from "../../utils/messages.js";
+  import {
+    ChevronDownIcon,
+    ChevronRightIcon,
+    StarIcon,
+    UserRoundIcon,
+    UsersRoundIcon,
+  } from "../../icons.js";
   import StatusDot from "../common/StatusDot.svelte";
 
   interface Props {
-    session: Session;
+    session: SessionGroupInput;
     continuationCount?: number;
     groupSessionIds?: string[];
     /** Optional full session objects in this row's group. When
@@ -21,7 +30,7 @@
      * instead of decaying to stale. The parent's parser status
      * still wins over freshness for awaiting_user (a fork running
      * in parallel doesn't change that the parent is waiting). */
-    groupSessions?: Session[];
+    groupSessions?: SessionGroupInput[];
     hideAgent?: boolean;
     hideProject?: boolean;
     /** Render in compact mode (smaller, used for child sessions). */
@@ -81,7 +90,9 @@
 
   /** Whether this session is a team member (received a <teammate-message>). */
   let isTeamSession = $derived(
-    session.first_message?.includes("<teammate-message") ?? false,
+    session.is_teammate
+      ?? session.first_message?.includes("<teammate-message")
+      ?? false,
   );
 
   /**
@@ -260,16 +271,11 @@
       tabindex="-1"
       aria-label={expanded ? "Collapse" : "Expand"}
     >
-      <svg
-        class="tree-arrow"
-        class:expanded
-        width="10"
-        height="10"
-        viewBox="0 0 16 16"
-        fill="currentColor"
-      >
-        <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
-      </svg>
+      {#if expanded}
+        <ChevronDownIcon class="tree-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+      {:else}
+        <ChevronRightIcon class="tree-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+      {/if}
     </button>
   {:else if depth > 0}
     <span class="tree-dash"></span>
@@ -322,15 +328,10 @@
       <span class="session-time">{timeStr}</span>
       <span class="session-count">{session.user_message_count}</span>
       {#if hasSubagents}
-        <svg class="group-hint-icon" width="9" height="9" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path d="M10.56 7.01A3.5 3.5 0 108 0a3.5 3.5 0 002.56 7.01zM8 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
-        </svg>
+        <UserRoundIcon class="group-hint-icon" size="9" strokeWidth="2" aria-hidden="true" />
       {/if}
       {#if hasTeammates}
-        <svg class="group-hint-icon" width="11" height="9" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
-          <path d="M7.56 7.01A3.5 3.5 0 105 0a3.5 3.5 0 002.56 7.01zM5 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
-          <path d="M17.56 7.01A3.5 3.5 0 1015 0a3.5 3.5 0 002.56 7.01zM15 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z" opacity="0.6"/>
-        </svg>
+        <UsersRoundIcon class="group-hint-icon" size="11" strokeWidth="2" aria-hidden="true" />
       {/if}
       {#if childCount > 0 && !onToggleExpand}
         <span class="continuation-badge">x{continuationCount}</span>
@@ -347,13 +348,9 @@
       aria-label={isStarred ? "Unstar session" : "Star session"}
     >
       {#if isStarred}
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/>
-        </svg>
+        <StarIcon size="12" fill="currentColor" strokeWidth="0" aria-hidden="true" />
       {:else}
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
-          <path d="M8 1.5l1.88 3.81 4.21.61-3.05 2.97.72 4.19L8 11.1l-3.77 1.98.72-4.19L1.9 5.92l4.21-.61L8 1.5z"/>
-        </svg>
+        <StarIcon size="12" strokeWidth="1.4" aria-hidden="true" />
       {/if}
     </button>
   {/if}
@@ -444,12 +441,8 @@
     color: var(--text-primary);
   }
 
-  .tree-arrow {
-    transition: transform 150ms ease;
-  }
-
-  .tree-arrow.expanded {
-    transform: rotate(90deg);
+  :global(.tree-arrow) {
+    flex-shrink: 0;
   }
 
   /* Spacer for leaf nodes — same width as toggle to align text */
@@ -569,7 +562,7 @@
     flex-shrink: 0;
   }
 
-  .group-hint-icon {
+  :global(.group-hint-icon) {
     flex-shrink: 0;
     color: var(--text-muted);
     opacity: 0.5;

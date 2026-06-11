@@ -13,6 +13,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/sync"
@@ -33,13 +35,8 @@ const (
 func assertSessionState(t *testing.T, database *db.DB, sessionID string, check func(*db.Session)) {
 	t.Helper()
 	sess, err := database.GetSession(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("GetSession(%q): %v", sessionID, err)
-	}
-	if sess == nil {
-		t.Fatalf("Session %q not found", sessionID)
-		return
-	}
+	require.NoError(t, err, "GetSession(%q)", sessionID)
+	require.NotNil(t, sess, "Session %q not found", sessionID)
 	if check != nil {
 		check(sess)
 	}
@@ -48,29 +45,24 @@ func assertSessionState(t *testing.T, database *db.DB, sessionID string, check f
 func assertSessionMessageCount(t *testing.T, database *db.DB, sessionID string, want int) {
 	t.Helper()
 	assertSessionState(t, database, sessionID, func(sess *db.Session) {
-		if sess.MessageCount != want {
-			t.Errorf("session %q message_count = %d, want %d", sessionID, sess.MessageCount, want)
-		}
+		assert.Equal(t, want, sess.MessageCount, "session %q message_count", sessionID)
 	})
 }
 
 func assertSessionProject(t *testing.T, database *db.DB, sessionID string, want string) {
 	t.Helper()
 	assertSessionState(t, database, sessionID, func(sess *db.Session) {
-		if sess.Project != want {
-			t.Errorf("session %q project = %q, want %q", sessionID, sess.Project, want)
-		}
+		assert.Equal(t, want, sess.Project, "session %q project", sessionID)
 	})
 }
 
 func runSyncAndAssert(t *testing.T, engine *sync.Engine, want sync.SyncStats) sync.SyncStats {
 	t.Helper()
 	stats := engine.SyncAll(context.Background(), nil)
-	if diff := cmp.Diff(want, stats,
+	diff := cmp.Diff(want, stats,
 		cmpopts.IgnoreUnexported(sync.SyncStats{}),
-	); diff != "" {
-		t.Fatalf("SyncAll() mismatch (-want +got):\n%s", diff)
-	}
+	)
+	require.Empty(t, diff, "SyncAll() mismatch (-want +got):\n%s", diff)
 	return stats
 }
 
@@ -91,23 +83,13 @@ func (e *testEnv) assertResyncRoundTrip(
 		)
 		return err
 	})
-	if err != nil {
-		t.Fatalf(
-			"clear mtime for %s: %v", sessionID, err,
-		)
-	}
+	require.NoError(t, err, "clear mtime for %s", sessionID)
 
-	if err := e.engine.SyncSingleSession(sessionID); err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
-	}
+	require.NoError(t, e.engine.SyncSingleSession(sessionID))
 
 	_, mtime, ok := e.db.GetSessionFileInfo(sessionID)
-	if !ok {
-		t.Fatal("session file info not found")
-	}
-	if mtime == 0 {
-		t.Error("SyncSingleSession did not store mtime")
-	}
+	require.True(t, ok, "session file info not found")
+	assert.NotZero(t, mtime, "SyncSingleSession did not store mtime")
 
 	runSyncAndAssert(t, e.engine, sync.SyncStats{TotalSessions: 0 + 1, Synced: 0, Skipped: 1})
 }
@@ -115,9 +97,7 @@ func (e *testEnv) assertResyncRoundTrip(
 func fetchMessages(t *testing.T, database *db.DB, sessionID string) []db.Message {
 	t.Helper()
 	msgs, err := database.GetAllMessages(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("GetAllMessages(%q): %v", sessionID, err)
-	}
+	require.NoError(t, err, "GetAllMessages(%q)", sessionID)
 	return msgs
 }
 
@@ -129,15 +109,9 @@ func assertMessageRoles(
 ) {
 	t.Helper()
 	msgs := fetchMessages(t, database, sessionID)
-	if len(msgs) != len(wantRoles) {
-		t.Fatalf("got %d messages, want %d",
-			len(msgs), len(wantRoles))
-	}
+	require.Len(t, msgs, len(wantRoles))
 	for i, want := range wantRoles {
-		if msgs[i].Role != want {
-			t.Errorf("msgs[%d].Role = %q, want %q",
-				i, msgs[i].Role, want)
-		}
+		assert.Equal(t, want, msgs[i].Role, "msgs[%d].Role", i)
 	}
 }
 
@@ -149,15 +123,9 @@ func assertMessageContent(
 ) {
 	t.Helper()
 	msgs := fetchMessages(t, database, sessionID)
-	if len(msgs) != len(wantContent) {
-		t.Fatalf("got %d messages, want %d",
-			len(msgs), len(wantContent))
-	}
+	require.Len(t, msgs, len(wantContent))
 	for i, want := range wantContent {
-		if msgs[i].Content != want {
-			t.Errorf("msgs[%d].Content = %q, want %q",
-				i, msgs[i].Content, want)
-		}
+		assert.Equal(t, want, msgs[i].Content, "msgs[%d].Content", i)
 	}
 }
 
@@ -174,14 +142,8 @@ func assertToolCallCount(
 			" WHERE session_id = ?",
 		sessionID,
 	).Scan(&got)
-	if err != nil {
-		t.Fatalf("count tool_calls for %q: %v",
-			sessionID, err)
-	}
-	if got != want {
-		t.Errorf("tool_calls count for %q = %d, want %d",
-			sessionID, got, want)
-	}
+	require.NoError(t, err, "count tool_calls for %q", sessionID)
+	assert.Equal(t, want, got, "tool_calls count for %q", sessionID)
 }
 
 // updateSessionProject fetches the session, updates its
@@ -194,17 +156,10 @@ func (e *testEnv) updateSessionProject(
 	sess, err := e.db.GetSessionFull(
 		context.Background(), sessionID,
 	)
-	if err != nil {
-		t.Fatalf("GetSessionFull: %v", err)
-	}
-	if sess == nil {
-		t.Fatalf("session %q not found", sessionID)
-		return
-	}
+	require.NoError(t, err, "GetSessionFull")
+	require.NotNil(t, sess, "session %q not found", sessionID)
 	sess.Project = project
-	if err := e.db.UpsertSession(*sess); err != nil {
-		t.Fatalf("UpsertSession: %v", err)
-	}
+	require.NoError(t, e.db.UpsertSession(*sess), "UpsertSession")
 }
 
 // openCodeTestDB manages an OpenCode SQLite database for tests.
@@ -225,9 +180,7 @@ func createOpenCodeDB(t *testing.T, dir string) *openCodeTestDB {
 	t.Helper()
 	path := filepath.Join(dir, "opencode.db")
 	d, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("opening opencode test db: %v", err)
-	}
+	require.NoError(t, err, "opening opencode test db")
 	t.Cleanup(func() { d.Close() })
 
 	schema := `
@@ -257,9 +210,8 @@ func createOpenCodeDB(t *testing.T, dir string) *openCodeTestDB {
 			time_created INTEGER NOT NULL
 		);
 	`
-	if _, err := d.Exec(schema); err != nil {
-		t.Fatalf("creating opencode schema: %v", err)
-	}
+	_, err = d.Exec(schema)
+	require.NoError(t, err, "creating opencode schema")
 	return &openCodeTestDB{path: path, db: d}
 }
 
@@ -267,9 +219,7 @@ func createKiroSQLiteDB(t *testing.T, dir string) *kiroSQLiteTestDB {
 	t.Helper()
 	path := filepath.Join(dir, "data.sqlite3")
 	d, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("opening kiro sqlite test db: %v", err)
-	}
+	require.NoError(t, err, "opening kiro sqlite test db")
 	t.Cleanup(func() { d.Close() })
 	schema := `
 		CREATE TABLE conversations_v2 (
@@ -281,9 +231,8 @@ func createKiroSQLiteDB(t *testing.T, dir string) *kiroSQLiteTestDB {
 			PRIMARY KEY (key, conversation_id)
 		);
 	`
-	if _, err := d.Exec(schema); err != nil {
-		t.Fatalf("creating kiro sqlite schema: %v", err)
-	}
+	_, err = d.Exec(schema)
+	require.NoError(t, err, "creating kiro sqlite schema")
 	return &kiroSQLiteTestDB{path: path, db: d}
 }
 
@@ -293,9 +242,7 @@ func readKiroSQLiteFixture(t *testing.T, name string) string {
 		"..", "parser", "testdata", "kiro_sqlite", name,
 	)
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read kiro sqlite fixture %s: %v", name, err)
-	}
+	require.NoError(t, err, "read kiro sqlite fixture %s", name)
 	return string(data)
 }
 
@@ -304,28 +251,26 @@ func (ks *kiroSQLiteTestDB) addSession(
 	createdAt, updatedAt int64,
 ) {
 	t.Helper()
-	if _, err := ks.db.Exec(
+	_, err := ks.db.Exec(
 		`INSERT INTO conversations_v2
 			(key, conversation_id, value, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)`,
 		key, id, payload, createdAt, updatedAt,
-	); err != nil {
-		t.Fatalf("insert kiro sqlite session: %v", err)
-	}
+	)
+	require.NoError(t, err, "insert kiro sqlite session")
 }
 
 func (ks *kiroSQLiteTestDB) updateSession(
 	t *testing.T, id, payload string, updatedAt int64,
 ) {
 	t.Helper()
-	if _, err := ks.db.Exec(
+	_, err := ks.db.Exec(
 		`UPDATE conversations_v2
 		    SET value = ?, updated_at = ?
 		  WHERE conversation_id = ?`,
 		payload, updatedAt, id,
-	); err != nil {
-		t.Fatalf("update kiro sqlite session: %v", err)
-	}
+	)
+	require.NoError(t, err, "update kiro sqlite session")
 }
 
 func writeLegacyKiroSession(
@@ -334,30 +279,25 @@ func writeLegacyKiroSession(
 	t.Helper()
 	jsonlPath := filepath.Join(dir, id+".jsonl")
 	metaPath := filepath.Join(dir, id+".json")
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		jsonlPath,
 		[]byte(`{"kind":"Prompt","data":{"content":[{"kind":"text","data":"`+
 			prompt+`"}]}}`+"\n"+
 			`{"kind":"AssistantMessage","data":{"content":[{"kind":"text","data":"legacy assistant"}]}}`+
 			"\n"),
 		0o644,
-	); err != nil {
-		t.Fatalf("write legacy kiro jsonl: %v", err)
-	}
-	if err := os.WriteFile(
+	), "write legacy kiro jsonl")
+	require.NoError(t, os.WriteFile(
 		metaPath,
 		[]byte(`{"session_id":"`+id+`","cwd":"/home/user/code/legacy-kiro","created_at":"2026-05-17T09:00:00Z","updated_at":"2026-05-17T09:01:00Z"}`),
 		0o644,
-	); err != nil {
-		t.Fatalf("write legacy kiro metadata: %v", err)
-	}
+	), "write legacy kiro metadata")
 }
 
 func (oc *openCodeTestDB) mustExec(t *testing.T, msg, query string, args ...any) {
 	t.Helper()
-	if _, err := oc.db.Exec(query, args...); err != nil {
-		t.Fatalf("%s: %v", msg, err)
-	}
+	_, err := oc.db.Exec(query, args...)
+	require.NoError(t, err, msg)
 }
 
 func (oc *openCodeTestDB) addProject(
@@ -403,9 +343,7 @@ func (oc *openCodeTestDB) addMessage(
 	data, err := json.Marshal(map[string]string{
 		"role": role,
 	})
-	if err != nil {
-		t.Fatalf("marshal message: %v", err)
-	}
+	require.NoError(t, err, "marshal message")
 	oc.mustExec(t, "insert message",
 		`INSERT INTO message
 			(id, session_id, data, time_created)
@@ -419,9 +357,7 @@ func (oc *openCodeTestDB) updateMessageData(
 ) {
 	t.Helper()
 	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal message update: %v", err)
-	}
+	require.NoError(t, err, "marshal message update")
 	oc.mustExec(t, "update message data",
 		"UPDATE message SET data = ? WHERE id = ?",
 		string(raw), id,
@@ -438,9 +374,7 @@ func (oc *openCodeTestDB) addTextPart(
 		"type":    "text",
 		"content": content,
 	})
-	if err != nil {
-		t.Fatalf("marshal text part: %v", err)
-	}
+	require.NoError(t, err, "marshal text part")
 	oc.mustExec(t, "insert part",
 		`INSERT INTO part
 			(id, session_id, message_id, data, time_created)
@@ -461,9 +395,7 @@ func (oc *openCodeTestDB) addToolPart(
 		"tool":   toolName,
 		"callID": callID,
 	})
-	if err != nil {
-		t.Fatalf("marshal tool part: %v", err)
-	}
+	require.NoError(t, err, "marshal tool part")
 	oc.mustExec(t, "insert tool part",
 		`INSERT INTO part
 			(id, session_id, message_id, data, time_created)
@@ -536,16 +468,10 @@ func (oc *openCodeStorageFixture) writeJSON(
 	t *testing.T, path string, data any,
 ) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "mkdir %s", filepath.Dir(path))
 	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	require.NoError(t, err, "marshal %s", path)
+	require.NoError(t, os.WriteFile(path, raw, 0o644), "write %s", path)
 	return path
 }
 

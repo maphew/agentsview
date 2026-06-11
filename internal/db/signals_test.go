@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUpdateSessionSignals(t *testing.T) {
@@ -30,57 +33,30 @@ func TestUpdateSessionSignals(t *testing.T) {
 		HealthScore:            new(72),
 		HealthGrade:            new("B"),
 	}
-	if err := d.UpdateSessionSignals("sig-1", update); err != nil {
-		t.Fatalf("UpdateSessionSignals: %v", err)
-	}
+	require.NoError(t, d.UpdateSessionSignals("sig-1", update),
+		"UpdateSessionSignals")
 
 	got, err := d.GetSessionFull(ctx, "sig-1")
-	if err != nil {
-		t.Fatalf("GetSessionFull: %v", err)
-	}
-	if got == nil {
-		t.Fatal("session not found after update")
-	}
+	require.NoError(t, err, "GetSessionFull")
+	require.NotNil(t, got, "session not found after update")
 
-	checks := []struct {
-		name string
-		got  any
-		want any
-	}{
-		{"ToolFailureSignalCount", got.ToolFailureSignalCount, 3},
-		{"ToolRetryCount", got.ToolRetryCount, 2},
-		{"EditChurnCount", got.EditChurnCount, 1},
-		{"ConsecutiveFailureMax", got.ConsecutiveFailureMax, 4},
-		{"Outcome", got.Outcome, "completed"},
-		{"OutcomeConfidence", got.OutcomeConfidence, "high"},
-		{"EndedWithRole", got.EndedWithRole, "assistant"},
-		{"FinalFailureStreak", got.FinalFailureStreak, 0},
-		{"CompactionCount", got.CompactionCount, 2},
-	}
-	for _, c := range checks {
-		if c.got != c.want {
-			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
-		}
-	}
+	assert.Equal(t, 3, got.ToolFailureSignalCount, "ToolFailureSignalCount")
+	assert.Equal(t, 2, got.ToolRetryCount, "ToolRetryCount")
+	assert.Equal(t, 1, got.EditChurnCount, "EditChurnCount")
+	assert.Equal(t, 4, got.ConsecutiveFailureMax, "ConsecutiveFailureMax")
+	assert.Equal(t, "completed", got.Outcome, "Outcome")
+	assert.Equal(t, "high", got.OutcomeConfidence, "OutcomeConfidence")
+	assert.Equal(t, "assistant", got.EndedWithRole, "EndedWithRole")
+	assert.Equal(t, 0, got.FinalFailureStreak, "FinalFailureStreak")
+	assert.Equal(t, 2, got.CompactionCount, "CompactionCount")
 
-	if got.SignalsPendingSince != nil {
-		t.Errorf(
-			"SignalsPendingSince = %v, want nil",
-			*got.SignalsPendingSince,
-		)
-	}
-	if got.ContextPressureMax == nil || *got.ContextPressureMax != 0.85 {
-		t.Errorf(
-			"ContextPressureMax = %v, want 0.85",
-			got.ContextPressureMax,
-		)
-	}
-	if got.HealthScore == nil || *got.HealthScore != 72 {
-		t.Errorf("HealthScore = %v, want 72", got.HealthScore)
-	}
-	if got.HealthGrade == nil || *got.HealthGrade != "B" {
-		t.Errorf("HealthGrade = %v, want B", got.HealthGrade)
-	}
+	assert.Nil(t, got.SignalsPendingSince, "SignalsPendingSince")
+	require.NotNil(t, got.ContextPressureMax, "ContextPressureMax")
+	assert.Equal(t, 0.85, *got.ContextPressureMax, "ContextPressureMax")
+	require.NotNil(t, got.HealthScore, "HealthScore")
+	assert.Equal(t, 72, *got.HealthScore, "HealthScore")
+	require.NotNil(t, got.HealthGrade, "HealthGrade")
+	assert.Equal(t, "B", *got.HealthGrade, "HealthGrade")
 
 	// Update again with pending since set and nullable fields
 	// cleared.
@@ -90,50 +66,26 @@ func TestUpdateSessionSignals(t *testing.T) {
 		OutcomeConfidence:   "low",
 		SignalsPendingSince: &pending,
 	}
-	if err := d.UpdateSessionSignals("sig-1", update2); err != nil {
-		t.Fatalf("UpdateSessionSignals (2nd): %v", err)
-	}
+	require.NoError(t, d.UpdateSessionSignals("sig-1", update2),
+		"UpdateSessionSignals (2nd)")
 
 	got2, err := d.GetSessionFull(ctx, "sig-1")
-	if err != nil {
-		t.Fatalf("GetSessionFull (2nd): %v", err)
-	}
+	require.NoError(t, err, "GetSessionFull (2nd)")
 
 	// Verify signals_pending_since is loaded by GetSessionFull
 	// (was previously absent from the column lists).
-	if got2.SignalsPendingSince == nil ||
-		*got2.SignalsPendingSince != pending {
-		t.Errorf(
-			"SignalsPendingSince = %v, want %q",
-			got2.SignalsPendingSince, pending,
-		)
-	}
+	require.NotNil(t, got2.SignalsPendingSince, "SignalsPendingSince")
+	assert.Equal(t, pending, *got2.SignalsPendingSince, "SignalsPendingSince")
 
 	pendingIDs, err := d.PendingSignalSessions(
 		ctx, "2024-07-01T00:00:00Z",
 	)
-	if err != nil {
-		t.Fatalf("PendingSignalSessions: %v", err)
-	}
-	if len(pendingIDs) != 1 || pendingIDs[0] != "sig-1" {
-		t.Errorf(
-			"PendingSignalSessions = %v, want [sig-1]",
-			pendingIDs,
-		)
-	}
+	require.NoError(t, err, "PendingSignalSessions")
+	assert.Equal(t, []string{"sig-1"}, pendingIDs, "PendingSignalSessions")
 
-	if got2.ContextPressureMax != nil {
-		t.Errorf(
-			"ContextPressureMax = %v, want nil",
-			*got2.ContextPressureMax,
-		)
-	}
-	if got2.HealthScore != nil {
-		t.Errorf("HealthScore = %v, want nil", *got2.HealthScore)
-	}
-	if got2.HealthGrade != nil {
-		t.Errorf("HealthGrade = %v, want nil", *got2.HealthGrade)
-	}
+	assert.Nil(t, got2.ContextPressureMax, "ContextPressureMax")
+	assert.Nil(t, got2.HealthScore, "HealthScore")
+	assert.Nil(t, got2.HealthGrade, "HealthGrade")
 }
 
 // TestUpdateSessionSignalsBumpsLocalModifiedAt ensures that
@@ -150,12 +102,8 @@ func TestUpdateSessionSignalsBumpsLocalModifiedAt(t *testing.T) {
 
 	// Snapshot local_modified_at after the initial upsert.
 	beforeRow, err := d.GetSessionFull(ctx, "lm-1")
-	if err != nil {
-		t.Fatalf("GetSessionFull: %v", err)
-	}
-	if beforeRow == nil {
-		t.Fatal("session not found before update")
-	}
+	require.NoError(t, err, "GetSessionFull")
+	require.NotNil(t, beforeRow, "session not found before update")
 	before := ""
 	if beforeRow.LocalModifiedAt != nil {
 		before = *beforeRow.LocalModifiedAt
@@ -165,29 +113,21 @@ func TestUpdateSessionSignalsBumpsLocalModifiedAt(t *testing.T) {
 	// Sleep a few ms so a re-set produces a strictly later value.
 	time.Sleep(5 * time.Millisecond)
 
-	if err := d.UpdateSessionSignals("lm-1", SessionSignalUpdate{
+	require.NoError(t, d.UpdateSessionSignals("lm-1", SessionSignalUpdate{
 		ToolFailureSignalCount: 1,
 		Outcome:                "completed",
 		OutcomeConfidence:      "high",
 		EndedWithRole:          "assistant",
-	}); err != nil {
-		t.Fatalf("UpdateSessionSignals: %v", err)
-	}
+	}), "UpdateSessionSignals")
 
 	afterRow, err := d.GetSessionFull(ctx, "lm-1")
-	if err != nil {
-		t.Fatalf("GetSessionFull (after): %v", err)
-	}
-	if afterRow.LocalModifiedAt == nil ||
-		*afterRow.LocalModifiedAt == "" {
-		t.Fatal("local_modified_at not set after signal update")
-	}
-	if *afterRow.LocalModifiedAt <= before {
-		t.Errorf(
-			"local_modified_at not bumped: before=%q after=%q",
-			before, *afterRow.LocalModifiedAt,
-		)
-	}
+	require.NoError(t, err, "GetSessionFull (after)")
+	require.NotNil(t, afterRow.LocalModifiedAt,
+		"local_modified_at not set after signal update")
+	require.NotEmpty(t, *afterRow.LocalModifiedAt,
+		"local_modified_at not set after signal update")
+	assert.Greater(t, *afterRow.LocalModifiedAt, before,
+		"local_modified_at not bumped")
 }
 
 func TestPendingSignalSessions(t *testing.T) {
@@ -203,9 +143,8 @@ func TestPendingSignalSessions(t *testing.T) {
 		OutcomeConfidence:   "low",
 		SignalsPendingSince: new("2024-06-01T10:00:00Z"),
 	}
-	if err := d.UpdateSessionSignals("ps-old", old); err != nil {
-		t.Fatalf("UpdateSessionSignals ps-old: %v", err)
-	}
+	require.NoError(t, d.UpdateSessionSignals("ps-old", old),
+		"UpdateSessionSignals ps-old")
 
 	// Session with pending_since after cutoff -- should NOT match.
 	insertSession(t, d, "ps-new", "proj")
@@ -214,23 +153,16 @@ func TestPendingSignalSessions(t *testing.T) {
 		OutcomeConfidence:   "low",
 		SignalsPendingSince: new("2024-06-01T14:00:00Z"),
 	}
-	if err := d.UpdateSessionSignals("ps-new", newer); err != nil {
-		t.Fatalf("UpdateSessionSignals ps-new: %v", err)
-	}
+	require.NoError(t, d.UpdateSessionSignals("ps-new", newer),
+		"UpdateSessionSignals ps-new")
 
 	// Session with no pending_since -- should NOT match.
 	insertSession(t, d, "ps-none", "proj")
 
 	ids, err := d.PendingSignalSessions(ctx, cutoff)
-	if err != nil {
-		t.Fatalf("PendingSignalSessions: %v", err)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("got %d IDs, want 1", len(ids))
-	}
-	if ids[0] != "ps-old" {
-		t.Errorf("got ID %q, want ps-old", ids[0])
-	}
+	require.NoError(t, err, "PendingSignalSessions")
+	require.Len(t, ids, 1)
+	assert.Equal(t, "ps-old", ids[0])
 }
 
 // TestBackfillSignalsMarkerOnlyOnSuccess guards the
@@ -257,9 +189,7 @@ func TestBackfillSignalsMarkerOnlyOnSuccess(t *testing.T) {
 			return nil
 		},
 	)
-	if err == nil {
-		t.Fatal("expected error from partial backfill, got nil")
-	}
+	require.Error(t, err, "expected error from partial backfill")
 
 	// Marker check: a second BackfillSignals call must NOT
 	// short-circuit since the marker is unset.
@@ -271,16 +201,9 @@ func TestBackfillSignalsMarkerOnlyOnSuccess(t *testing.T) {
 			return nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-	if calls != 3 {
-		t.Errorf(
-			"second backfill saw %d sessions, want 3 "+
-				"(marker should not be set after partial run)",
-			calls,
-		)
-	}
+	require.NoError(t, err, "retry")
+	assert.Equal(t, 3, calls,
+		"second backfill should see all sessions (marker not set after partial run)")
 
 	// Now the marker should be set; a third call short-circuits.
 	calls = 0
@@ -291,14 +214,7 @@ func TestBackfillSignalsMarkerOnlyOnSuccess(t *testing.T) {
 			return nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("third call: %v", err)
-	}
-	if calls != 0 {
-		t.Errorf(
-			"third backfill saw %d sessions, want 0 "+
-				"(marker should be set after clean run)",
-			calls,
-		)
-	}
+	require.NoError(t, err, "third call")
+	assert.Equal(t, 0, calls,
+		"third backfill should see 0 sessions (marker set after clean run)")
 }

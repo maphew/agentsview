@@ -1,7 +1,8 @@
 <script lang="ts">
   import SettingsSection from "./SettingsSection.svelte";
   import { settings } from "../../stores/settings.svelte.js";
-  import { setGithubConfig } from "../../api/client.js";
+  import { ConfigService } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
 
   let tokenInput: string = $state("");
   let saving: boolean = $state(false);
@@ -14,7 +15,10 @@
     error = null;
     success = null;
     try {
-      await setGithubConfig(tokenInput.trim());
+      configureGeneratedClient();
+      await ConfigService.postApiV1ConfigGithub({
+        requestBody: { token: tokenInput.trim() },
+      });
       tokenInput = "";
       success = "GitHub token saved.";
       await settings.load();

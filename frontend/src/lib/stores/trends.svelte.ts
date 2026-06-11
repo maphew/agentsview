@@ -1,12 +1,16 @@
-import type {
-  TrendsGranularity,
-  TrendsTermsResponse,
-} from "../api/types.js";
 import {
-  getTrendsTerms,
-  type TrendsTermsParams,
-} from "../api/client.js";
+  TrendsService,
+} from "../api/generated/index";
+import type { TrendsTermsResponse } from "../api/types.js";
+import { callGenerated } from "../api/runtime.js";
 import { daysAgo, today } from "../utils/dates.js";
+
+type TrendsTermsParams = Parameters<
+  typeof TrendsService.getApiV1TrendsTerms
+>[0];
+export type TrendsGranularity = NonNullable<
+  TrendsTermsParams["granularity"]
+>;
 
 const DEFAULT_TERMS =
   "load bearing | load-bearing\nseam\nblast radius";
@@ -39,7 +43,7 @@ class TrendsStore {
       to: this.to,
       timezone: this.timezone,
       granularity: this.granularity,
-      terms: this.terms,
+      term: this.terms,
     };
   }
 
@@ -49,7 +53,9 @@ class TrendsStore {
     this.loading.terms = true;
     this.errors.terms = null;
     try {
-      const data = await getTrendsTerms(this.params());
+      const data = await callGenerated(() =>
+        TrendsService.getApiV1TrendsTerms(this.params()),
+      ) as unknown as TrendsTermsResponse;
       if (this.version === v) {
         this.response = data;
         this.errors.terms = null;

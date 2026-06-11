@@ -1,13 +1,22 @@
 import type {
+  UsageComparison,
   UsageSummaryResponse,
   TopUsageSessionsResponse,
-  UsageParams,
 } from "../api/types/usage.js";
+import { UsageService } from "../api/generated/index";
 import {
-  getUsageSummary,
-  getUsageTopSessions,
-} from "../api/client.js";
+  callGenerated,
+  isAbortError,
+} from "../api/runtime.js";
 import { sessions } from "./sessions.svelte.js";
+
+type UsageParams = Parameters<typeof UsageService.getApiV1UsageSummary>[0];
+type UsagePanel = "summary" | "comparison" | "topSessions";
+type LoadedUsageSummary = {
+  version: number;
+  summary: UsageSummaryResponse;
+  params: UsageParams;
+};
 
 export type GroupBy = "project" | "model" | "agent";
 export type TimeSeriesView = "stacked-area" | "bars" | "lines";
@@ -182,6 +191,11 @@ class UsageStore {
   topSessions = $state<TopUsageSessionsResponse | null>(null);
 
   loading = $state({ summary: false, topSessions: false });
+  querying = $state<Record<UsagePanel, boolean>>({
+    summary: false,
+    comparison: false,
+    topSessions: false,
+  });
   errors = $state<Record<Endpoint, string | null>>({
     summary: null,
     topSessions: null,
@@ -193,6 +207,8 @@ class UsageStore {
     summary: 0,
     topSessions: 0,
   };
+  private fetchAllVersion = 0;
+  private abortControllers: Partial<Record<UsagePanel, AbortController>> = {};
 
   private get timezone(): string {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -207,14 +223,14 @@ class UsageStore {
       project: sessionFilters.project || undefined,
       machine: sessionFilters.machine || undefined,
       agent: sessionFilters.agent || undefined,
-      min_user_messages:
+      minUserMessages:
         sessionFilters.minUserMessages > 0
           ? sessionFilters.minUserMessages
           : undefined,
-      include_one_shot: sessionFilters.includeOneShot,
-      include_automated:
+      includeOneShot: sessionFilters.includeOneShot,
+      includeAutomated:
         sessionFilters.includeAutomated || undefined,
-      active_since: sessionFilters.recentlyActive
+      activeSince: sessionFilters.recentlyActive
         ? new Date(
             Date.now() - 24 * 60 * 60 * 1000,
           ).toISOString()
@@ -224,12 +240,12 @@ class UsageStore {
       sessionFilters.hideUnknownProject &&
       sessionFilters.project !== "unknown"
     ) {
-      p.exclude_project = joinCsvParts(
+      p.excludeProject = joinCsvParts(
         this.excludedProjects,
         "unknown",
       );
     } else if (this.excludedProjects) {
-      p.exclude_project = this.excludedProjects;
+      p.excludeProject = this.excludedProjects;
     }
     if (this.selectedModels) {
       p.model = this.selectedModels;
@@ -352,6 +368,10 @@ class UsageStore {
     return this.excludedProjects !== "" || this.selectedModels !== "";
   }
 
+  get isQuerying(): boolean {
+    return Object.values(this.querying).some(Boolean);
+  }
+
   setTimeSeriesGroupBy(g: GroupBy) {
     this.toggles.timeSeries.groupBy = g;
     this.toggles.attribution.groupBy = g;
@@ -381,16 +401,32 @@ class UsageStore {
   }
 
   async fetchAll() {
+    const fetchVersion = ++this.fetchAllVersion;
+    this.invalidatePanel("topSessions");
     this.rollDates();
     saveUsageFilters(this);
-    await Promise.all([
-      this.fetchSummary(),
-      this.fetchTopSessions(),
-    ]);
+    const loadedSummary = await this.fetchSummary({
+      loadComparison: false,
+    });
+    if (fetchVersion !== this.fetchAllVersion || !loadedSummary) return;
+    await this.fetchTopSessions(loadedSummary.params);
+    if (fetchVersion !== this.fetchAllVersion) return;
+    if (loadedSummary) {
+      void this.fetchComparison(
+        loadedSummary.version,
+        loadedSummary.summary,
+        loadedSummary.params,
+      );
+    }
   }
 
-  async fetchSummary() {
+  async fetchSummary(
+    options: { loadComparison?: boolean } = {},
+  ): Promise<LoadedUsageSummary | null> {
+    const loadComparison = options.loadComparison ?? true;
     const v = ++this.versions.summary;
+    this.abortPanel("comparison");
+    const signal = this.nextAbortSignal("summary");
     // Only show the skeleton when we don't already have data to
     // display. Refetches triggered by live events or filter changes
     // replace data in place instead of flashing to loading state.
@@ -400,12 +436,22 @@ class UsageStore {
     // error state in place until we have a definitive result.
     if (isFirstLoad) this.errors.summary = null;
     try {
-      const data = await getUsageSummary(this.baseParams());
+      const params = this.baseParams();
+      const data = await callGenerated(() =>
+        UsageService.getApiV1UsageSummary(params),
+        signal,
+      ) as unknown as UsageSummaryResponse;
       if (this.versions.summary === v) {
         this.summary = data;
         this.errors.summary = null;
+        const loaded = { version: v, summary: data, params };
+        if (loadComparison) {
+          void this.fetchComparison(v, data, params);
+        }
+        return loaded;
       }
     } catch (e) {
+      if (isAbortError(e)) return null;
       if (this.versions.summary === v) {
         // On refetch failure with cached data, swallow the error so
         // existing values stay visible instead of flipping to a "--"
@@ -418,24 +464,61 @@ class UsageStore {
         }
       }
     } finally {
+      this.clearAbortSignal("summary", signal);
       if (this.versions.summary === v) {
         this.loading.summary = false;
       }
     }
+    return null;
   }
 
-  async fetchTopSessions() {
+  private async fetchComparison(
+    summaryVersion: number,
+    summary: UsageSummaryResponse,
+    params: UsageParams,
+  ) {
+    if (this.versions.summary !== summaryVersion) return;
+    const signal = this.nextAbortSignal("comparison");
+    try {
+      const comparison = await callGenerated(() =>
+        UsageService.getApiV1UsageComparison({
+          ...params,
+          currentCost: summary.totals.totalCost,
+        }),
+        signal,
+      ) as unknown as UsageComparison;
+      if (this.versions.summary === summaryVersion) {
+        this.summary = { ...summary, comparison };
+      }
+    } catch (e) {
+      if (isAbortError(e)) return;
+      if (this.versions.summary === summaryVersion) {
+        console.warn("usage.fetchComparison failed:", e);
+      }
+    } finally {
+      this.clearAbortSignal("comparison", signal);
+    }
+  }
+
+  async fetchTopSessions(params: UsageParams | null = null) {
     const v = ++this.versions.topSessions;
+    const signal = this.nextAbortSignal("topSessions");
     const isFirstLoad = this.topSessions === null;
     if (isFirstLoad) this.loading.topSessions = true;
     if (isFirstLoad) this.errors.topSessions = null;
     try {
-      const data = await getUsageTopSessions(this.baseParams());
+      const data = await callGenerated(() =>
+        UsageService.getApiV1UsageTopSessions(
+          params ?? this.baseParams(),
+        ),
+        signal,
+      ) as unknown as TopUsageSessionsResponse;
       if (this.versions.topSessions === v) {
         this.topSessions = data;
         this.errors.topSessions = null;
       }
     } catch (e) {
+      if (isAbortError(e)) return;
       if (this.versions.topSessions === v) {
         if (this.topSessions === null) {
           this.errors.topSessions =
@@ -445,10 +528,42 @@ class UsageStore {
         }
       }
     } finally {
+      this.clearAbortSignal("topSessions", signal);
       if (this.versions.topSessions === v) {
         this.loading.topSessions = false;
       }
     }
+  }
+
+  private invalidatePanel(panel: Endpoint): void {
+    this.versions[panel]++;
+    this.abortPanel(panel);
+  }
+
+  private abortPanel(panel: UsagePanel): void {
+    this.abortControllers[panel]?.abort();
+    delete this.abortControllers[panel];
+    this.querying[panel] = false;
+  }
+
+  private nextAbortSignal(panel: UsagePanel): AbortSignal {
+    this.abortControllers[panel]?.abort();
+    const controller = new AbortController();
+    this.abortControllers[panel] = controller;
+    this.querying[panel] = true;
+    return controller.signal;
+  }
+
+  private clearAbortSignal(
+    panel: UsagePanel,
+    signal: AbortSignal,
+  ): boolean {
+    if (this.abortControllers[panel]?.signal === signal) {
+      delete this.abortControllers[panel];
+      this.querying[panel] = false;
+      return true;
+    }
+    return false;
   }
 }
 

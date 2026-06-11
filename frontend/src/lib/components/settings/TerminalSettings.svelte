@@ -1,7 +1,11 @@
 <script lang="ts">
   import SettingsSection from "./SettingsSection.svelte";
   import { settings } from "../../stores/settings.svelte.js";
-  import { setTerminalConfig } from "../../api/client.js";
+  import {
+    ConfigService,
+    TerminalConfigBody,
+  } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
 
   const MODES = [
     { value: "auto", label: "Auto-detect" },
@@ -20,10 +24,13 @@
   });
 
   async function saveTerminal() {
-    await setTerminalConfig({
-      mode: localMode as "auto" | "custom" | "clipboard",
-      custom_bin: localBin || undefined,
-      custom_args: localArgs || undefined,
+    configureGeneratedClient();
+    await ConfigService.postApiV1ConfigTerminal({
+      requestBody: {
+        mode: localMode as TerminalConfigBody.mode,
+        custom_bin: localBin || undefined,
+        custom_args: localArgs || undefined,
+      },
     });
     // Reload settings to pick up the saved values
     await settings.load();

@@ -10,15 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
 func testDB(t *testing.T) *db.DB {
 	t.Helper()
 	d, err := db.Open(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("opening test db: %v", err)
-	}
+	require.NoError(t, err, "opening test db")
 	t.Cleanup(func() { d.Close() })
 	return d
 }
@@ -26,9 +27,7 @@ func testDB(t *testing.T) *db.DB {
 func cleanPGSchema(t *testing.T, pgURL string) {
 	t.Helper()
 	pg, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Fatalf("connecting to pg: %v", err)
-	}
+	require.NoError(t, err, "connecting to pg")
 	defer pg.Close()
 	_, _ = pg.Exec(
 		"DROP SCHEMA IF EXISTS agentsview CASCADE",
@@ -46,20 +45,13 @@ func TestEnsureSchemaIdempotent(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
 
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("first EnsureSchema: %v", err)
-	}
-
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("second EnsureSchema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "first EnsureSchema")
+	require.NoError(t, ps.EnsureSchema(ctx), "second EnsureSchema")
 
 	var eventIndex int
 	err = ps.pg.QueryRowContext(ctx,
@@ -76,20 +68,17 @@ func TestEnsureSchemaMigratesLegacySchema(t *testing.T) {
 	t.Cleanup(func() { cleanPGSchema(t, pgURL) })
 
 	pg, err := Open(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("connecting to pg: %v", err)
-	}
+	require.NoError(t, err, "connecting to pg")
 	defer pg.Close()
 
 	ctx := context.Background()
 
 	// Simulate a 0.16.x schema: create the schema and core
 	// tables but omit tool_result_events.
-	if _, err := pg.ExecContext(ctx,
+	_, err = pg.ExecContext(ctx,
 		"CREATE SCHEMA IF NOT EXISTS agentsview",
-	); err != nil {
-		t.Fatalf("creating schema: %v", err)
-	}
+	)
+	require.NoError(t, err, "creating schema")
 	legacyDDL := `
 CREATE TABLE IF NOT EXISTS sync_metadata (
     key   TEXT PRIMARY KEY,
@@ -142,26 +131,49 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     FOREIGN KEY (session_id)
         REFERENCES sessions(id) ON DELETE CASCADE
 );`
-	if _, err := pg.ExecContext(ctx, legacyDDL); err != nil {
-		t.Fatalf("creating legacy tables: %v", err)
-	}
+	_, err = pg.ExecContext(ctx, legacyDDL)
+	require.NoError(t, err, "creating legacy tables")
 
 	// Verify tool_result_events does not exist yet.
-	if err := CheckSchemaCompat(ctx, pg); err == nil {
-		t.Fatal("expected CheckSchemaCompat to fail on legacy schema")
-	}
+	require.Error(t, CheckSchemaCompat(ctx, pg),
+		"expected CheckSchemaCompat to fail on legacy schema")
 
 	// Run EnsureSchema — should create the missing table.
-	if err := EnsureSchema(ctx, pg, "agentsview"); err != nil {
-		t.Fatalf("EnsureSchema on legacy schema: %v", err)
-	}
+	require.NoError(t, EnsureSchema(ctx, pg, "agentsview"),
+		"EnsureSchema on legacy schema")
 
 	// Now the compat check should pass.
-	if err := CheckSchemaCompat(ctx, pg); err != nil {
-		t.Fatalf(
-			"CheckSchemaCompat after migration: %v", err,
-		)
-	}
+	require.NoError(t, CheckSchemaCompat(ctx, pg),
+		"CheckSchemaCompat after migration")
+}
+
+// TestCheckSchemaCompatMissingSecretsRulesVersion pins the schema-compat
+// probe against a regression where pgSessionCols selects a column the
+// compat check doesn't probe for: a PG schema missing only
+// sessions.secrets_rules_version must fail CheckSchemaCompat rather
+// than passing the probe and 500-ing at runtime on the first session
+// query. EnsureSchema brings the column in via migration; this test
+// then drops it to simulate a legacy/read-only schema and verifies the
+// probe catches the absence.
+func TestCheckSchemaCompatMissingSecretsRulesVersion(t *testing.T) {
+	pgURL := testPGURL(t)
+	cleanPGSchema(t, pgURL)
+	t.Cleanup(func() { cleanPGSchema(t, pgURL) })
+
+	pg, err := Open(pgURL, "agentsview", true)
+	require.NoError(t, err, "connecting to pg")
+	defer pg.Close()
+
+	ctx := context.Background()
+	require.NoError(t, EnsureSchema(ctx, pg, "agentsview"), "EnsureSchema")
+	require.NoError(t, CheckSchemaCompat(ctx, pg),
+		"precondition: CheckSchemaCompat should pass after EnsureSchema")
+	_, err = pg.ExecContext(ctx,
+		`ALTER TABLE sessions DROP COLUMN secrets_rules_version`,
+	)
+	require.NoError(t, err, "dropping secrets_rules_version")
+	require.Error(t, CheckSchemaCompat(ctx, pg),
+		"CheckSchemaCompat should fail when secrets_rules_version is missing")
 }
 
 func TestPushSingleSession(t *testing.T) {
@@ -175,15 +187,11 @@ func TestPushSingleSession(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := "2026-03-11T12:00:00Z"
 	firstMsg := "hello world"
@@ -196,72 +204,37 @@ func TestPushSingleSession(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
+	require.NoError(t, local.InsertMessages([]db.Message{
 		{
 			SessionID: "sess-001",
 			Ordinal:   0,
 			Role:      "user",
 			Content:   firstMsg,
 		},
-	}); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	}), "insert messages")
 
 	result, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if result.SessionsPushed != 1 {
-		t.Errorf(
-			"sessions pushed = %d, want 1",
-			result.SessionsPushed,
-		)
-	}
-	if result.MessagesPushed != 1 {
-		t.Errorf(
-			"messages pushed = %d, want 1",
-			result.MessagesPushed,
-		)
-	}
+	require.NoError(t, err, "push")
+	assert.Equal(t, 1, result.SessionsPushed)
+	assert.Equal(t, 1, result.MessagesPushed)
 
 	var pgProject, pgMachine string
 	err = ps.pg.QueryRowContext(ctx,
 		"SELECT project, machine FROM sessions WHERE id = $1",
 		"sess-001",
 	).Scan(&pgProject, &pgMachine)
-	if err != nil {
-		t.Fatalf("querying pg session: %v", err)
-	}
-	if pgProject != "test-project" {
-		t.Errorf(
-			"pg project = %q, want %q",
-			pgProject, "test-project",
-		)
-	}
-	if pgMachine != "test-machine" {
-		t.Errorf(
-			"pg machine = %q, want %q",
-			pgMachine, "test-machine",
-		)
-	}
+	require.NoError(t, err, "querying pg session")
+	assert.Equal(t, "test-project", pgProject)
+	assert.Equal(t, "test-machine", pgMachine)
 
 	var pgMsgContent string
 	err = ps.pg.QueryRowContext(ctx,
 		"SELECT content FROM messages WHERE session_id = $1 AND ordinal = 0",
 		"sess-001",
 	).Scan(&pgMsgContent)
-	if err != nil {
-		t.Fatalf("querying pg message: %v", err)
-	}
-	if pgMsgContent != firstMsg {
-		t.Errorf(
-			"pg message content = %q, want %q",
-			pgMsgContent, firstMsg,
-		)
-	}
+	require.NoError(t, err, "querying pg message")
+	assert.Equal(t, firstMsg, pgMsgContent)
 }
 
 func TestPushIdempotent(t *testing.T) {
@@ -275,15 +248,11 @@ func TestPushIdempotent(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := "2026-03-11T12:00:00Z"
 	sess := db.Session{
@@ -294,31 +263,15 @@ func TestPushIdempotent(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 0,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 
 	result1, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("first push: %v", err)
-	}
-	if result1.SessionsPushed != 1 {
-		t.Errorf(
-			"first push sessions = %d, want 1",
-			result1.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "first push")
+	assert.Equal(t, 1, result1.SessionsPushed)
 
 	result2, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("second push: %v", err)
-	}
-	if result2.SessionsPushed != 0 {
-		t.Errorf(
-			"second push sessions = %d, want 0",
-			result2.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "second push")
+	assert.Equal(t, 0, result2.SessionsPushed)
 }
 
 func TestPushWithToolCalls(t *testing.T) {
@@ -332,15 +285,11 @@ func TestPushWithToolCalls(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := "2026-03-11T12:00:00Z"
 	sess := db.Session{
@@ -351,10 +300,8 @@ func TestPushWithToolCalls(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
+	require.NoError(t, local.InsertMessages([]db.Message{
 		{
 			SessionID:  "sess-tc-001",
 			Ordinal:    0,
@@ -371,20 +318,11 @@ func TestPushWithToolCalls(t *testing.T) {
 				},
 			},
 		},
-	}); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	}), "insert messages")
 
 	result, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if result.MessagesPushed != 1 {
-		t.Errorf(
-			"messages pushed = %d, want 1",
-			result.MessagesPushed,
-		)
-	}
+	require.NoError(t, err, "push")
+	assert.Equal(t, 1, result.MessagesPushed)
 
 	var toolName string
 	var resultLen int
@@ -392,20 +330,9 @@ func TestPushWithToolCalls(t *testing.T) {
 		"SELECT tool_name, result_content_length FROM tool_calls WHERE session_id = $1",
 		"sess-tc-001",
 	).Scan(&toolName, &resultLen)
-	if err != nil {
-		t.Fatalf("querying pg tool_call: %v", err)
-	}
-	if toolName != "Read" {
-		t.Errorf(
-			"tool_name = %q, want %q", toolName, "Read",
-		)
-	}
-	if resultLen != 42 {
-		t.Errorf(
-			"result_content_length = %d, want 42",
-			resultLen,
-		)
-	}
+	require.NoError(t, err, "querying pg tool_call")
+	assert.Equal(t, "Read", toolName)
+	assert.Equal(t, 42, resultLen)
 }
 
 func TestPushWithToolResultEvents(t *testing.T) {
@@ -419,15 +346,11 @@ func TestPushWithToolResultEvents(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	sess := db.Session{
 		ID:           "sess-events-001",
@@ -436,10 +359,8 @@ func TestPushWithToolResultEvents(t *testing.T) {
 		Agent:        "codex",
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
+	require.NoError(t, local.InsertMessages([]db.Message{
 		{
 			SessionID:  "sess-events-001",
 			Ordinal:    0,
@@ -467,25 +388,18 @@ func TestPushWithToolResultEvents(t *testing.T) {
 				},
 			},
 		},
-	}); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	}), "insert messages")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	var count int
 	err = ps.pg.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM tool_result_events WHERE session_id = $1",
 		"sess-events-001",
 	).Scan(&count)
-	if err != nil {
-		t.Fatalf("querying pg tool_result_events: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("pg tool_result_events = %d, want 1", count)
-	}
+	require.NoError(t, err, "querying pg tool_result_events")
+	assert.Equal(t, 1, count)
 }
 
 func TestStatus(t *testing.T) {
@@ -499,32 +413,16 @@ func TestStatus(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	status, err := ps.Status(ctx)
-	if err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	if status.Machine != "test-machine" {
-		t.Errorf(
-			"machine = %q, want %q",
-			status.Machine, "test-machine",
-		)
-	}
-	if status.PGSessions != 0 {
-		t.Errorf(
-			"pg sessions = %d, want 0",
-			status.PGSessions,
-		)
-	}
+	require.NoError(t, err, "status")
+	assert.Equal(t, "test-machine", status.Machine)
+	assert.Equal(t, 0, status.PGSessions)
 }
 
 func TestStatusMissingSchema(t *testing.T) {
@@ -538,34 +436,15 @@ func TestStatusMissingSchema(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
 	status, err := ps.Status(ctx)
-	if err != nil {
-		t.Fatalf("status on missing schema: %v", err)
-	}
-	if status.PGSessions != 0 {
-		t.Errorf(
-			"pg sessions = %d, want 0",
-			status.PGSessions,
-		)
-	}
-	if status.PGMessages != 0 {
-		t.Errorf(
-			"pg messages = %d, want 0",
-			status.PGMessages,
-		)
-	}
-	if status.Machine != "test-machine" {
-		t.Errorf(
-			"machine = %q, want %q",
-			status.Machine, "test-machine",
-		)
-	}
+	require.NoError(t, err, "status on missing schema")
+	assert.Equal(t, 0, status.PGSessions)
+	assert.Equal(t, 0, status.PGMessages)
+	assert.Equal(t, "test-machine", status.Machine)
 }
 
 func TestNewRejectsMachineLocal(t *testing.T) {
@@ -575,9 +454,7 @@ func TestNewRejectsMachineLocal(t *testing.T) {
 		pgURL, "agentsview", local, "local", true,
 		SyncOptions{},
 	)
-	if err == nil {
-		t.Fatal("expected error for machine=local")
-	}
+	require.Error(t, err, "expected error for machine=local")
 }
 
 func TestNewRejectsEmptyMachine(t *testing.T) {
@@ -587,9 +464,7 @@ func TestNewRejectsEmptyMachine(t *testing.T) {
 		pgURL, "agentsview", local, "", true,
 		SyncOptions{},
 	)
-	if err == nil {
-		t.Fatal("expected error for empty machine")
-	}
+	require.Error(t, err, "expected error for empty machine")
 }
 
 func TestNewRejectsEmptyURL(t *testing.T) {
@@ -598,9 +473,7 @@ func TestNewRejectsEmptyURL(t *testing.T) {
 		"", "agentsview", local, "test", true,
 		SyncOptions{},
 	)
-	if err == nil {
-		t.Fatal("expected error for empty URL")
-	}
+	require.Error(t, err, "expected error for empty URL")
 }
 
 func TestPushUpdatedAtFormat(t *testing.T) {
@@ -614,15 +487,11 @@ func TestPushUpdatedAtFormat(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := "2026-03-11T12:00:00Z"
 	sess := db.Session{
@@ -632,22 +501,17 @@ func TestPushUpdatedAtFormat(t *testing.T) {
 		Agent:     "claude",
 		StartedAt: &started,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	var updatedAt time.Time
 	err = ps.pg.QueryRowContext(ctx,
 		"SELECT updated_at FROM sessions WHERE id = $1",
 		"sess-ts-001",
 	).Scan(&updatedAt)
-	if err != nil {
-		t.Fatalf("querying updated_at: %v", err)
-	}
+	require.NoError(t, err, "querying updated_at")
 
 	formatted := updatedAt.UTC().Format(
 		"2006-01-02T15:04:05.000000Z",
@@ -655,12 +519,8 @@ func TestPushUpdatedAtFormat(t *testing.T) {
 	pattern := regexp.MustCompile(
 		`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$`,
 	)
-	if !pattern.MatchString(formatted) {
-		t.Errorf(
-			"updated_at = %q, want ISO-8601 "+
-				"microsecond format", formatted,
-		)
-	}
+	assert.True(t, pattern.MatchString(formatted),
+		"updated_at = %q, want ISO-8601 microsecond format", formatted)
 }
 
 func TestPushBumpsUpdatedAtOnMessageRewrite(
@@ -676,15 +536,11 @@ func TestPushBumpsUpdatedAtOnMessageRewrite(
 		"machine-a", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := time.Now().UTC().Format(time.RFC3339)
 	sess := db.Session{
@@ -695,9 +551,7 @@ func TestPushBumpsUpdatedAtOnMessageRewrite(
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 	msg := db.Message{
 		SessionID:     "sess-bump-001",
 		Ordinal:       0,
@@ -705,53 +559,34 @@ func TestPushBumpsUpdatedAtOnMessageRewrite(
 		Content:       "hello",
 		ContentLength: 5,
 	}
-	if err := local.ReplaceSessionMessages(
+	require.NoError(t, local.ReplaceSessionMessages(
 		"sess-bump-001", []db.Message{msg},
-	); err != nil {
-		t.Fatalf("replace messages: %v", err)
-	}
+	), "replace messages")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("initial push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "initial push")
 
 	var updatedAt1 time.Time
-	if err := ps.pg.QueryRowContext(ctx,
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT updated_at FROM sessions WHERE id = $1",
 		"sess-bump-001",
-	).Scan(&updatedAt1); err != nil {
-		t.Fatalf("querying updated_at: %v", err)
-	}
+	).Scan(&updatedAt1), "querying updated_at")
 
 	time.Sleep(50 * time.Millisecond)
 
 	result, err := ps.Push(ctx, true, nil)
-	if err != nil {
-		t.Fatalf("full push: %v", err)
-	}
-	if result.MessagesPushed == 0 {
-		t.Fatal(
-			"expected messages to be pushed on full push",
-		)
-	}
+	require.NoError(t, err, "full push")
+	require.NotZero(t, result.MessagesPushed,
+		"expected messages to be pushed on full push")
 
 	var updatedAt2 time.Time
-	if err := ps.pg.QueryRowContext(ctx,
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT updated_at FROM sessions WHERE id = $1",
 		"sess-bump-001",
-	).Scan(&updatedAt2); err != nil {
-		t.Fatalf(
-			"querying updated_at after full push: %v",
-			err,
-		)
-	}
+	).Scan(&updatedAt2), "querying updated_at after full push")
 
-	if !updatedAt2.After(updatedAt1) {
-		t.Errorf(
-			"updated_at not bumped: before=%v, after=%v",
-			updatedAt1, updatedAt2,
-		)
-	}
+	assert.True(t, updatedAt2.After(updatedAt1),
+		"updated_at not bumped: before=%v, after=%v", updatedAt1, updatedAt2)
 }
 
 func TestPushFullBypassesHeuristic(t *testing.T) {
@@ -765,15 +600,11 @@ func TestPushFullBypassesHeuristic(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := "2026-03-11T12:00:00Z"
 	sess := db.Session{
@@ -784,46 +615,27 @@ func TestPushFullBypassesHeuristic(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
+	require.NoError(t, local.InsertMessages([]db.Message{
 		{
 			SessionID: "sess-full-001",
 			Ordinal:   0,
 			Role:      "user",
 			Content:   "test",
 		},
-	}); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	}), "insert messages")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("first push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "first push")
 
-	if err := local.SetSyncState(
+	require.NoError(t, local.SetSyncState(
 		"last_push_at", "",
-	); err != nil {
-		t.Fatalf("resetting watermark: %v", err)
-	}
+	), "resetting watermark")
 
 	result, err := ps.Push(ctx, true, nil)
-	if err != nil {
-		t.Fatalf("full push: %v", err)
-	}
-	if result.SessionsPushed != 1 {
-		t.Errorf(
-			"full push sessions = %d, want 1",
-			result.SessionsPushed,
-		)
-	}
-	if result.MessagesPushed != 1 {
-		t.Errorf(
-			"full push messages = %d, want 1",
-			result.MessagesPushed,
-		)
-	}
+	require.NoError(t, err, "full push")
+	assert.Equal(t, 1, result.SessionsPushed)
+	assert.Equal(t, 1, result.MessagesPushed)
 }
 
 func TestPushDetectsSchemaReset(t *testing.T) {
@@ -837,15 +649,11 @@ func TestPushDetectsSchemaReset(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	// Push a session so the watermark advances.
 	started := "2026-03-11T12:00:00Z"
@@ -857,29 +665,18 @@ func TestPushDetectsSchemaReset(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{{
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
+	require.NoError(t, local.InsertMessages([]db.Message{{
 		SessionID:     "sess-reset-001",
 		Ordinal:       0,
 		Role:          "user",
 		Content:       "hello",
 		ContentLength: 5,
-	}}); err != nil {
-		t.Fatalf("insert message: %v", err)
-	}
+	}}), "insert message")
 
 	r1, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("initial push: %v", err)
-	}
-	if r1.SessionsPushed != 1 {
-		t.Fatalf(
-			"initial push sessions = %d, want 1",
-			r1.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "initial push")
+	require.Equal(t, 1, r1.SessionsPushed)
 
 	// Simulate a PG schema reset — don't manually recreate;
 	// let Push detect and handle it via the coherence check.
@@ -889,22 +686,10 @@ func TestPushDetectsSchemaReset(t *testing.T) {
 	// (local watermark set, PG has 0 sessions), recreate
 	// the schema, and automatically force a full push.
 	r2, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("post-reset push: %v", err)
-	}
-	if r2.SessionsPushed != 1 {
-		t.Errorf(
-			"post-reset push sessions = %d, want 1 "+
-				"(should auto-detect schema reset)",
-			r2.SessionsPushed,
-		)
-	}
-	if r2.MessagesPushed != 1 {
-		t.Errorf(
-			"post-reset push messages = %d, want 1",
-			r2.MessagesPushed,
-		)
-	}
+	require.NoError(t, err, "post-reset push")
+	assert.Equal(t, 1, r2.SessionsPushed,
+		"should auto-detect schema reset")
+	assert.Equal(t, 1, r2.MessagesPushed)
 }
 
 func TestPushFullAfterSchemaDropRecreatesSchema(
@@ -920,9 +705,7 @@ func TestPushFullAfterSchemaDropRecreatesSchema(
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	ctx := context.Background()
 
 	sess := db.Session{
@@ -932,20 +715,11 @@ func TestPushFullAfterSchemaDropRecreatesSchema(
 		Agent:     "claude",
 		CreatedAt: "2026-03-11T12:00:00.000Z",
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 
 	r1, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("initial push: %v", err)
-	}
-	if r1.SessionsPushed != 1 {
-		t.Fatalf(
-			"initial push sessions = %d, want 1",
-			r1.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "initial push")
+	require.Equal(t, 1, r1.SessionsPushed)
 
 	// Drop the schema without clearing local state.
 	cleanPGSchema(t, pgURL)
@@ -953,15 +727,8 @@ func TestPushFullAfterSchemaDropRecreatesSchema(
 	// A full push should recreate the schema even though
 	// schemaDone is memoized from the first push.
 	r2, err := ps.Push(ctx, true, nil)
-	if err != nil {
-		t.Fatalf("full push after drop: %v", err)
-	}
-	if r2.SessionsPushed != 1 {
-		t.Errorf(
-			"full push sessions = %d, want 1",
-			r2.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "full push after drop")
+	assert.Equal(t, 1, r2.SessionsPushed)
 }
 
 func TestPushBatchesMultipleSessions(t *testing.T) {
@@ -975,15 +742,11 @@ func TestPushBatchesMultipleSessions(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	// Create 75 sessions to exercise two batches (50 + 25).
 	const totalSessions = 75
@@ -998,10 +761,9 @@ func TestPushBatchesMultipleSessions(t *testing.T) {
 			StartedAt:    &started,
 			MessageCount: 2,
 		}
-		if err := local.UpsertSession(sess); err != nil {
-			t.Fatalf("upsert session %d: %v", i, err)
-		}
-		if err := local.InsertMessages([]db.Message{
+		require.NoError(t, local.UpsertSession(sess),
+			"upsert session %d", i)
+		require.NoError(t, local.InsertMessages([]db.Message{
 			{
 				SessionID:     id,
 				Ordinal:       0,
@@ -1016,55 +778,25 @@ func TestPushBatchesMultipleSessions(t *testing.T) {
 				Content:       fmt.Sprintf("reply %d", i),
 				ContentLength: 7,
 			},
-		}); err != nil {
-			t.Fatalf("insert messages %d: %v", i, err)
-		}
+		}), "insert messages %d", i)
 	}
 
 	result, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if result.SessionsPushed != totalSessions {
-		t.Errorf(
-			"sessions pushed = %d, want %d",
-			result.SessionsPushed, totalSessions,
-		)
-	}
-	if result.MessagesPushed != totalSessions*2 {
-		t.Errorf(
-			"messages pushed = %d, want %d",
-			result.MessagesPushed, totalSessions*2,
-		)
-	}
-	if result.Errors != 0 {
-		t.Errorf("errors = %d, want 0", result.Errors)
-	}
+	require.NoError(t, err, "push")
+	assert.Equal(t, totalSessions, result.SessionsPushed)
+	assert.Equal(t, totalSessions*2, result.MessagesPushed)
+	assert.Equal(t, 0, result.Errors)
 
 	// Verify PG state.
 	var pgSessions, pgMessages int
-	if err := ps.pg.QueryRowContext(ctx,
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM sessions",
-	).Scan(&pgSessions); err != nil {
-		t.Fatalf("counting pg sessions: %v", err)
-	}
-	if err := ps.pg.QueryRowContext(ctx,
+	).Scan(&pgSessions), "counting pg sessions")
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM messages",
-	).Scan(&pgMessages); err != nil {
-		t.Fatalf("counting pg messages: %v", err)
-	}
-	if pgSessions != totalSessions {
-		t.Errorf(
-			"pg sessions = %d, want %d",
-			pgSessions, totalSessions,
-		)
-	}
-	if pgMessages != totalSessions*2 {
-		t.Errorf(
-			"pg messages = %d, want %d",
-			pgMessages, totalSessions*2,
-		)
-	}
+	).Scan(&pgMessages), "counting pg messages")
+	assert.Equal(t, totalSessions, pgSessions)
+	assert.Equal(t, totalSessions*2, pgMessages)
 }
 
 func TestPushBulkInsertManyMessages(t *testing.T) {
@@ -1078,15 +810,11 @@ func TestPushBulkInsertManyMessages(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	// Create a session with 250 messages to exercise
 	// multi-row VALUES batching (100 per batch).
@@ -1100,9 +828,7 @@ func TestPushBulkInsertManyMessages(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: msgCount,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert session: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert session")
 	msgs := make([]db.Message, msgCount)
 	for i := range msgs {
 		role := "user"
@@ -1128,50 +854,27 @@ func TestPushBulkInsertManyMessages(t *testing.T) {
 			}}
 		}
 	}
-	if err := local.InsertMessages(msgs); err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	require.NoError(t, local.InsertMessages(msgs), "insert messages")
 
 	result, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if result.SessionsPushed != 1 {
-		t.Errorf(
-			"sessions pushed = %d, want 1",
-			result.SessionsPushed,
-		)
-	}
-	if result.MessagesPushed != msgCount {
-		t.Errorf(
-			"messages pushed = %d, want %d",
-			result.MessagesPushed, msgCount,
-		)
-	}
+	require.NoError(t, err, "push")
+	assert.Equal(t, 1, result.SessionsPushed)
+	assert.Equal(t, msgCount, result.MessagesPushed)
 
 	// Verify all messages landed in PG.
 	var pgMsgCount int
-	if err := ps.pg.QueryRowContext(ctx,
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM messages WHERE session_id = $1",
 		"bulk-msg-sess",
-	).Scan(&pgMsgCount); err != nil {
-		t.Fatalf("counting pg messages: %v", err)
-	}
-	if pgMsgCount != msgCount {
-		t.Errorf(
-			"pg messages = %d, want %d",
-			pgMsgCount, msgCount,
-		)
-	}
+	).Scan(&pgMsgCount), "counting pg messages")
+	assert.Equal(t, msgCount, pgMsgCount)
 
 	// Verify tool calls landed.
 	var pgTCCount int
-	if err := ps.pg.QueryRowContext(ctx,
+	require.NoError(t, ps.pg.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM tool_calls WHERE session_id = $1",
 		"bulk-msg-sess",
-	).Scan(&pgTCCount); err != nil {
-		t.Fatalf("counting pg tool_calls: %v", err)
-	}
+	).Scan(&pgTCCount), "counting pg tool_calls")
 	// Every 10th assistant message (ordinals 1, 11, 21, ...).
 	expectedTC := 0
 	for i := range msgCount {
@@ -1179,12 +882,7 @@ func TestPushBulkInsertManyMessages(t *testing.T) {
 			expectedTC++
 		}
 	}
-	if pgTCCount != expectedTC {
-		t.Errorf(
-			"pg tool_calls = %d, want %d",
-			pgTCCount, expectedTC,
-		)
-	}
+	assert.Equal(t, expectedTC, pgTCCount)
 }
 
 func TestPushSimplePK(t *testing.T) {
@@ -1198,15 +896,11 @@ func TestPushSimplePK(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	var constraintDef string
 	err = ps.pg.QueryRowContext(ctx, `
@@ -1217,15 +911,8 @@ func TestPushSimplePK(t *testing.T) {
 		  AND c.conrelid = 'agentsview.sessions'::regclass
 		  AND c.contype = 'p'
 	`).Scan(&constraintDef)
-	if err != nil {
-		t.Fatalf("querying sessions PK: %v", err)
-	}
-	if constraintDef != "PRIMARY KEY (id)" {
-		t.Errorf(
-			"sessions PK = %q, want PRIMARY KEY (id)",
-			constraintDef,
-		)
-	}
+	require.NoError(t, err, "querying sessions PK")
+	assert.Equal(t, "PRIMARY KEY (id)", constraintDef)
 
 	err = ps.pg.QueryRowContext(ctx, `
 		SELECT pg_get_constraintdef(c.oid)
@@ -1235,16 +922,8 @@ func TestPushSimplePK(t *testing.T) {
 		  AND c.conrelid = 'agentsview.messages'::regclass
 		  AND c.contype = 'p'
 	`).Scan(&constraintDef)
-	if err != nil {
-		t.Fatalf("querying messages PK: %v", err)
-	}
-	if constraintDef != "PRIMARY KEY (session_id, ordinal)" {
-		t.Errorf(
-			"messages PK = %q, "+
-				"want PRIMARY KEY (session_id, ordinal)",
-			constraintDef,
-		)
-	}
+	require.NoError(t, err, "querying messages PK")
+	assert.Equal(t, "PRIMARY KEY (session_id, ordinal)", constraintDef)
 }
 
 func TestPushFilteredByProject(t *testing.T) {
@@ -1272,17 +951,13 @@ func TestPushFilteredByProject(t *testing.T) {
 			MessageCount: 1,
 		},
 	} {
-		if err := local.UpsertSession(s); err != nil {
-			t.Fatalf("upsert %s: %v", s.ID, err)
-		}
-		if err := local.InsertMessages([]db.Message{
+		require.NoError(t, local.UpsertSession(s), "upsert %s", s.ID)
+		require.NoError(t, local.InsertMessages([]db.Message{
 			{
 				SessionID: s.ID, Ordinal: 0,
 				Role: "user", Content: "msg " + s.ID,
 			},
-		}); err != nil {
-			t.Fatalf("insert msg %s: %v", s.ID, err)
-		}
+		}), "insert msg %s", s.ID)
 	}
 
 	ctx := context.Background()
@@ -1293,24 +968,13 @@ func TestPushFilteredByProject(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{Projects: []string{"alpha"}},
 	)
-	if err != nil {
-		t.Fatalf("creating filtered sync: %v", err)
-	}
+	require.NoError(t, err, "creating filtered sync")
 	defer filtered.Close()
 
-	if err := filtered.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, filtered.EnsureSchema(ctx), "ensure schema")
 	r1, err := filtered.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("filtered push: %v", err)
-	}
-	if r1.SessionsPushed != 1 {
-		t.Fatalf(
-			"filtered push: sessions = %d, want 1",
-			r1.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "filtered push")
+	require.Equal(t, 1, r1.SessionsPushed)
 
 	// Verify only alpha is in PG.
 	pgSessionCount := func(project string) int {
@@ -1321,20 +985,12 @@ func TestPushFilteredByProject(t *testing.T) {
 				"WHERE project = $1",
 			project,
 		).Scan(&n)
-		if err != nil {
-			t.Fatalf("count %s: %v", project, err)
-		}
+		require.NoError(t, err, "count %s", project)
 		return n
 	}
-	if n := pgSessionCount("alpha"); n != 1 {
-		t.Errorf("alpha count = %d, want 1", n)
-	}
-	if n := pgSessionCount("beta"); n != 0 {
-		t.Errorf("beta count = %d, want 0", n)
-	}
-	if n := pgSessionCount("gamma"); n != 0 {
-		t.Errorf("gamma count = %d, want 0", n)
-	}
+	assert.Equal(t, 1, pgSessionCount("alpha"))
+	assert.Equal(t, 0, pgSessionCount("beta"))
+	assert.Equal(t, 0, pgSessionCount("gamma"))
 
 	// Step 2: push unfiltered — beta and gamma should arrive.
 	unfiltered, err := New(
@@ -1342,41 +998,23 @@ func TestPushFilteredByProject(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating unfiltered sync: %v", err)
-	}
+	require.NoError(t, err, "creating unfiltered sync")
 	defer unfiltered.Close()
 
 	r2, err := unfiltered.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("unfiltered push: %v", err)
-	}
-	if r2.SessionsPushed < 2 {
-		t.Fatalf(
-			"unfiltered push: sessions = %d, want >= 2",
-			r2.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "unfiltered push")
+	require.GreaterOrEqual(t, r2.SessionsPushed, 2)
 
 	// Verify all three projects are in PG.
 	for _, p := range []string{"alpha", "beta", "gamma"} {
-		if n := pgSessionCount(p); n != 1 {
-			t.Errorf("%s count = %d, want 1", p, n)
-		}
+		assert.Equal(t, 1, pgSessionCount(p), "project %s", p)
 	}
 
 	// Step 3: second filtered push is a no-op (fingerprints
 	// match).
 	r3, err := filtered.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("second filtered push: %v", err)
-	}
-	if r3.SessionsPushed != 0 {
-		t.Errorf(
-			"second filtered push: sessions = %d, want 0",
-			r3.SessionsPushed,
-		)
-	}
+	require.NoError(t, err, "second filtered push")
+	assert.Equal(t, 0, r3.SessionsPushed)
 }
 
 func TestPushExcludeProject(t *testing.T) {
@@ -1398,17 +1036,13 @@ func TestPushExcludeProject(t *testing.T) {
 			MessageCount: 1,
 		},
 	} {
-		if err := local.UpsertSession(s); err != nil {
-			t.Fatalf("upsert %s: %v", s.ID, err)
-		}
-		if err := local.InsertMessages([]db.Message{
+		require.NoError(t, local.UpsertSession(s), "upsert %s", s.ID)
+		require.NoError(t, local.InsertMessages([]db.Message{
 			{
 				SessionID: s.ID, Ordinal: 0,
 				Role: "user", Content: "msg",
 			},
-		}); err != nil {
-			t.Fatalf("insert msg %s: %v", s.ID, err)
-		}
+		}), "insert msg %s", s.ID)
 	}
 
 	ctx := context.Background()
@@ -1418,32 +1052,20 @@ func TestPushExcludeProject(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{ExcludeProjects: []string{"beta"}},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 	r, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if r.SessionsPushed != 1 {
-		t.Fatalf("sessions = %d, want 1", r.SessionsPushed)
-	}
+	require.NoError(t, err, "push")
+	require.Equal(t, 1, r.SessionsPushed)
 
 	var pgProject string
 	err = ps.pg.QueryRowContext(ctx,
 		"SELECT project FROM sessions LIMIT 1",
 	).Scan(&pgProject)
-	if err != nil {
-		t.Fatalf("query pg: %v", err)
-	}
-	if pgProject != "alpha" {
-		t.Errorf("project = %q, want alpha", pgProject)
-	}
+	require.NoError(t, err, "query pg")
+	assert.Equal(t, "alpha", pgProject)
 }
 
 func TestPushFilteredFullIsIncremental(t *testing.T) {
@@ -1453,21 +1075,17 @@ func TestPushFilteredFullIsIncremental(t *testing.T) {
 
 	local := testDB(t)
 
-	if err := local.UpsertSession(db.Session{
+	require.NoError(t, local.UpsertSession(db.Session{
 		ID: "s1", Project: "alpha",
 		Machine: "local", Agent: "claude",
 		MessageCount: 1,
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if err := local.InsertMessages([]db.Message{
+	}), "upsert")
+	require.NoError(t, local.InsertMessages([]db.Message{
 		{
 			SessionID: "s1", Ordinal: 0,
 			Role: "user", Content: "hello",
 		},
-	}); err != nil {
-		t.Fatalf("insert msg: %v", err)
-	}
+	}), "insert msg")
 
 	ctx := context.Background()
 	ps, err := New(
@@ -1475,54 +1093,31 @@ func TestPushFilteredFullIsIncremental(t *testing.T) {
 		"test-machine", true,
 		SyncOptions{Projects: []string{"alpha"}},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	// First push with --full.
 	r1, err := ps.Push(ctx, true, nil)
-	if err != nil {
-		t.Fatalf("first push: %v", err)
-	}
-	if r1.SessionsPushed != 1 {
-		t.Fatalf("first push: sessions = %d, want 1",
-			r1.SessionsPushed)
-	}
+	require.NoError(t, err, "first push")
+	require.Equal(t, 1, r1.SessionsPushed)
 
 	// Filtered --full must not advance the global watermark.
 	wm, err := local.GetSyncState("last_push_at")
-	if err != nil {
-		t.Fatalf("reading watermark: %v", err)
-	}
-	if wm != "" {
-		t.Errorf("watermark after filtered --full = %q, "+
-			"want empty", wm)
-	}
+	require.NoError(t, err, "reading watermark")
+	assert.Empty(t, wm, "watermark after filtered --full")
 
 	// Boundary fingerprints must have been written.
 	bs, err := local.GetSyncState(
 		"last_push_boundary_state",
 	)
-	if err != nil {
-		t.Fatalf("reading boundary state: %v", err)
-	}
-	if bs == "" {
-		t.Fatal("boundary state empty after filtered --full")
-	}
+	require.NoError(t, err, "reading boundary state")
+	require.NotEmpty(t, bs, "boundary state empty after filtered --full")
 
 	// Second push (not --full) should be a no-op because
 	// fingerprints were persisted after the filtered --full.
 	r2, err := ps.Push(ctx, false, nil)
-	if err != nil {
-		t.Fatalf("second push: %v", err)
-	}
-	if r2.SessionsPushed != 0 {
-		t.Errorf("second push: sessions = %d, want 0",
-			r2.SessionsPushed)
-	}
+	require.NoError(t, err, "second push")
+	assert.Equal(t, 0, r2.SessionsPushed)
 }

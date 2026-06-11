@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // cacheSchema matches the `git_cache` DDL in internal/db/schema.sql. We keep
@@ -30,13 +32,10 @@ func newCacheDB(t *testing.T) *sql.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cache.db")
 	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
+	require.NoError(t, err, "sql.Open")
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(cacheSchema); err != nil {
-		t.Fatalf("init git_cache schema: %v", err)
-	}
+	_, err = db.Exec(cacheSchema)
+	require.NoError(t, err, "init git_cache schema")
 	return db
 }
 
@@ -52,27 +51,18 @@ func TestCache_GetOrCompute_FirstCallInvokesCompute(t *testing.T) {
 			return []byte(`{"commits":3}`), nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("GetOrCompute: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("compute called %d times, want 1", calls)
-	}
-	if string(got) != `{"commits":3}` {
-		t.Fatalf("payload = %q, want %q", got, `{"commits":3}`)
-	}
+	require.NoError(t, err, "GetOrCompute")
+	assert.Equal(t, 1, calls, "compute call count")
+	assert.Equal(t, `{"commits":3}`, string(got), "payload")
 
 	// Verify the row landed in git_cache with the expected kind.
 	var kind, payload string
 	err = db.QueryRow(
 		`SELECT kind, payload FROM git_cache WHERE cache_key = ?`, "k1",
 	).Scan(&kind, &payload)
-	if err != nil {
-		t.Fatalf("row not persisted: %v", err)
-	}
-	if kind != "log" || payload != `{"commits":3}` {
-		t.Fatalf("row = (%q, %q), want (log, {...})", kind, payload)
-	}
+	require.NoError(t, err, "row not persisted")
+	assert.Equal(t, "log", kind, "row kind")
+	assert.Equal(t, `{"commits":3}`, payload, "row payload")
 }
 
 func TestCache_GetOrCompute_WithinTTLReturnsCached(t *testing.T) {
@@ -85,27 +75,18 @@ func TestCache_GetOrCompute_WithinTTLReturnsCached(t *testing.T) {
 		return []byte(`{"n":1}`), nil
 	}
 
-	if _, err := cache.GetOrCompute(
+	_, err := cache.GetOrCompute(
 		context.Background(), "k1", "log", time.Hour, compute,
-	); err != nil {
-		t.Fatalf("first GetOrCompute: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("after first call, calls = %d, want 1", calls)
-	}
+	)
+	require.NoError(t, err, "first GetOrCompute")
+	require.Equal(t, 1, calls, "after first call")
 
 	got, err := cache.GetOrCompute(
 		context.Background(), "k1", "log", time.Hour, compute,
 	)
-	if err != nil {
-		t.Fatalf("second GetOrCompute: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("compute called again within TTL: calls = %d, want 1", calls)
-	}
-	if string(got) != `{"n":1}` {
-		t.Fatalf("cached payload = %q, want %q", got, `{"n":1}`)
-	}
+	require.NoError(t, err, "second GetOrCompute")
+	assert.Equal(t, 1, calls, "compute called again within TTL")
+	assert.Equal(t, `{"n":1}`, string(got), "cached payload")
 }
 
 func TestCache_GetOrCompute_PastTTLRecomputes(t *testing.T) {
@@ -120,31 +101,23 @@ func TestCache_GetOrCompute_PastTTLRecomputes(t *testing.T) {
 
 	// Seed the cache with a timestamp well in the past so the second call
 	// sees an expired row.
-	if _, err := cache.GetOrCompute(
+	_, err := cache.GetOrCompute(
 		context.Background(), "k1", "log", time.Hour, compute,
-	); err != nil {
-		t.Fatalf("first GetOrCompute: %v", err)
-	}
+	)
+	require.NoError(t, err, "first GetOrCompute")
 	oldTime := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(
+	_, err = db.Exec(
 		`UPDATE git_cache SET computed_at = ? WHERE cache_key = ?`,
 		oldTime, "k1",
-	); err != nil {
-		t.Fatalf("backdating row: %v", err)
-	}
+	)
+	require.NoError(t, err, "backdating row")
 
 	got, err := cache.GetOrCompute(
 		context.Background(), "k1", "log", time.Hour, compute,
 	)
-	if err != nil {
-		t.Fatalf("second GetOrCompute: %v", err)
-	}
-	if calls != 2 {
-		t.Fatalf("compute invocations = %d, want 2 (past TTL)", calls)
-	}
-	if string(got) != `{"call":2}` {
-		t.Fatalf("payload = %q, want recomputed %q", got, `{"call":2}`)
-	}
+	require.NoError(t, err, "second GetOrCompute")
+	assert.Equal(t, 2, calls, "compute invocations (past TTL)")
+	assert.Equal(t, `{"call":2}`, string(got), "recomputed payload")
 }
 
 func TestCache_GetOrCompute_ErrorDoesNotWriteRow(t *testing.T) {
@@ -156,29 +129,21 @@ func TestCache_GetOrCompute_ErrorDoesNotWriteRow(t *testing.T) {
 		context.Background(), "k1", "log", time.Hour,
 		func() ([]byte, error) { return nil, boom },
 	)
-	if !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want wrap of %v", err, boom)
-	}
+	require.ErrorIs(t, err, boom)
 
 	var n int
-	if err := db.QueryRow(
+	err = db.QueryRow(
 		`SELECT count(*) FROM git_cache WHERE cache_key = ?`, "k1",
-	).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("row count after error = %d, want 0", n)
-	}
+	).Scan(&n)
+	require.NoError(t, err, "count")
+	assert.Zero(t, n, "row count after error")
 }
 
 func TestCacheKey_DeterministicAndSensitiveToEachField(t *testing.T) {
 	base := CacheKey("log", "/r", "a@x", "2026-01-01", "2026-02-01")
-	if base == "" {
-		t.Fatal("CacheKey returned empty string")
-	}
-	if got := CacheKey("log", "/r", "a@x", "2026-01-01", "2026-02-01"); got != base {
-		t.Fatalf("CacheKey non-deterministic: %q vs %q", got, base)
-	}
+	require.NotEmpty(t, base, "CacheKey returned empty string")
+	assert.Equal(t, base, CacheKey("log", "/r", "a@x", "2026-01-01", "2026-02-01"),
+		"CacheKey non-deterministic")
 
 	cases := []struct {
 		name                     string
@@ -193,9 +158,8 @@ func TestCacheKey_DeterministicAndSensitiveToEachField(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := CacheKey(c.kind, c.repo, c.author, c.s, c.u)
-			if got == base {
-				t.Fatalf("CacheKey did not change when %s differed: %q", c.name, got)
-			}
+			assert.NotEqual(t, base, got,
+				"CacheKey did not change when %s differed", c.name)
 		})
 	}
 }

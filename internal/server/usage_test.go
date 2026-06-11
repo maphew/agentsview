@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/server"
 )
@@ -25,16 +28,10 @@ func TestParseUsageFilterDefaults(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[server.UsageSummaryResponse](t, w)
-	if resp.From == "" {
-		t.Error("From is empty, expected defaulted value")
-	}
-	if resp.To == "" {
-		t.Error("To is empty, expected defaulted value")
-	}
+	assert.NotEmpty(t, resp.From, "expected defaulted From")
+	assert.NotEmpty(t, resp.To, "expected defaulted To")
 	// from should be ~30 days before to.
-	if resp.From >= resp.To {
-		t.Errorf("From %q >= To %q", resp.From, resp.To)
-	}
+	assert.Less(t, resp.From, resp.To)
 }
 
 func TestParseUsageFilterExplicit(t *testing.T) {
@@ -52,12 +49,8 @@ func TestParseUsageFilterExplicit(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[server.UsageSummaryResponse](t, w)
-	if resp.From != "2024-06-01" {
-		t.Errorf("From = %q, want 2024-06-01", resp.From)
-	}
-	if resp.To != "2024-06-15" {
-		t.Errorf("To = %q, want 2024-06-15", resp.To)
-	}
+	assert.Equal(t, "2024-06-01", resp.From)
+	assert.Equal(t, "2024-06-15", resp.To)
 }
 
 func TestParseUsageFilterDefaultsIncludeOneShot(t *testing.T) {
@@ -90,10 +83,7 @@ func TestParseUsageFilterDefaultsIncludeOneShot(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	resp := decode[server.UsageSummaryResponse](t, w)
-	if resp.SessionCounts.Total != 1 {
-		t.Fatalf("SessionCounts.Total = %d, want 1",
-			resp.SessionCounts.Total)
-	}
+	require.Equal(t, 1, resp.SessionCounts.Total)
 }
 
 func TestParseUsageFilterInvalidDate(t *testing.T) {
@@ -154,11 +144,7 @@ func TestHandleUsageSummaryJSONShape(t *testing.T) {
 
 	// Verify all expected top-level keys exist.
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(
-		w.Body.Bytes(), &raw,
-	); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
 
 	required := []string{
 		"from", "to", "totals", "daily",
@@ -166,24 +152,14 @@ func TestHandleUsageSummaryJSONShape(t *testing.T) {
 		"sessionCounts", "cacheStats",
 	}
 	for _, key := range required {
-		if _, ok := raw[key]; !ok {
-			t.Errorf("missing key %q in response", key)
-		}
+		assert.Contains(t, raw, key, "missing key in response")
 	}
 
 	resp := decode[server.UsageSummaryResponse](t, w)
-	if len(resp.Daily) == 0 {
-		t.Error("Daily is empty, expected entries")
-	}
-	if len(resp.ProjectTotals) == 0 {
-		t.Error("ProjectTotals is empty")
-	}
-	if len(resp.ModelTotals) == 0 {
-		t.Error("ModelTotals is empty")
-	}
-	if len(resp.AgentTotals) == 0 {
-		t.Error("AgentTotals is empty")
-	}
+	assert.NotEmpty(t, resp.Daily)
+	assert.NotEmpty(t, resp.ProjectTotals)
+	assert.NotEmpty(t, resp.ModelTotals)
+	assert.NotEmpty(t, resp.AgentTotals)
 }
 
 func TestHandleUsageTopSessionsEmpty(t *testing.T) {
@@ -199,14 +175,8 @@ func TestHandleUsageTopSessionsEmpty(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	var entries []db.TopSessionEntry
-	if err := json.Unmarshal(
-		w.Body.Bytes(), &entries,
-	); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if entries == nil {
-		t.Error("expected non-null JSON array")
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &entries))
+	assert.NotNil(t, entries, "expected non-null JSON array")
 }
 
 func TestHandleUsageTopSessionsLimit(t *testing.T) {
@@ -224,15 +194,8 @@ func TestHandleUsageTopSessionsLimit(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	var entries []db.TopSessionEntry
-	if err := json.Unmarshal(
-		w.Body.Bytes(), &entries,
-	); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(entries) > 1 {
-		t.Errorf("len(entries) = %d, want <= 1",
-			len(entries))
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &entries))
+	assert.LessOrEqual(t, len(entries), 1)
 }
 
 // TestUsageSummaryErrorRedaction verifies internal errors
@@ -265,9 +228,7 @@ func TestUsageRoutesRegistered(t *testing.T) {
 			)
 			w := httptest.NewRecorder()
 			te.handler.ServeHTTP(w, req)
-			if w.Code == http.StatusNotFound {
-				t.Errorf("%s returned 404", ep)
-			}
+			assert.NotEqual(t, http.StatusNotFound, w.Code, "%s returned 404", ep)
 		})
 	}
 }

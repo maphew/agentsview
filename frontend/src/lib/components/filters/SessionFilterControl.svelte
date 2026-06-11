@@ -7,6 +7,7 @@
     agentLabel,
   } from "../../utils/agents.js";
   import type { GroupMode } from "../sidebar/session-list-utils.js";
+  import { CheckIcon, FunnelIcon } from "../../icons.js";
 
   interface Props {
     groupMode?: GroupMode;
@@ -125,23 +126,11 @@
   class="filter-btn"
   bind:this={filterBtnRef}
   onclick={() => (open = !open)}
+  title="Filter sessions"
   aria-label="Filters"
   aria-expanded={open}
 >
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  >
-    <polygon
-      points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-    />
-  </svg>
+  <FunnelIcon size="14" strokeWidth="2" aria-hidden="true" />
   {#if hasFilters || (showDisplay && groupMode !== "none")}
     <span class="filter-indicator"></span>
   {/if}
@@ -288,9 +277,7 @@
             class:on={!sessions.filters.agent}
           >
             {#if !sessions.filters.agent}
-              <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-              </svg>
+              <CheckIcon size="8" strokeWidth="2.4" aria-hidden="true" />
             {/if}
           </span>
           <span class="agent-select-name">All agents</span>
@@ -310,9 +297,7 @@
               class:on={selected}
             >
               {#if selected}
-                <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                </svg>
+                <CheckIcon size="8" strokeWidth="2.4" aria-hidden="true" />
               {/if}
             </span>
             <span
@@ -360,9 +345,7 @@
                 class:on={selected}
               >
                 {#if selected}
-                  <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                    <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                  </svg>
+                  <CheckIcon size="8" strokeWidth="2.4" aria-hidden="true" />
                 {/if}
               </span>
               <span class="agent-select-name">

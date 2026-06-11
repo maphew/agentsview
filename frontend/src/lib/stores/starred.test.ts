@@ -6,15 +6,29 @@ import {
   afterEach,
   vi,
 } from "vite-plus/test";
-import * as api from "../api/client.js";
+import { StarredService } from "../api/generated/index";
 import { createStarredStore } from "./starred.svelte.js";
 
-vi.mock("../api/client.js", () => ({
-  listStarred: vi.fn().mockResolvedValue({ session_ids: [] }),
-  starSession: vi.fn().mockResolvedValue(undefined),
-  unstarSession: vi.fn().mockResolvedValue(undefined),
-  bulkStarSessions: vi.fn().mockResolvedValue(undefined),
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
 }));
+
+vi.mock("../api/generated/index", () => ({
+  StarredService: {
+    getApiV1Starred: vi.fn().mockResolvedValue({ session_ids: [] }),
+    putApiV1SessionsIdStar: vi.fn().mockResolvedValue(undefined),
+    deleteApiV1SessionsIdStar: vi.fn().mockResolvedValue(undefined),
+    postApiV1StarredBulk: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+const starredService = StarredService as unknown as {
+  getApiV1Starred: ReturnType<typeof vi.fn>;
+  putApiV1SessionsIdStar: ReturnType<typeof vi.fn>;
+  deleteApiV1SessionsIdStar: ReturnType<typeof vi.fn>;
+  postApiV1StarredBulk: ReturnType<typeof vi.fn>;
+};
 
 const STORAGE_KEY = "agentsview-starred-sessions";
 
@@ -23,7 +37,7 @@ describe("StarredStore", () => {
 
   beforeEach(() => {
     localStorage.removeItem(STORAGE_KEY);
-    vi.mocked(api.listStarred).mockResolvedValue({
+    starredService.getApiV1Starred.mockResolvedValue({
       session_ids: [],
     });
     starred = createStarredStore();
@@ -146,14 +160,14 @@ describe("StarredStore migration reconcile", () => {
       JSON.stringify(["exists", "stale"]),
     );
 
-    vi.mocked(api.listStarred)
+    starredService.getApiV1Starred
       // Initial load
       .mockResolvedValueOnce({ session_ids: [] })
       // Post-migration refresh fails
       .mockRejectedValueOnce(new Error("network"))
       // Retried reconcile succeeds with only the applied ID
       .mockResolvedValueOnce({ session_ids: ["exists"] });
-    vi.mocked(api.bulkStarSessions).mockResolvedValueOnce(undefined);
+    starredService.postApiV1StarredBulk.mockResolvedValueOnce(undefined);
 
     const store = createStarredStore();
     await store.load();
@@ -173,7 +187,7 @@ describe("StarredStore migration reconcile", () => {
       JSON.stringify(["migrated"]),
     );
 
-    vi.mocked(api.listStarred)
+    starredService.getApiV1Starred
       // Initial load
       .mockResolvedValueOnce({ session_ids: [] })
       // Post-migration refresh fails
@@ -182,7 +196,7 @@ describe("StarredStore migration reconcile", () => {
       .mockRejectedValueOnce(new Error("network"))
       // Reconcile retry 2 succeeds (4s)
       .mockResolvedValueOnce({ session_ids: ["migrated"] });
-    vi.mocked(api.bulkStarSessions).mockResolvedValueOnce(undefined);
+    starredService.postApiV1StarredBulk.mockResolvedValueOnce(undefined);
 
     const store = createStarredStore();
     await store.load();
@@ -211,7 +225,7 @@ describe("StarredStore load retry", () => {
   });
 
   it("retries load after failure with backoff", async () => {
-    vi.mocked(api.listStarred)
+    starredService.getApiV1Starred
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({ session_ids: ["srv-1"] });
 
@@ -227,7 +241,7 @@ describe("StarredStore load retry", () => {
   });
 
   it("stops retrying after 3 failures", async () => {
-    vi.mocked(api.listStarred)
+    starredService.getApiV1Starred
       .mockRejectedValue(new Error("network"));
 
     const store = createStarredStore();
@@ -238,16 +252,16 @@ describe("StarredStore load retry", () => {
     await vi.advanceTimersByTimeAsync(8000); // retry 3 (fail 4 — no more retries)
 
     // Should have been called 4 times total (initial + 3 retries)
-    expect(api.listStarred).toHaveBeenCalledTimes(4);
+    expect(starredService.getApiV1Starred).toHaveBeenCalledTimes(4);
 
     // No further retry scheduled
     await vi.advanceTimersByTimeAsync(16000);
-    expect(api.listStarred).toHaveBeenCalledTimes(4);
+    expect(starredService.getApiV1Starred).toHaveBeenCalledTimes(4);
   });
 
   it("does not create overlapping retry chains on repeated load()", async () => {
     let callCount = 0;
-    vi.mocked(api.listStarred).mockImplementation(() => {
+    starredService.getApiV1Starred.mockImplementation(() => {
       callCount++;
       return Promise.reject(new Error("network"));
     });
@@ -277,7 +291,7 @@ describe("StarredStore load retry", () => {
   });
 
   it("does not retry after successful load", async () => {
-    vi.mocked(api.listStarred).mockResolvedValue({
+    starredService.getApiV1Starred.mockResolvedValue({
       session_ids: ["s1"],
     });
 

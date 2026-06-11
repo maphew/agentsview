@@ -4,9 +4,17 @@
   import { starred } from "../../stores/starred.svelte.js";
   import SessionItem from "./SessionItem.svelte";
   import SessionFilterControl from "../filters/SessionFilterControl.svelte";
+  import {
+    ChevronDownIcon,
+    ChevronRightIcon,
+    FolderIcon,
+    UserRoundIcon,
+    UsersRoundIcon,
+  } from "../../icons.js";
   import { formatNumber } from "../../utils/format.js";
   import { agentColor } from "../../utils/agents.js";
   import {
+    type DisplayItem,
     type GroupMode,
     ITEM_HEIGHT,
     OVERSCAN,
@@ -24,6 +32,10 @@
   let scrollTop = $state(0);
   let viewportHeight = $state(0);
   let scrollRaf: number | null = $state(null);
+  let initialHydratedVersion: number | null = $state(null);
+  let initialHydratingVersion: number | null = $state(null);
+  let paintedDisplayItems: DisplayItem[] = $state([]);
+  let paintedTotalSize = $state(0);
 
   let groupMode: GroupMode = $state(getInitialGroupMode());
   let manualExpanded: Set<string> = $state(new Set());
@@ -98,14 +110,24 @@
       : groups.length,
   );
   let totalSize = $derived(computeTotalSize(displayItems));
+  let renderDisplayItems = $derived(
+    initialHydratedVersion === sessions.sidebarIndexVersion
+      ? displayItems
+      : paintedDisplayItems,
+  );
+  let renderTotalSize = $derived(
+    initialHydratedVersion === sessions.sidebarIndexVersion
+      ? totalSize
+      : paintedTotalSize,
+  );
 
   let visibleItems = $derived.by(() => {
-    if (displayItems.length === 0) return [];
-    const start = findStart(displayItems, scrollTop);
+    if (renderDisplayItems.length === 0) return [];
+    const start = findStart(renderDisplayItems, scrollTop);
     const end = scrollTop + viewportHeight + OVERSCAN * ITEM_HEIGHT;
-    const result: typeof displayItems = [];
-    for (let i = start; i < displayItems.length; i++) {
-      const item = displayItems[i]!;
+    const result: typeof renderDisplayItems = [];
+    for (let i = start; i < renderDisplayItems.length; i++) {
+      const item = renderDisplayItems[i]!;
       if (item.top > end) break;
       result.push(item);
     }
@@ -161,6 +183,53 @@
     expandedGroups = next;
   }
 
+  function effectiveViewportHeight(): number {
+    // ResizeObserver/clientHeight normally reports before hydration starts.
+    // If jsdom or a hidden container reports 0, use a fixed conservative
+    // viewport so hydration remains deliberate instead of accidental.
+    return viewportHeight > 0 ? viewportHeight : ITEM_HEIGHT * 8;
+  }
+
+  function sessionForItem(item: DisplayItem) {
+    if (item.type !== "session") return undefined;
+    if (item.isChild) return item.session;
+    return item.group?.sessions.find(
+      (s) => s.id === item.group!.primarySessionId,
+    ) ?? item.group?.sessions[0];
+  }
+
+  function needsVisibleHydration(item: DisplayItem): boolean {
+    const session = sessionForItem(item);
+    return !!session?.is_index_only && !session.display_name;
+  }
+
+  function hydrationIdsForItems(items: DisplayItem[]): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      if (!needsVisibleHydration(item)) continue;
+      const id = sessionForItem(item)?.id;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  function initialHydrationIds(items: DisplayItem[]): string[] {
+    const target =
+      Math.ceil(effectiveViewportHeight() / ITEM_HEIGHT) + OVERSCAN;
+    const sessionItems = items
+      .filter((item) => item.type === "session")
+      .slice(0, target);
+    return hydrationIdsForItems(sessionItems);
+  }
+
+  function requestHydration(ids: string[], version: number) {
+    if (ids.length === 0) return;
+    void sessions.hydrateVisibleSessions(ids, version);
+  }
+
   $effect(() => {
     if (!containerRef) return;
     viewportHeight = containerRef.clientHeight;
@@ -172,12 +241,47 @@
     return () => ro.disconnect();
   });
 
+  $effect(() => {
+    const version = sessions.sidebarIndexVersion;
+    const ids = initialHydrationIds(displayItems);
+
+    if (initialHydratedVersion === version) {
+      paintedDisplayItems = displayItems;
+      paintedTotalSize = totalSize;
+      return;
+    }
+    if (initialHydratingVersion === version) return;
+
+    if (ids.length === 0) {
+      initialHydratedVersion = version;
+      paintedDisplayItems = displayItems;
+      paintedTotalSize = totalSize;
+      return;
+    }
+
+    initialHydratingVersion = version;
+    void (async () => {
+      await sessions.hydrateVisibleSessions(ids, version);
+      if (sessions.sidebarIndexVersion !== version) return;
+      initialHydratedVersion = version;
+      initialHydratingVersion = null;
+      paintedDisplayItems = displayItems;
+      paintedTotalSize = totalSize;
+    })();
+  });
+
+  $effect(() => {
+    const version = sessions.sidebarIndexVersion;
+    if (initialHydratedVersion !== version) return;
+    requestHydration(hydrationIdsForItems(visibleItems), version);
+  });
+
   // Clamp stale scrollTop when count shrinks.
   $effect(() => {
     if (!containerRef) return;
     const maxTop = Math.max(
       0,
-      totalSize - containerRef.clientHeight,
+      renderTotalSize - containerRef.clientHeight,
     );
     if (scrollTop > maxTop) {
       scrollTop = maxTop;
@@ -211,7 +315,7 @@
     if (!containerRef) return;
     // Read displayItems inside the effect so Svelte tracks
     // it — needed to re-run after a group expansion.
-    const items = displayItems;
+    const items = renderDisplayItems;
     // Try to find the exact child row first (when expanded).
     let item = items.find(
       (it) =>
@@ -341,7 +445,7 @@
   onscroll={handleScroll}
 >
   <div
-    style="height: {totalSize}px; width: 100%; position: relative;"
+    style="height: {renderTotalSize}px; width: 100%; position: relative;"
   >
     {#each visibleItems as item (item.id)}
       <div
@@ -351,32 +455,21 @@
           <button
             class="group-header"
             onclick={() => toggleGroup(item.label)}
+            title="{collapsed.has(item.label) ? 'Expand' : 'Collapse'} {item.label} group"
+            aria-label="{collapsed.has(item.label) ? 'Expand' : 'Collapse'} {item.label} group"
           >
-            <svg
-              class="chevron"
-              class:expanded={!collapsed.has(item.label)}
-              width="10"
-              height="10"
-              viewBox="0 0 16 16"
-              fill="currentColor"
-            >
-              <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
-            </svg>
+            {#if collapsed.has(item.label)}
+              <ChevronRightIcon class="chevron" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {:else}
+              <ChevronDownIcon class="chevron" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {/if}
             {#if groupMode === "agent"}
               <span
                 class="group-dot"
                 style:background={agentColor(item.label)}
               ></span>
             {:else}
-              <svg
-                class="project-icon"
-                width="11"
-                height="11"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-              >
-                <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2c-.33-.44-.85-.7-1.4-.7z"/>
-              </svg>
+              <FolderIcon class="project-icon" size="11" strokeWidth="1.8" aria-hidden="true" />
             {/if}
             <span class="group-name">{item.label}</span>
             <span class="group-count">{item.count}</span>
@@ -388,11 +481,15 @@
             class="sub-group-header"
             style:padding-left="{8 + (item.depth ?? 1) * 16}px"
             onclick={() => toggleChainExpand(subKey)}
+            title="{subExpanded ? 'Collapse' : 'Expand'} Subagents group"
+            aria-label="{subExpanded ? 'Collapse' : 'Expand'} Subagents group"
           >
-            <svg class="sub-group-arrow" class:expanded={subExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
-            <svg class="sub-group-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <path d="M10.56 7.01A3.5 3.5 0 108 0a3.5 3.5 0 002.56 7.01zM8 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
-            </svg>
+            {#if subExpanded}
+              <ChevronDownIcon class="sub-group-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {:else}
+              <ChevronRightIcon class="sub-group-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {/if}
+            <UserRoundIcon class="sub-group-icon" size="10" strokeWidth="2" aria-hidden="true" />
             <span class="sub-group-label">Subagents</span>
             <span class="sub-group-count">({item.count})</span>
           </button>
@@ -403,12 +500,15 @@
             class="sub-group-header"
             style:padding-left="{8 + (item.depth ?? 1) * 16}px"
             onclick={() => toggleChainExpand(teamKey)}
+            title="{teamExpanded ? 'Collapse' : 'Expand'} Team group"
+            aria-label="{teamExpanded ? 'Collapse' : 'Expand'} Team group"
           >
-            <svg class="sub-group-arrow" class:expanded={teamExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
-            <svg class="sub-group-icon" width="12" height="10" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
-              <path d="M7.56 7.01A3.5 3.5 0 105 0a3.5 3.5 0 002.56 7.01zM5 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
-              <path d="M17.56 7.01A3.5 3.5 0 1015 0a3.5 3.5 0 002.56 7.01zM15 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z" opacity="0.6"/>
-            </svg>
+            {#if teamExpanded}
+              <ChevronDownIcon class="sub-group-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {:else}
+              <ChevronRightIcon class="sub-group-arrow" size="10" strokeWidth="2.5" aria-hidden="true" />
+            {/if}
+            <UsersRoundIcon class="sub-group-icon" size="12" strokeWidth="2" aria-hidden="true" />
             <span class="sub-group-label">Team</span>
             <span class="sub-group-count">({item.count})</span>
           </button>
@@ -428,7 +528,7 @@
           ) ?? item.group.sessions[0]}
           {@const children = item.group.sessions.filter((s) => s.id !== item.group!.primarySessionId)}
           {@const groupHasSubagents = children.some((s) => isSubagentDescendant(s, item.group!.sessions))}
-          {@const groupHasTeammates = children.some((s) => s.first_message?.includes("<teammate-message") ?? false)}
+          {@const groupHasTeammates = children.some((s) => s.is_teammate ?? s.first_message?.includes("<teammate-message") ?? false)}
           {#if primary}
             <SessionItem
               session={primary}
@@ -605,13 +705,8 @@
     background: var(--bg-surface-hover);
   }
 
-  .chevron {
+  :global(.chevron) {
     flex-shrink: 0;
-    transition: transform 0.15s ease;
-  }
-
-  .chevron.expanded {
-    transform: rotate(90deg);
   }
 
   .group-dot {
@@ -621,7 +716,7 @@
     flex-shrink: 0;
   }
 
-  .project-icon {
+  :global(.project-icon) {
     flex-shrink: 0;
     color: var(--text-muted);
   }
@@ -665,18 +760,13 @@
     background: var(--bg-surface-hover);
   }
 
-  .sub-group-arrow {
+  :global(.sub-group-arrow) {
     flex-shrink: 0;
-    transition: transform 150ms ease;
     color: var(--text-muted);
     opacity: 0.5;
   }
 
-  .sub-group-arrow.expanded {
-    transform: rotate(90deg);
-  }
-
-  .sub-group-icon {
+  :global(.sub-group-icon) {
     flex-shrink: 0;
     color: var(--text-muted);
     opacity: 0.6;

@@ -1,6 +1,10 @@
 package postgres
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestStripFTSQuotes(t *testing.T) {
 	tests := []struct {
@@ -15,11 +19,8 @@ func TestStripFTSQuotes(t *testing.T) {
 		{`already unquoted`, "already unquoted"},
 	}
 	for _, tt := range tests {
-		got := stripFTSQuotes(tt.input)
-		if got != tt.want {
-			t.Errorf("stripFTSQuotes(%q) = %q, want %q",
-				tt.input, got, tt.want)
-		}
+		assert.Equal(t, tt.want, stripFTSQuotes(tt.input),
+			"input=%q", tt.input)
 	}
 }
 
@@ -35,10 +36,7 @@ func TestEscapeLike(t *testing.T) {
 		{`%_\`, `\%\_\\`},
 	}
 	for _, tt := range tests {
-		got := escapeLike(tt.input)
-		if got != tt.want {
-			t.Errorf("escapeLike(%q) = %q, want %q",
-				tt.input, got, tt.want)
-		}
+		assert.Equal(t, tt.want, escapeLike(tt.input),
+			"input=%q", tt.input)
 	}
 }

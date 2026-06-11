@@ -10,6 +10,20 @@ import (
 	"time"
 )
 
+type sqlContextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// execWithoutCancel runs cleanup SQL even if the operation context was canceled.
+func execWithoutCancel(
+	ctx context.Context,
+	execer sqlContextExecer,
+	query string,
+	args ...any,
+) (sql.Result, error) {
+	return execer.ExecContext(context.WithoutCancel(ctx), query, args...)
+}
+
 // CopyOrphanedDataFrom copies sessions (and their messages
 // and tool_calls) that exist in the source database but not
 // in this database. This preserves archived sessions whose
@@ -26,6 +40,18 @@ import (
 // DATABASE on a pinned connection for atomicity.
 func (d *DB) CopyOrphanedDataFrom(
 	sourcePath string,
+) (int, error) {
+	return d.CopyOrphanedDataFromExcluding(sourcePath, nil)
+}
+
+// CopyOrphanedDataFromExcluding copies orphaned sessions while
+// treating extraExcludedIDs as absent by design. This is used by
+// resync for parser-level exclusions: those IDs should not be
+// restored as orphans, but they also should not become permanent
+// user-deletion entries in excluded_sessions.
+func (d *DB) CopyOrphanedDataFromExcluding(
+	sourcePath string,
+	extraExcludedIDs []string,
 ) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -47,10 +73,70 @@ func (d *DB) CopyOrphanedDataFrom(
 		)
 	}
 	defer func() {
-		_, _ = conn.ExecContext(
-			ctx, "DETACH DATABASE old_db",
+		_, _ = execWithoutCancel(
+			ctx,
+			conn,
+			"DETACH DATABASE old_db",
 		)
 	}()
+
+	if _, err := conn.ExecContext(ctx, `
+		CREATE TEMP TABLE _extra_excluded_orphan_ids (
+			id TEXT PRIMARY KEY
+		)`,
+	); err != nil {
+		return 0, fmt.Errorf(
+			"creating extra orphan exclusions: %w", err,
+		)
+	}
+	defer func() {
+		_, _ = execWithoutCancel(
+			ctx,
+			conn,
+			"DROP TABLE IF EXISTS _extra_excluded_orphan_ids",
+		)
+	}()
+	if len(extraExcludedIDs) > 0 {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"begin extra orphan exclusions: %w", err,
+			)
+		}
+		stmt, err := tx.PrepareContext(ctx,
+			"INSERT OR IGNORE INTO _extra_excluded_orphan_ids (id) VALUES (?)",
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf(
+				"prepare extra orphan exclusions: %w", err,
+			)
+		}
+		for _, id := range extraExcludedIDs {
+			if id == "" {
+				continue
+			}
+			if _, err := stmt.ExecContext(ctx, id); err != nil {
+				_ = stmt.Close()
+				_ = tx.Rollback()
+				return 0, fmt.Errorf(
+					"insert extra orphan exclusion %s: %w",
+					id, err,
+				)
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf(
+				"close extra orphan exclusions: %w", err,
+			)
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf(
+				"commit extra orphan exclusions: %w", err,
+			)
+		}
+	}
 
 	// Snapshot orphaned session IDs before any inserts
 	// change main.sessions. Exclude permanently deleted sessions
@@ -59,15 +145,17 @@ func (d *DB) CopyOrphanedDataFrom(
 		CREATE TEMP TABLE _orphaned_ids AS
 		SELECT id FROM old_db.sessions
 		WHERE id NOT IN (SELECT id FROM main.sessions)
-		  AND id NOT IN (SELECT id FROM main.excluded_sessions)`,
+		  AND id NOT IN (SELECT id FROM main.excluded_sessions)
+		  AND id NOT IN (SELECT id FROM _extra_excluded_orphan_ids)`,
 	); err != nil {
 		return 0, fmt.Errorf(
 			"identifying orphaned sessions: %w", err,
 		)
 	}
 	defer func() {
-		_, _ = conn.ExecContext(
+		_, _ = execWithoutCancel(
 			ctx,
+			conn,
 			"DROP TABLE IF EXISTS _orphaned_ids",
 		)
 	}()
@@ -437,6 +525,7 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		"cwd", "git_branch", "source_session_id",
 		"source_version", "parser_malformed_lines",
 		"is_truncated",
+		"secret_leak_count", "secrets_rules_version",
 	} {
 		if oldDBHasColumn(ctx, tx, "sessions", c) {
 			cols = append(cols, c)
@@ -527,7 +616,8 @@ func copySessionDataForIDs(
 			AND new_m.ordinal = old_m.ordinal
 		WHERE otc.session_id IN (
 			SELECT id FROM `+tempIDsTable+`
-		)`,
+		)
+		ORDER BY otc.id`,
 	); err != nil {
 		return fmt.Errorf("copying tool_calls: %w", err)
 	}
@@ -554,6 +644,27 @@ func copySessionDataForIDs(
 			return fmt.Errorf(
 				"copying tool_result_events: %w", err,
 			)
+		}
+	}
+
+	if oldDBHasTable(ctx, tx, "secret_findings") {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO secret_findings
+				(session_id, rule_name, confidence, location_kind,
+				 message_ordinal, call_index, event_index,
+				 match_start, match_end, match_index,
+				 redacted_match, rules_version, created_at)
+			SELECT
+				session_id, rule_name, confidence, location_kind,
+				message_ordinal, call_index, event_index,
+				match_start, match_end, match_index,
+				redacted_match, rules_version, created_at
+			FROM old_db.secret_findings
+			WHERE session_id IN (
+				SELECT id FROM `+tempIDsTable+`
+			)`,
+		); err != nil {
+			return fmt.Errorf("copying secret_findings: %w", err)
 		}
 	}
 

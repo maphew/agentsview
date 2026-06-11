@@ -10,16 +10,28 @@ import (
 	"strings"
 )
 
+// sshConnectTimeoutSecs bounds the TCP connect phase of each ssh
+// invocation so an unattended sync fails fast on an unreachable
+// host instead of stalling on the OS default timeout.
+const sshConnectTimeoutSecs = 10
+
 // buildSSHArgs constructs args for the ssh command.
 //
 // Remote commands are always executed through a POSIX shell via
 // "sh -c '<cmd>'" so behavior is independent of the remote user's
 // login shell (e.g. fish).
 //
-// Returns ["ssh", "user@host", "--", "sh -c '<cmd>'"] or
-// ["ssh", "host", "--", "sh -c '<cmd>'"] when user is empty.
-// Port adds "-p N" when > 0. Extra opts are inserted before the
-// target (e.g. "-i keyfile").
+// The invocation is non-interactive: it passes BatchMode=yes (never
+// prompt for a password/passphrase -- remote sync requires key-based
+// auth) and a bounded ConnectTimeout, so unattended runs fail fast
+// with a clear error instead of stalling. These defaults follow
+// sshOpts so an explicit override there wins (ssh uses the first
+// value seen for each option).
+//
+// Returns ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=N",
+// "user@host", "--", "sh -c '<cmd>'"] (or "host" when user is
+// empty). Port adds "-p N" when > 0; extra sshOpts (e.g. "-i
+// keyfile") are inserted before the defaults.
 func buildSSHArgs(
 	host, user string, port int, sshOpts []string, cmd string,
 ) []string {
@@ -33,6 +45,10 @@ func buildSSHArgs(
 		args = append(args, "-p", strconv.Itoa(port))
 	}
 	args = append(args, sshOpts...)
+	args = append(args,
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout="+strconv.Itoa(sshConnectTimeoutSecs),
+	)
 	return append(args, target, "--", remoteCmd)
 }
 
@@ -88,17 +104,32 @@ func runSSHStream(
 
 	cleanup := func() error {
 		if waitErr := c.Wait(); waitErr != nil {
-			msg := strings.TrimSpace(stderr.String())
-			if msg == "" {
-				return fmt.Errorf(
-					"ssh %s: %w", host, waitErr,
-				)
+			return &commandError{
+				Host:   host,
+				Stderr: strings.TrimSpace(stderr.String()),
+				Err:    waitErr,
 			}
-			return fmt.Errorf(
-				"ssh %s: %w: %s", host, waitErr, msg,
-			)
 		}
 		return nil
 	}
 	return stdout, cleanup, nil
 }
+
+// commandError reports a streamed SSH command that exited non-zero. It
+// carries the captured remote stderr so callers can tell benign tar
+// warnings (e.g. "file changed as we read it") apart from fatal
+// failures via remoteTarStderrBenign.
+type commandError struct {
+	Host   string
+	Stderr string
+	Err    error
+}
+
+func (e *commandError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("ssh %s: %v", e.Host, e.Err)
+	}
+	return fmt.Sprintf("ssh %s: %v: %s", e.Host, e.Err, e.Stderr)
+}
+
+func (e *commandError) Unwrap() error { return e.Err }

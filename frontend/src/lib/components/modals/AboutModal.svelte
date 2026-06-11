@@ -49,6 +49,8 @@
       <button
         class="close-btn"
         onclick={() => ui.activeModal = null}
+        title="Close about dialog"
+        aria-label="Close about dialog"
       >
         &times;
       </button>
@@ -57,7 +59,7 @@
     <div class="about-body">
       <div class="about-row">
         <span class="about-label">Author</span>
-        <span class="about-value">Wes McKinney</span>
+        <span class="about-value">Kenn Software LLC</span>
       </div>
       {#if sync.serverVersion}
         <div class="about-row">

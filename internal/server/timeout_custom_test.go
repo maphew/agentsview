@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWithTimeout(t *testing.T) {
@@ -67,18 +70,14 @@ func TestWithTimeout(t *testing.T) {
 			assertRecorderStatus(t, w, tt.wantStatus)
 
 			if tt.wantHeaderKey != "" {
-				if val := resp.Header.Get(tt.wantHeaderKey); val != tt.wantHeaderVal {
-					t.Errorf("expected header %s=%q, got %q", tt.wantHeaderKey, tt.wantHeaderVal, val)
-				}
+				assert.Equal(t, tt.wantHeaderVal,
+					resp.Header.Get(tt.wantHeaderKey),
+					"header %s", tt.wantHeaderKey)
 			}
 
 			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("failed to read body: %v", err)
-			}
-			if string(body) != tt.wantBody {
-				t.Errorf("expected body %q, got %q", tt.wantBody, string(body))
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBody, string(body))
 		})
 	}
 }

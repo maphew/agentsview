@@ -21,6 +21,77 @@ type SessionService interface {
 	Sync(ctx context.Context, in SyncInput) (*SessionDetail, error)
 	Watch(ctx context.Context, id string) (<-chan Event, error)
 	Stats(ctx context.Context, f StatsFilter) (*SessionStats, error)
+	SearchContent(ctx context.Context, req ContentSearchRequest) (*ContentSearchResult, error)
+	ListSecrets(ctx context.Context, f SecretListFilter) (*SecretFindingList, error)
+	ScanSecrets(ctx context.Context, in SecretScanInput,
+		progress func(SecretScanProgress)) (*SecretScanSummary, error)
+}
+
+// SecretScanInput parameterises ScanSecrets (mirrors sync.SecretScanInput).
+type SecretScanInput struct {
+	Backfill bool
+	Project  string
+	Agent    string
+	DateFrom string
+	DateTo   string
+}
+
+// SecretScanProgress is one progress tick (mirrors sync.SecretScanProgress).
+type SecretScanProgress struct {
+	Scanned int `json:"scanned"`
+	Total   int `json:"total"`
+}
+
+// SecretScanSummary is the final scan result (mirrors sync.SecretScanSummary).
+type SecretScanSummary struct {
+	Scanned           int `json:"scanned"`
+	WithSecrets       int `json:"with_secrets"`
+	TotalFindings     int `json:"total_findings"`
+	DefiniteFindings  int `json:"definite_findings"`
+	CandidateFindings int `json:"candidate_findings"`
+}
+
+// SecretListFilter parameterises ListSecrets.
+type SecretListFilter struct {
+	Project    string
+	Agent      string
+	DateFrom   string
+	DateTo     string
+	Rule       string
+	Confidence string
+	Reveal     bool
+	Limit      int
+	Cursor     int
+}
+
+// SecretFindingList is a page of secret findings for transport. When the
+// request set Reveal, each row's RedactedMatch holds the full value (or a
+// "source changed" marker) instead of the redacted form.
+type SecretFindingList struct {
+	Findings   []db.SecretFindingRow `json:"findings"`
+	NextCursor int                   `json:"next_cursor,omitempty"`
+}
+
+// ContentSearchRequest is the transport-neutral content-search input.
+type ContentSearchRequest struct {
+	Pattern       string   `json:"pattern"`
+	Mode          string   `json:"mode,omitempty"` // substring|regex|fts
+	Sources       []string `json:"sources,omitempty"`
+	ExcludeSystem bool     `json:"exclude_system,omitempty"`
+	Reveal        bool     `json:"reveal,omitempty"`
+
+	Project, ExcludeProject, Machine, Agent           string
+	Date, DateFrom, DateTo, ActiveSince               string
+	IncludeChildren, IncludeAutomated, IncludeOneShot bool
+
+	Limit  int `json:"limit,omitempty"`
+	Cursor int `json:"cursor,omitempty"`
+}
+
+// ContentSearchResult mirrors db.ContentSearchPage for transport.
+type ContentSearchResult struct {
+	Matches    []db.ContentMatch `json:"matches"`
+	NextCursor int               `json:"next_cursor,omitempty"`
 }
 
 // SessionDetail mirrors the HTTP GetSession response shape: a
@@ -61,6 +132,7 @@ type ListFilter struct {
 	HealthGrade      string `json:"health_grade,omitempty"` // comma-separated
 	Termination      string `json:"termination,omitempty"`  // comma-separated
 	MinToolFailures  *int   `json:"min_tool_failures,omitempty"`
+	HasSecret        bool   `json:"has_secret,omitempty"`
 	Cursor           string `json:"cursor,omitempty"`
 	Limit            int    `json:"limit,omitempty"`
 }

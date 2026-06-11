@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -19,12 +22,10 @@ func setupFileSystem(t *testing.T, dir string, files map[string]string) {
 	for path, content := range files {
 		fullPath := filepath.Join(dir, path)
 
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", filepath.Dir(fullPath), err)
-		}
-		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", fullPath, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755),
+			"mkdir %s", filepath.Dir(fullPath))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644),
+			"write %s", fullPath)
 	}
 }
 
@@ -41,26 +42,18 @@ func assertDiscoveredFiles(t *testing.T, got []DiscoveredFile, wantFilenames []s
 	for _, f := range got {
 		base := filepath.Base(f.Path)
 		gotMap[base] = true
-		if f.Agent != wantAgent {
-			t.Errorf("file %q: agent = %q, want %q", base, f.Agent, wantAgent)
-		}
+		assert.Equalf(t, wantAgent, f.Agent, "file %q: agent", base)
 	}
 
-	if len(got) != len(want) {
-		t.Errorf("got %d files total, want %d", len(got), len(want))
-	}
+	assert.Equal(t, len(want), len(got), "files total")
 
 	for file := range want {
-		if !gotMap[file] {
-			t.Errorf("missing expected file: %q", file)
-		}
+		assert.Truef(t, gotMap[file], "missing expected file: %q", file)
 	}
 
 	// Check for unexpected files
 	for file := range gotMap {
-		if !want[file] {
-			t.Errorf("got unexpected file: %q", file)
-		}
+		assert.Truef(t, want[file], "got unexpected file: %q", file)
 	}
 }
 
@@ -99,6 +92,19 @@ func TestDiscoverClaudeProjects(t *testing.T) {
 			},
 		},
 		{
+			name: "Nested workflow subagents",
+			files: map[string]string{
+				filepath.Join("project-a", "parent-session.jsonl"):                                                       "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "agent-deep.jsonl"):     "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "agent-deep.meta.json"): "{}",
+				filepath.Join("project-a", "parent-session", "subagents", "workflows", "wf-123", "not-agent.jsonl"):      "{}",
+			},
+			wantFiles: []string{
+				"parent-session.jsonl",
+				"agent-deep.jsonl",
+			},
+		},
+		{
 			name:      "Empty",
 			files:     map[string]string{},
 			wantFiles: nil,
@@ -115,10 +121,8 @@ func TestDiscoverClaudeProjects(t *testing.T) {
 
 			if tt.name == "Subagents" {
 				for _, f := range files {
-					if f.Project != "project-a" {
-						t.Errorf("file %q: project = %q, want %q",
-							filepath.Base(f.Path), f.Project, "project-a")
-					}
+					assert.Equalf(t, "project-a", f.Project,
+						"file %q: project", filepath.Base(f.Path))
 				}
 			}
 		})
@@ -127,9 +131,7 @@ func TestDiscoverClaudeProjects(t *testing.T) {
 	t.Run("Nonexistent", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "does-not-exist")
 		files := DiscoverClaudeProjects(dir)
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 }
 
@@ -219,9 +221,7 @@ func TestDiscoverAmpSessions(t *testing.T) {
 	t.Run("Nonexistent", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "does-not-exist")
 		files := DiscoverAmpSessions(dir)
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 }
 
@@ -249,6 +249,14 @@ func TestFindClaudeSourceFile(t *testing.T) {
 			wantFile: filepath.Join("project-a", "parent-sess", "subagents", "agent-sub1.jsonl"),
 		},
 		{
+			name: "Nested workflow subagent",
+			files: map[string]string{
+				filepath.Join("project-a", "parent-sess", "subagents", "workflows", "wf-123", "agent-deep.jsonl"): "{}",
+			},
+			targetID: "agent-deep",
+			wantFile: filepath.Join("project-a", "parent-sess", "subagents", "workflows", "wf-123", "agent-deep.jsonl"),
+		},
+		{
 			name: "Nonexistent",
 			files: map[string]string{
 				filepath.Join("project-a", "session-abc.jsonl"): "{}",
@@ -269,9 +277,7 @@ func TestFindClaudeSourceFile(t *testing.T) {
 				want = filepath.Join(dir, tt.wantFile)
 			}
 
-			if got != want {
-				t.Errorf("got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got)
 		})
 	}
 
@@ -280,9 +286,7 @@ func TestFindClaudeSourceFile(t *testing.T) {
 		tests := []string{"", "../etc/passwd", "a/b", "a b"}
 		for _, id := range tests {
 			got := FindClaudeSourceFile(dir, id)
-			if got != "" {
-				t.Errorf("FindClaudeSourceFile(%q) = %q, want empty", id, got)
-			}
+			assert.Emptyf(t, got, "FindClaudeSourceFile(%q)", id)
 		}
 	})
 }
@@ -298,9 +302,7 @@ func TestFindAmpSourceFile(t *testing.T) {
 			dir, "T-019ca26f-aaaa-bbbb-cccc-dddddddddddd",
 		)
 		want := filepath.Join(dir, rel)
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+		assert.Equal(t, want, got)
 	})
 
 	t.Run("Nonexistent", func(t *testing.T) {
@@ -308,9 +310,7 @@ func TestFindAmpSourceFile(t *testing.T) {
 		got := FindAmpSourceFile(
 			dir, "T-019ca26f-aaaa-bbbb-cccc-dddddddddddd",
 		)
-		if got != "" {
-			t.Errorf("expected empty, got %q", got)
-		}
+		assert.Empty(t, got, "expected empty")
 	})
 
 	t.Run("Validation", func(t *testing.T) {
@@ -324,12 +324,7 @@ func TestFindAmpSourceFile(t *testing.T) {
 		}
 		for _, id := range tests {
 			got := FindAmpSourceFile(dir, id)
-			if got != "" {
-				t.Errorf(
-					"FindAmpSourceFile(%q) = %q, want empty",
-					id, got,
-				)
-			}
+			assert.Emptyf(t, got, "FindAmpSourceFile(%q)", id)
 		}
 	})
 }
@@ -386,9 +381,7 @@ func TestFindCodexSourceFile(t *testing.T) {
 				want = filepath.Join(dir, tt.wantFile)
 			}
 
-			if got != want {
-				t.Errorf("got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got)
 		})
 	}
 }
@@ -423,10 +416,7 @@ func TestExtractUUIDFromRollout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
 			got := extractUUIDFromRollout(tt.filename)
-			if got != tt.want {
-				t.Errorf("extractUUID(%q) = %q, want %q",
-					tt.filename, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "extractUUID(%q)", tt.filename)
 		})
 	}
 }
@@ -448,10 +438,7 @@ func TestIsValidSessionID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
 			got := IsValidSessionID(tt.id)
-			if got != tt.want {
-				t.Errorf("IsValidSessionID(%q) = %v, want %v",
-					tt.id, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "IsValidSessionID(%q)", tt.id)
 		})
 	}
 }
@@ -472,10 +459,7 @@ func TestIsDigits(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.s, func(t *testing.T) {
 			got := IsDigits(tt.s)
-			if got != tt.want {
-				t.Errorf("IsDigits(%q) = %v, want %v",
-					tt.s, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, got, "IsDigits(%q)", tt.s)
 		})
 	}
 }
@@ -537,9 +521,7 @@ func TestDiscoverGeminiSessions(t *testing.T) {
 
 			files := DiscoverGeminiSessions(dir)
 
-			if len(files) != len(tt.wantFiles) {
-				t.Fatalf("got %d files, want %d", len(files), len(tt.wantFiles))
-			}
+			require.Len(t, files, len(tt.wantFiles), "files count")
 
 			wantMap := make(map[string]bool)
 			for _, p := range tt.wantFiles {
@@ -547,39 +529,28 @@ func TestDiscoverGeminiSessions(t *testing.T) {
 			}
 
 			for _, f := range files {
-				if f.Agent != AgentGemini {
-					t.Errorf("agent = %q, want %q", f.Agent, AgentGemini)
-				}
-				if !wantMap[f.Path] {
-					t.Errorf("unexpected file discovered: %q", f.Path)
-				}
+				assert.Equal(t, AgentGemini, f.Agent, "agent")
+				assert.Truef(t, wantMap[f.Path],
+					"unexpected file discovered: %q", f.Path)
 			}
 		})
 	}
 
 	t.Run("EmptyChatDir", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, "tmp", "hash1", geminiChatsDir), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "tmp", "hash1", geminiChatsDir), 0o755), "mkdir")
 		files := DiscoverGeminiSessions(dir)
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 
 	t.Run("Nonexistent", func(t *testing.T) {
 		files := DiscoverGeminiSessions(filepath.Join(t.TempDir(), "does-not-exist"))
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 
 	t.Run("EmptyDir", func(t *testing.T) {
 		files := DiscoverGeminiSessions("")
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 }
 
@@ -627,9 +598,7 @@ func TestFindGeminiSourceFile(t *testing.T) {
 				want = filepath.Join(dir, tt.wantFile)
 			}
 
-			if got != want {
-				t.Errorf("got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got)
 		})
 	}
 
@@ -637,59 +606,41 @@ func TestFindGeminiSourceFile(t *testing.T) {
 		dir := t.TempDir()
 		for _, id := range []string{"", "a", "abc", "1234567"} {
 			got := FindGeminiSourceFile(dir, id)
-			if got != "" {
-				t.Errorf("FindGeminiSourceFile(%q) = %q, want empty", id, got)
-			}
+			assert.Emptyf(t, got, "FindGeminiSourceFile(%q)", id)
 		}
 	})
 
 	t.Run("EmptyDir", func(t *testing.T) {
 		got := FindGeminiSourceFile("", "b0a4eadd-cb99-4165-94d9-64cad5a66d24")
-		if got != "" {
-			t.Errorf("expected empty, got %q", got)
-		}
+		assert.Empty(t, got, "expected empty")
 	})
 }
 
 func TestGeminiPathHash(t *testing.T) {
 	hash := geminiPathHash("/Users/alice/code/sample-repo")
-	if len(hash) != 64 {
-		t.Errorf("hash length = %d, want 64", len(hash))
-	}
-	if geminiPathHash("/Users/alice/code/sample-repo") != hash {
-		t.Error("hash not deterministic")
-	}
+	assert.Len(t, hash, 64, "hash length")
+	assert.Equal(t, hash, geminiPathHash("/Users/alice/code/sample-repo"),
+		"hash not deterministic")
 }
 
 func TestBuildGeminiProjectMap(t *testing.T) {
 	dir := t.TempDir()
 	projectsJSON := `{"projects":{"/Users/alice/code/my-app":"my-app"}}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "projects.json"),
 		[]byte(projectsJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	m := BuildGeminiProjectMap(dir)
 
 	hash := geminiPathHash("/Users/alice/code/my-app")
-	if m[hash] != "my_app" {
-		t.Errorf("project for hash = %q, want %q",
-			m[hash], "my_app")
-	}
-
-	if m["my-app"] != "my_app" {
-		t.Errorf("project for name = %q, want %q",
-			m["my-app"], "my_app")
-	}
+	assert.Equal(t, "my_app", m[hash], "project for hash")
+	assert.Equal(t, "my_app", m["my-app"], "project for name")
 }
 
 func TestBuildGeminiProjectMapMissingFile(t *testing.T) {
 	m := BuildGeminiProjectMap(t.TempDir())
-	if len(m) != 0 {
-		t.Errorf("expected empty map, got %d entries", len(m))
-	}
+	assert.Empty(t, m, "expected empty map")
 }
 
 func TestResolveGeminiProject(t *testing.T) {
@@ -736,9 +687,7 @@ func TestResolveGeminiProject(t *testing.T) {
 			got := ResolveGeminiProject(
 				tt.dirName, projectMap,
 			)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -747,89 +696,62 @@ func TestBuildGeminiProjectMapTrustedFolders(t *testing.T) {
 	dir := t.TempDir()
 
 	tfJSON := `{"trustedFolders":["/Users/alice/code/my-app","/Users/alice/code/other"]}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "trustedFolders.json"),
 		[]byte(tfJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	m := BuildGeminiProjectMap(dir)
 
 	hash1 := geminiPathHash("/Users/alice/code/my-app")
-	if m[hash1] != "my_app" {
-		t.Errorf("hash for my-app = %q, want %q",
-			m[hash1], "my_app")
-	}
+	assert.Equal(t, "my_app", m[hash1], "hash for my-app")
 	hash2 := geminiPathHash("/Users/alice/code/other")
-	if m[hash2] != "other" {
-		t.Errorf("hash for other = %q, want %q",
-			m[hash2], "other")
-	}
+	assert.Equal(t, "other", m[hash2], "hash for other")
 }
 
 func TestBuildGeminiProjectMapBothFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	pJSON := `{"projects":{"/Users/alice/code/proj-a":"proj-a"}}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "projects.json"),
 		[]byte(pJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	tfJSON := `{"trustedFolders":["/Users/alice/code/proj-b"]}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "trustedFolders.json"),
 		[]byte(tfJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	m := BuildGeminiProjectMap(dir)
 
 	hashA := geminiPathHash("/Users/alice/code/proj-a")
-	if m[hashA] != "proj_a" {
-		t.Errorf("proj-a hash = %q, want %q",
-			m[hashA], "proj_a")
-	}
+	assert.Equal(t, "proj_a", m[hashA], "proj-a hash")
 	hashB := geminiPathHash("/Users/alice/code/proj-b")
-	if m[hashB] != "proj_b" {
-		t.Errorf("proj-b hash = %q, want %q",
-			m[hashB], "proj_b")
-	}
+	assert.Equal(t, "proj_b", m[hashB], "proj-b hash")
 }
 
 func TestBuildGeminiProjectMapProjectsWin(t *testing.T) {
 	dir := t.TempDir()
 
 	pJSON := `{"projects":{"/Users/alice/code/my-app":"my-app"}}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "projects.json"),
 		[]byte(pJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	tfJSON := `{"trustedFolders":["/Users/alice/code/my-app"]}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "trustedFolders.json"),
 		[]byte(tfJSON), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	m := BuildGeminiProjectMap(dir)
 
 	hash := geminiPathHash("/Users/alice/code/my-app")
-	if m[hash] != "my_app" {
-		t.Errorf("hash = %q, want %q", m[hash], "my_app")
-	}
-	if m["my-app"] != "my_app" {
-		t.Errorf("name key = %q, want %q",
-			m["my-app"], "my_app")
-	}
+	assert.Equal(t, "my_app", m[hash], "hash")
+	assert.Equal(t, "my_app", m["my-app"], "name key")
 }
 
 // --- Copilot discovery tests ---
@@ -909,9 +831,7 @@ func TestDiscoverCopilotSessions(t *testing.T) {
 
 			files := DiscoverCopilotSessions(dir)
 
-			if len(files) != len(tt.wantFiles) {
-				t.Fatalf("got %d files, want %d", len(files), len(tt.wantFiles))
-			}
+			require.Len(t, files, len(tt.wantFiles), "files count")
 
 			wantMap := make(map[string]bool)
 			for _, p := range tt.wantFiles {
@@ -919,28 +839,21 @@ func TestDiscoverCopilotSessions(t *testing.T) {
 			}
 
 			for _, f := range files {
-				if f.Agent != AgentCopilot {
-					t.Errorf("agent = %q, want %q", f.Agent, AgentCopilot)
-				}
-				if !wantMap[f.Path] {
-					t.Errorf("unexpected file discovered: %q", f.Path)
-				}
+				assert.Equal(t, AgentCopilot, f.Agent, "agent")
+				assert.Truef(t, wantMap[f.Path],
+					"unexpected file discovered: %q", f.Path)
 			}
 		})
 	}
 
 	t.Run("EmptyDir", func(t *testing.T) {
 		files := DiscoverCopilotSessions("")
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 
 	t.Run("Nonexistent", func(t *testing.T) {
 		files := DiscoverCopilotSessions(filepath.Join(t.TempDir(), "does-not-exist"))
-		if files != nil {
-			t.Errorf("expected nil, got %d files", len(files))
-		}
+		assert.Nil(t, files, "expected nil")
 	})
 }
 
@@ -991,9 +904,7 @@ func TestFindCopilotSourceFile(t *testing.T) {
 				want = filepath.Join(dir, tt.wantFile)
 			}
 
-			if got != want {
-				t.Errorf("got %q, want %q", got, want)
-			}
+			assert.Equal(t, want, got)
 		})
 	}
 
@@ -1001,17 +912,13 @@ func TestFindCopilotSourceFile(t *testing.T) {
 		dir := t.TempDir()
 		for _, id := range []string{"", "../etc/passwd", "a/b", "a b"} {
 			got := FindCopilotSourceFile(dir, id)
-			if got != "" {
-				t.Errorf("FindCopilotSourceFile(%q) = %q, want empty", id, got)
-			}
+			assert.Emptyf(t, got, "FindCopilotSourceFile(%q)", id)
 		}
 	})
 
 	t.Run("EmptyDir", func(t *testing.T) {
 		got := FindCopilotSourceFile("", "abc-123")
-		if got != "" {
-			t.Errorf("expected empty, got %q", got)
-		}
+		assert.Empty(t, got, "expected empty")
 	})
 }
 
@@ -1021,16 +928,10 @@ func TestIsDirOrSymlink(t *testing.T) {
 	dir := t.TempDir()
 
 	realDir := filepath.Join(dir, "real-dir")
-	if err := os.MkdirAll(realDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(realDir, 0o755), "mkdir")
 
 	realFile := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(
-		realFile, []byte("hi"), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	require.NoError(t, os.WriteFile(realFile, []byte("hi"), 0o644), "write")
 
 	if err := os.Symlink(
 		realDir, filepath.Join(dir, "link-to-dir"),
@@ -1038,23 +939,17 @@ func TestIsDirOrSymlink(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	if err := os.Symlink(
+	require.NoError(t, os.Symlink(
 		realFile, filepath.Join(dir, "link-to-file"),
-	); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	), "symlink")
 
-	if err := os.Symlink(
+	require.NoError(t, os.Symlink(
 		filepath.Join(dir, "gone"),
 		filepath.Join(dir, "broken"),
-	); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	), "symlink")
 
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
+	require.NoError(t, err, "readdir")
 
 	want := map[string]bool{
 		"real-dir":     true,
@@ -1070,25 +965,18 @@ func TestIsDirOrSymlink(t *testing.T) {
 			continue
 		}
 		got := isDirOrSymlink(e, dir)
-		if got != expected {
-			t.Errorf("isDirOrSymlink(%q) = %v, want %v",
-				e.Name(), got, expected)
-		}
+		assert.Equalf(t, expected, got, "isDirOrSymlink(%q)", e.Name())
 	}
 }
 
 func TestFindClaudeSourceFile_Symlink(t *testing.T) {
 	externalDir := t.TempDir()
 	realDir := filepath.Join(externalDir, "real-project")
-	if err := os.MkdirAll(realDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(
+	require.NoError(t, os.MkdirAll(realDir, 0o755), "mkdir")
+	require.NoError(t, os.WriteFile(
 		filepath.Join(realDir, "sess-abc.jsonl"),
 		[]byte("{}"), 0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	), "write")
 
 	searchDir := t.TempDir()
 	linkDir := filepath.Join(searchDir, "linked-project")
@@ -1097,12 +985,9 @@ func TestFindClaudeSourceFile_Symlink(t *testing.T) {
 	}
 
 	got := FindClaudeSourceFile(searchDir, "sess-abc")
-	if got == "" {
-		t.Fatal("expected to find session via symlink")
-	}
-	if filepath.Dir(got) != linkDir {
-		t.Errorf("expected path through symlink, got %q", got)
-	}
+	require.NotEmpty(t, got, "expected to find session via symlink")
+	assert.Equal(t, linkDir, filepath.Dir(got),
+		"expected path through symlink")
 }
 
 func TestIsContainedIn(t *testing.T) {
@@ -1151,12 +1036,8 @@ func TestIsContainedIn(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isContainedIn(tt.child, tt.root)
-			if got != tt.want {
-				t.Errorf(
-					"isContainedIn(%q, %q) = %v, want %v",
-					tt.child, tt.root, got, tt.want,
-				)
-			}
+			assert.Equalf(t, tt.want, got,
+				"isContainedIn(%q, %q)", tt.child, tt.root)
 		})
 	}
 }
@@ -1208,19 +1089,9 @@ func TestDiscoverCursorSessions(t *testing.T) {
 			dir := t.TempDir()
 			setupFileSystem(t, dir, tt.files)
 			files := DiscoverCursorSessions(dir)
-			if len(files) != tt.wantCount {
-				t.Fatalf(
-					"got %d files, want %d",
-					len(files), tt.wantCount,
-				)
-			}
+			require.Len(t, files, tt.wantCount, "files count")
 			for _, f := range files {
-				if f.Agent != AgentCursor {
-					t.Errorf(
-						"agent = %q, want %q",
-						f.Agent, AgentCursor,
-					)
-				}
+				assert.Equal(t, AgentCursor, f.Agent, "agent")
 			}
 		})
 	}
@@ -1291,19 +1162,9 @@ func TestDiscoverCursorSessions_NestedLayout(t *testing.T) {
 			dir := t.TempDir()
 			setupFileSystem(t, dir, tt.files)
 			files := DiscoverCursorSessions(dir)
-			if len(files) != tt.wantCount {
-				t.Fatalf(
-					"got %d files, want %d",
-					len(files), tt.wantCount,
-				)
-			}
+			require.Len(t, files, tt.wantCount, "files count")
 			for _, f := range files {
-				if f.Agent != AgentCursor {
-					t.Errorf(
-						"agent = %q, want %q",
-						f.Agent, AgentCursor,
-					)
-				}
+				assert.Equal(t, AgentCursor, f.Agent, "agent")
 			}
 		})
 	}
@@ -1319,14 +1180,9 @@ func TestDiscoverCursorSessions_DedupPrefersJsonl(t *testing.T) {
 		filepath.Join(transcripts, "sess.jsonl"): `{"role":"user"}`,
 	})
 	files := DiscoverCursorSessions(dir)
-	if len(files) != 1 {
-		t.Fatalf("got %d files, want 1", len(files))
-	}
-	if !strings.HasSuffix(files[0].Path, ".jsonl") {
-		t.Errorf(
-			"expected .jsonl path, got %q", files[0].Path,
-		)
-	}
+	require.Len(t, files, 1, "files count")
+	assert.True(t, strings.HasSuffix(files[0].Path, ".jsonl"),
+		"expected .jsonl path, got %q", files[0].Path)
 }
 
 func TestParseCursorTranscriptRelPath(t *testing.T) {
@@ -1385,15 +1241,8 @@ func TestParseCursorTranscriptRelPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotProject, gotOK := ParseCursorTranscriptRelPath(tt.rel)
-			if gotOK != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", gotOK, tt.wantOK)
-			}
-			if gotProject != tt.wantProject {
-				t.Errorf(
-					"project = %q, want %q",
-					gotProject, tt.wantProject,
-				)
-			}
+			require.Equal(t, tt.wantOK, gotOK, "ok")
+			assert.Equal(t, tt.wantProject, gotProject, "project")
 		})
 	}
 }
@@ -1409,9 +1258,7 @@ func TestFindCursorSourceFile(t *testing.T) {
 			filepath.Join(cursorTranscripts, "sess1.txt"): "data",
 		})
 		got := FindCursorSourceFile(dir, "sess1")
-		if got == "" {
-			t.Fatal("expected to find .txt file")
-		}
+		assert.NotEmpty(t, got, "expected to find .txt file")
 	})
 
 	t.Run("FindsJsonl", func(t *testing.T) {
@@ -1420,9 +1267,7 @@ func TestFindCursorSourceFile(t *testing.T) {
 			filepath.Join(cursorTranscripts, "sess2.jsonl"): "{}",
 		})
 		got := FindCursorSourceFile(dir, "sess2")
-		if got == "" {
-			t.Fatal("expected to find .jsonl file")
-		}
+		assert.NotEmpty(t, got, "expected to find .jsonl file")
 	})
 
 	t.Run("PrefersJsonlWhenBothExist", func(t *testing.T) {
@@ -1435,12 +1280,7 @@ func TestFindCursorSourceFile(t *testing.T) {
 			dir, cursorTranscripts, "sess3.jsonl",
 		)
 		got := FindCursorSourceFile(dir, "sess3")
-		if got != jsonlPath {
-			t.Errorf(
-				"got %q, want %q (.jsonl preferred)",
-				got, jsonlPath,
-			)
-		}
+		assert.Equal(t, jsonlPath, got, "(.jsonl preferred)")
 	})
 
 	t.Run("FindsNestedJsonl", func(t *testing.T) {
@@ -1449,12 +1289,9 @@ func TestFindCursorSourceFile(t *testing.T) {
 			filepath.Join(cursorTranscripts, "sess4", "sess4.jsonl"): "{}",
 		})
 		got := FindCursorSourceFile(dir, "sess4")
-		if got == "" {
-			t.Fatal("expected to find nested .jsonl file")
-		}
-		if !strings.HasSuffix(got, filepath.Join("sess4", "sess4.jsonl")) {
-			t.Errorf("unexpected path %q", got)
-		}
+		require.NotEmpty(t, got, "expected to find nested .jsonl file")
+		assert.True(t, strings.HasSuffix(got, filepath.Join("sess4", "sess4.jsonl")),
+			"unexpected path %q", got)
 	})
 
 	t.Run("PrefersJsonlOverNestedTxt", func(t *testing.T) {
@@ -1464,31 +1301,25 @@ func TestFindCursorSourceFile(t *testing.T) {
 			filepath.Join(cursorTranscripts, "sess5", "sess5.jsonl"): "new",
 		})
 		got := FindCursorSourceFile(dir, "sess5")
-		if !strings.HasSuffix(got, "sess5.jsonl") {
-			t.Errorf("expected .jsonl path, got %q", got)
-		}
+		assert.True(t, strings.HasSuffix(got, "sess5.jsonl"),
+			"expected .jsonl path, got %q", got)
 	})
 
 	t.Run("NotFound", func(t *testing.T) {
 		dir := t.TempDir()
 		got := FindCursorSourceFile(dir, "nonexistent")
-		if got != "" {
-			t.Errorf("expected empty, got %q", got)
-		}
+		assert.Empty(t, got, "expected empty")
 	})
 }
 
 func TestIsPiSessionFile(t *testing.T) {
 	t.Run("ValidSession", func(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "pi-*.jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, _ = f.WriteString(`{"type":"session","id":"abc"}` + "\n")
 		f.Close()
-		if !IsPiSessionFile(f.Name()) {
-			t.Error("expected true for valid session file")
-		}
+		assert.True(t, IsPiSessionFile(f.Name()),
+			"expected true for valid session file")
 	})
 
 	t.Run("LongHeaderLine", func(t *testing.T) {
@@ -1496,48 +1327,36 @@ func TestIsPiSessionFile(t *testing.T) {
 		padding := strings.Repeat("x", 2*1024*1024)
 		line := `{"type":"session","id":"abc","pad":"` + padding + `"}` + "\n"
 		f, err := os.CreateTemp(t.TempDir(), "pi-*.jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, _ = f.WriteString(line)
 		f.Close()
-		if !IsPiSessionFile(f.Name()) {
-			t.Error("expected true for session file with long header line (>1 MiB)")
-		}
+		assert.True(t, IsPiSessionFile(f.Name()),
+			"expected true for session file with long header line (>1 MiB)")
 	})
 
 	t.Run("LeadingBlankLines", func(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "pi-*.jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, _ = f.WriteString("\n\n" + `{"type":"session","id":"abc"}` + "\n")
 		f.Close()
-		if !IsPiSessionFile(f.Name()) {
-			t.Error("expected true for session file with leading blank lines")
-		}
+		assert.True(t, IsPiSessionFile(f.Name()),
+			"expected true for session file with leading blank lines")
 	})
 
 	t.Run("NonSessionJSON", func(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "pi-*.jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, _ = f.WriteString(`{"type":"message","id":"abc"}` + "\n")
 		f.Close()
-		if IsPiSessionFile(f.Name()) {
-			t.Error("expected false for non-session JSON")
-		}
+		assert.False(t, IsPiSessionFile(f.Name()),
+			"expected false for non-session JSON")
 	})
 
 	t.Run("EmptyFile", func(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "pi-*.jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		f.Close()
-		if IsPiSessionFile(f.Name()) {
-			t.Error("expected false for empty file")
-		}
+		assert.False(t, IsPiSessionFile(f.Name()),
+			"expected false for empty file")
 	})
 }

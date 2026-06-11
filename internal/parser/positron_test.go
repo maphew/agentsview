@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParsePositronSession(t *testing.T) {
@@ -53,61 +56,34 @@ func TestParsePositronSession(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "test-session.json")
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		sessionPath, []byte(sessionJSON), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	sess, msgs, err := ParsePositronSession(
 		sessionPath, "test-project", "test-machine",
 	)
-	if err != nil {
-		t.Fatalf("ParsePositronSession failed: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("expected session, got nil")
-	}
+	require.NoError(t, err, "ParsePositronSession failed")
+	require.NotNil(t, sess, "expected session, got nil")
 
 	// Verify session metadata
-	if sess.Agent != AgentPositron {
-		t.Errorf("agent = %v, want %v", sess.Agent, AgentPositron)
-	}
-	if sess.ID != "positron:test-session-123" {
-		t.Errorf("ID = %v, want positron:test-session-123", sess.ID)
-	}
-	if sess.Project != "test-project" {
-		t.Errorf("project = %v, want test-project", sess.Project)
-	}
-	if sess.FirstMessage != "Hello, help me with R code" {
-		t.Errorf(
-			"firstMessage = %v, want 'Hello, help me with R code'",
-			sess.FirstMessage,
-		)
-	}
+	assert.Equal(t, AgentPositron, sess.Agent)
+	assert.Equal(t, "positron:test-session-123", sess.ID)
+	assert.Equal(t, "test-project", sess.Project)
+	assert.Equal(t, "Hello, help me with R code", sess.FirstMessage)
 
 	// Verify messages
-	if len(msgs) != 4 {
-		t.Fatalf("len(msgs) = %d, want 4", len(msgs))
-	}
+	require.Len(t, msgs, 4)
 
 	// First user message
-	if msgs[0].Role != RoleUser {
-		t.Errorf("msgs[0].Role = %v, want user", msgs[0].Role)
-	}
-	if msgs[0].Content != "Hello, help me with R code" {
-		t.Errorf("msgs[0].Content = %v", msgs[0].Content)
-	}
+	assert.Equal(t, RoleUser, msgs[0].Role)
+	assert.Equal(t, "Hello, help me with R code", msgs[0].Content)
 
 	// First assistant response
-	if msgs[1].Role != RoleAssistant {
-		t.Errorf("msgs[1].Role = %v, want assistant", msgs[1].Role)
-	}
+	assert.Equal(t, RoleAssistant, msgs[1].Role)
 
 	// Second assistant should have tool use
-	if !msgs[3].HasToolUse {
-		t.Error("msgs[3] should have tool use")
-	}
+	assert.True(t, msgs[3].HasToolUse, "msgs[3] should have tool use")
 }
 
 func TestDiscoverPositronSessions(t *testing.T) {
@@ -120,19 +96,15 @@ func TestDiscoverPositronSessions(t *testing.T) {
 		tmpDir, "workspaceStorage", "abc123hash",
 	)
 	chatDir := filepath.Join(hashDir, "chatSessions")
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(chatDir, 0755))
 
 	// Create workspace.json
 	wsJSON := `{"folder": "file:///Users/test/myproject"}`
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(hashDir, "workspace.json"),
 		[]byte(wsJSON),
 		0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	// Create session files
 	sessionJSON := `{"version": 3, "requests": []}`
@@ -140,36 +112,26 @@ func TestDiscoverPositronSessions(t *testing.T) {
 		"session-1.json",
 		"session-2.jsonl",
 	} {
-		if err := os.WriteFile(
+		require.NoError(t, os.WriteFile(
 			filepath.Join(chatDir, name),
 			[]byte(sessionJSON),
 			0644,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 
 	// Create a non-session file that should be ignored
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(chatDir, "readme.txt"),
 		[]byte("ignore me"),
 		0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	files := DiscoverPositronSessions(tmpDir)
-	if len(files) != 2 {
-		t.Fatalf("len(files) = %d, want 2", len(files))
-	}
+	require.Len(t, files, 2)
 
 	for _, f := range files {
-		if f.Agent != AgentPositron {
-			t.Errorf("agent = %v, want positron", f.Agent)
-		}
-		if f.Project != "myproject" {
-			t.Errorf("project = %v, want myproject", f.Project)
-		}
+		assert.Equal(t, AgentPositron, f.Agent)
+		assert.Equal(t, "myproject", f.Project)
 	}
 }
 
@@ -181,27 +143,19 @@ func TestFindPositronSourceFile(t *testing.T) {
 		tmpDir, "workspaceStorage", "abc123hash",
 	)
 	chatDir := filepath.Join(hashDir, "chatSessions")
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(chatDir, 0755))
 
 	// Create session file
 	sessionPath := filepath.Join(chatDir, "test-uuid.json")
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		sessionPath, []byte(`{}`), 0644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	// Test finding existing session
 	found := FindPositronSourceFile(tmpDir, "test-uuid")
-	if found != sessionPath {
-		t.Errorf("found = %v, want %v", found, sessionPath)
-	}
+	assert.Equal(t, sessionPath, found)
 
 	// Test finding non-existent session
 	notFound := FindPositronSourceFile(tmpDir, "nonexistent")
-	if notFound != "" {
-		t.Errorf("expected empty string, got %v", notFound)
-	}
+	assert.Empty(t, notFound)
 }

@@ -5,6 +5,13 @@
     importChatGPT,
     type ImportStats,
   } from "../../api/client.js";
+  import {
+    FileCheckIcon,
+    FileIcon,
+    FileXIcon,
+    TriangleAlertIcon,
+    UploadIcon,
+  } from "../../icons.js";
 
   interface Props {
     open: boolean;
@@ -217,6 +224,7 @@
           class="modal-close"
           onclick={handleClose}
           disabled={importing}
+          title="Close import dialog"
           aria-label="Close"
         >&times;</button>
       </div>
@@ -226,27 +234,7 @@
           <!-- ── Results ── -->
           <div class="result-view">
             <div class="result-check">
-              <svg
-                width="32"
-                height="32"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="var(--accent-green)"
-                  stroke-width="1.5"
-                />
-                <path
-                  d="M8 12l3 3 5-5"
-                  stroke="var(--accent-green)"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <FileCheckIcon size="32" strokeWidth="1.5" aria-hidden="true" />
             </div>
 
             <p class="result-heading">
@@ -364,15 +352,7 @@
           {:else if selectedFile}
             <div class="zone zone-file">
               <div class="file-row">
-                <svg
-                  class="file-icon"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 16 16"
-                  fill="currentColor"
-                >
-                  <path d="M4 0a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V4.5L9.5 0H4zM9 1v3.5A1.5 1.5 0 0010.5 6H14v8a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1h5z"/>
-                </svg>
+                <FileIcon class="file-icon" size="20" strokeWidth="1.6" aria-hidden="true" />
                 <div class="file-meta">
                   <span class="file-name">
                     {selectedFile.name}
@@ -387,14 +367,7 @@
                   title="Remove file"
                   aria-label="Remove file"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="currentColor"
-                  >
-                    <path d="M4.646 4.646a.5.5 0 01.708 0L8 7.293l2.646-2.647a.5.5 0 01.708.708L8.707 8l2.647 2.646a.5.5 0 01-.708.708L8 8.707l-2.646 2.647a.5.5 0 01-.708-.708L7.293 8 4.646 5.354a.5.5 0 010-.708z"/>
-                  </svg>
+                  <FileXIcon size="14" strokeWidth="1.8" aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -419,21 +392,7 @@
                 }
               }}
             >
-              <svg
-                class="upload-icon"
-                width="28"
-                height="28"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
+              <UploadIcon class="upload-icon" size="28" strokeWidth="1.5" aria-hidden="true" />
               <span class="drop-label">
                 Drop your file here
               </span>
@@ -453,14 +412,7 @@
 
           {#if error}
             <div class="import-error">
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-              >
-                <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 01-1.1 0L7.1 5.995A.905.905 0 018 5zm.002 6a1 1 0 110 2 1 1 0 010-2z"/>
-              </svg>
+              <TriangleAlertIcon size="14" strokeWidth="1.8" aria-hidden="true" />
               <span>{error}</span>
             </div>
           {/if}
@@ -623,7 +575,7 @@
       );
   }
 
-  .zone-empty.drag-over .upload-icon {
+  .zone-empty.drag-over :global(.upload-icon) {
     color: var(--accent-blue);
     animation: icon-lift 0.35s ease-out;
   }
@@ -640,7 +592,7 @@
     }
   }
 
-  .upload-icon {
+  :global(.upload-icon) {
     color: var(--text-muted);
     margin-bottom: 2px;
     transition: color 0.15s;
@@ -671,7 +623,7 @@
     width: 100%;
   }
 
-  .file-icon {
+  :global(.file-icon) {
     color: var(--text-muted);
     flex-shrink: 0;
   }
@@ -743,7 +695,7 @@
     word-break: break-word;
   }
 
-  .import-error svg {
+  .import-error :global(svg) {
     flex-shrink: 0;
     margin-top: 1px;
   }
@@ -765,6 +717,7 @@
   }
 
   .result-check {
+    color: var(--accent-green);
     margin-bottom: 2px;
     animation: check-pop 0.35s ease-out;
   }

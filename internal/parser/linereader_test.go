@@ -3,10 +3,12 @@ package parser
 import (
 	"errors"
 	"io"
-	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLineReader(t *testing.T) {
@@ -80,12 +82,8 @@ func TestLineReader(t *testing.T) {
 				}
 				got = append(got, line)
 			}
-			if err := lr.Err(); err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			assert.NoError(t, lr.Err())
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -128,12 +126,7 @@ func TestLineReaderBytesRead(t *testing.T) {
 					break
 				}
 			}
-			if lr.bytesRead != tt.want {
-				t.Errorf(
-					"bytesRead = %d, want %d",
-					lr.bytesRead, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, lr.bytesRead)
 		})
 	}
 }
@@ -155,13 +148,7 @@ func TestLineReaderIOError(t *testing.T) {
 		got = append(got, line)
 	}
 
-	if len(got) != 2 {
-		t.Fatalf("got %d lines, want 2: %v", len(got), got)
-	}
-	if lr.Err() == nil {
-		t.Fatal("expected non-nil Err() after I/O failure")
-	}
-	if !errors.Is(lr.Err(), ioErr) {
-		t.Fatalf("Err() = %v, want %v", lr.Err(), ioErr)
-	}
+	require.Len(t, got, 2)
+	require.Error(t, lr.Err(), "expected non-nil Err() after I/O failure")
+	require.ErrorIs(t, lr.Err(), ioErr)
 }

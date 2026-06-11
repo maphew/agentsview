@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetSessionTiming_Solo(t *testing.T) {
@@ -23,31 +26,15 @@ func TestGetSessionTiming_Solo(t *testing.T) {
 		"ok", "2026-04-26T10:00:30Z", false)
 
 	got, err := d.GetSessionTiming(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", got.TurnCount)
-	}
-	if got.ToolCallCount != 1 {
-		t.Errorf("ToolCallCount = %d, want 1", got.ToolCallCount)
-	}
-	if got.Running {
-		t.Errorf("Running = true, want false")
-	}
-	if len(got.Turns) != 1 {
-		t.Fatalf("len(Turns) = %d, want 1", len(got.Turns))
-	}
-	if got.Turns[0].DurationMs == nil ||
-		*got.Turns[0].DurationMs != 29_000 {
-		t.Errorf("turn duration = %v, want 29000",
-			got.Turns[0].DurationMs)
-	}
-	if got.Turns[0].Calls[0].DurationMs == nil ||
-		*got.Turns[0].Calls[0].DurationMs != 29_000 {
-		t.Errorf("call duration = %v, want 29000",
-			got.Turns[0].Calls[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Equal(t, 1, got.TurnCount, "TurnCount")
+	assert.Equal(t, 1, got.ToolCallCount, "ToolCallCount")
+	assert.False(t, got.Running, "Running")
+	require.Len(t, got.Turns, 1, "len(Turns)")
+	require.NotNil(t, got.Turns[0].DurationMs, "turn duration")
+	assert.Equal(t, int64(29_000), *got.Turns[0].DurationMs, "turn duration")
+	require.NotNil(t, got.Turns[0].Calls[0].DurationMs, "call duration")
+	assert.Equal(t, int64(29_000), *got.Turns[0].Calls[0].DurationMs, "call duration")
 }
 
 func TestGetSessionTiming_LastMessageFallsBackToSessionEnd(t *testing.T) {
@@ -64,24 +51,14 @@ func TestGetSessionTiming_LastMessageFallsBackToSessionEnd(t *testing.T) {
 		"tu_1", "Bash", "Bash", "")
 
 	got, err := d.GetSessionTiming(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.Turns[0].DurationMs == nil {
-		t.Fatalf("turn duration = nil, want 20000 " +
-			"(fallback to ended_at)")
-	}
-	if *got.Turns[0].DurationMs != 20_000 {
-		t.Errorf("turn duration = %d, want 20000 "+
-			"(fallback to ended_at)",
-			*got.Turns[0].DurationMs)
-	}
-	if got.Turns[0].Calls[0].DurationMs == nil ||
-		*got.Turns[0].Calls[0].DurationMs != 20_000 {
-		t.Errorf("call duration = %v, want 20000 "+
-			"(solo non-subagent inherits turn duration)",
-			got.Turns[0].Calls[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	require.NotNil(t, got.Turns[0].DurationMs,
+		"turn duration nil, want 20000 (fallback to ended_at)")
+	assert.Equal(t, int64(20_000), *got.Turns[0].DurationMs,
+		"turn duration (fallback to ended_at)")
+	require.NotNil(t, got.Turns[0].Calls[0].DurationMs, "call duration")
+	assert.Equal(t, int64(20_000), *got.Turns[0].Calls[0].DurationMs,
+		"call duration (solo non-subagent inherits turn duration)")
 }
 
 func TestGetSessionTiming_RunningSessionLastTurnNull(t *testing.T) {
@@ -98,16 +75,9 @@ func TestGetSessionTiming_RunningSessionLastTurnNull(t *testing.T) {
 		"tu_1", "Bash", "Bash", "")
 
 	got, err := d.GetSessionTiming(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if !got.Running {
-		t.Errorf("Running = false, want true")
-	}
-	if got.Turns[0].DurationMs != nil {
-		t.Errorf("turn duration = %v, want nil (running)",
-			*got.Turns[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.True(t, got.Running, "Running")
+	assert.Nil(t, got.Turns[0].DurationMs, "turn duration (running)")
 }
 
 func TestGetSessionTiming_NonMonotonicTimestampClampsNull(t *testing.T) {
@@ -126,13 +96,8 @@ func TestGetSessionTiming_NonMonotonicTimestampClampsNull(t *testing.T) {
 		"ok", "2026-04-26T10:00:00Z", false)
 
 	got, err := d.GetSessionTiming(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.Turns[0].DurationMs != nil {
-		t.Errorf("turn duration = %v, want nil (clamp)",
-			*got.Turns[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Nil(t, got.Turns[0].DurationMs, "turn duration (clamp)")
 }
 
 func TestGetSessionTiming_NoToolUseHasNoTurnDuration(t *testing.T) {
@@ -147,12 +112,8 @@ func TestGetSessionTiming_NoToolUseHasNoTurnDuration(t *testing.T) {
 		"hi back", "2026-04-26T10:00:01Z", false)
 
 	got, err := d.GetSessionTiming(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.TurnCount != 0 {
-		t.Errorf("TurnCount = %d, want 0", got.TurnCount)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Equal(t, 0, got.TurnCount, "TurnCount")
 }
 
 func TestGetSessionTiming_MarshalsEmptyCollectionsAsArrays(t *testing.T) {
@@ -167,15 +128,9 @@ func TestGetSessionTiming_MarshalsEmptyCollectionsAsArrays(t *testing.T) {
 		"hi back", "2026-04-26T10:00:01Z", false)
 
 	noTool, err := d.GetSessionTiming(ctx, "notool")
-	if err != nil {
-		t.Fatalf("GetSessionTiming(notool): %v", err)
-	}
-	if noTool.ByCategory == nil {
-		t.Fatal("ByCategory is nil, want empty slice")
-	}
-	if noTool.Turns == nil {
-		t.Fatal("Turns is nil, want empty slice")
-	}
+	require.NoError(t, err, "GetSessionTiming(notool)")
+	require.NotNil(t, noTool.ByCategory, "ByCategory is nil, want empty slice")
+	require.NotNil(t, noTool.Turns, "Turns is nil, want empty slice")
 
 	timingInsertSession(t, d, "missing-calls",
 		"2026-04-26T10:00:00Z", "2026-04-26T10:00:30Z")
@@ -187,29 +142,20 @@ func TestGetSessionTiming_MarshalsEmptyCollectionsAsArrays(t *testing.T) {
 		"done", "2026-04-26T10:00:30Z", false)
 
 	missingCalls, err := d.GetSessionTiming(ctx, "missing-calls")
-	if err != nil {
-		t.Fatalf("GetSessionTiming(missing-calls): %v", err)
-	}
-	if len(missingCalls.Turns) != 1 {
-		t.Fatalf("len(Turns) = %d, want 1", len(missingCalls.Turns))
-	}
-	if missingCalls.Turns[0].Calls == nil {
-		t.Fatal("Turn Calls is nil, want empty slice")
-	}
+	require.NoError(t, err, "GetSessionTiming(missing-calls)")
+	require.Len(t, missingCalls.Turns, 1, "len(Turns)")
+	require.NotNil(t, missingCalls.Turns[0].Calls,
+		"Turn Calls is nil, want empty slice")
 
 	payload, err := json.Marshal(missingCalls)
-	if err != nil {
-		t.Fatalf("Marshal timing: %v", err)
-	}
+	require.NoError(t, err, "Marshal timing")
 	body := string(payload)
 	for _, field := range []string{
 		`"by_category":null`,
 		`"turns":null`,
 		`"calls":null`,
 	} {
-		if strings.Contains(body, field) {
-			t.Fatalf("timing JSON contains %s: %s", field, body)
-		}
+		assert.NotContains(t, body, field, "timing JSON contains %s", field)
 	}
 }
 
@@ -232,16 +178,11 @@ func TestGetSessionTiming_SubagentExactDuration(t *testing.T) {
 		"done", "2026-04-26T10:02:16Z", false)
 
 	got, err := d.GetSessionTiming(ctx, "parent")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
+	require.NoError(t, err, "GetSessionTiming")
 	dms := got.Turns[0].Calls[0].DurationMs
-	if dms == nil || *dms != 134_000 {
-		t.Errorf("subagent duration = %v, want 134000", dms)
-	}
-	if got.SubagentCount != 1 {
-		t.Errorf("SubagentCount = %d, want 1", got.SubagentCount)
-	}
+	require.NotNil(t, dms, "subagent duration")
+	assert.Equal(t, int64(134_000), *dms, "subagent duration")
+	assert.Equal(t, 1, got.SubagentCount, "SubagentCount")
 }
 
 func TestGetSessionTiming_MissingSessionReturnsNil(t *testing.T) {
@@ -249,12 +190,8 @@ func TestGetSessionTiming_MissingSessionReturnsNil(t *testing.T) {
 	ctx := context.Background()
 
 	got, err := d.GetSessionTiming(ctx, "no-such")
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got != nil {
-		t.Errorf("GetSessionTiming = %v, want nil", got)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Nil(t, got, "GetSessionTiming")
 }
 
 func TestMakeInputPreview(t *testing.T) {
@@ -335,9 +272,7 @@ func TestMakeInputPreview(t *testing.T) {
 			got := makeInputPreview(
 				tc.category, tc.toolName, tc.inputJSON,
 			)
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -360,9 +295,7 @@ func timingInsertSession(t *testing.T, d *DB, id, started, ended string) {
 			 started_at, ended_at)
 		VALUES (?, '', 'local', 'claude', 1, ?, ?)
 	`, id, started, endedAt)
-	if err != nil {
-		t.Fatalf("timingInsertSession %s: %v", id, err)
-	}
+	require.NoError(t, err, "timingInsertSession %s", id)
 }
 
 func timingInsertMessage(
@@ -381,10 +314,7 @@ func timingInsertMessage(
 			 has_tool_use)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, sessionID, ordinal, role, content, ts, flag)
-	if err != nil {
-		t.Fatalf("timingInsertMessage %s/%d: %v",
-			sessionID, ordinal, err)
-	}
+	require.NoError(t, err, "timingInsertMessage %s/%d", sessionID, ordinal)
 }
 
 func timingMsgID(
@@ -397,10 +327,7 @@ func timingMsgID(
 		 WHERE session_id = ? AND ordinal = ?`,
 		sessionID, ordinal,
 	).Scan(&id)
-	if err != nil {
-		t.Fatalf("timingMsgID %s/%d: %v",
-			sessionID, ordinal, err)
-	}
+	require.NoError(t, err, "timingMsgID %s/%d", sessionID, ordinal)
 	return id
 }
 
@@ -420,8 +347,5 @@ func timingInsertToolCall(
 			 category, input_json, subagent_session_id)
 		VALUES (?, ?, ?, ?, ?, '{}', ?)
 	`, sessionID, messageID, toolUseID, toolName, category, sub)
-	if err != nil {
-		t.Fatalf("timingInsertToolCall %s/%d: %v",
-			sessionID, messageID, err)
-	}
+	require.NoError(t, err, "timingInsertToolCall %s/%d", sessionID, messageID)
 }

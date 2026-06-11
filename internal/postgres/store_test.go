@@ -6,6 +6,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -15,22 +18,16 @@ const testSchema = "agentsview_store_test"
 func ensureStoreSchema(t *testing.T, pgURL string) {
 	t.Helper()
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("connecting to pg: %v", err)
-	}
+	require.NoError(t, err, "connecting to pg")
 	defer pg.Close()
 
 	_, err = pg.Exec(`
 		DROP SCHEMA IF EXISTS ` + testSchema + ` CASCADE;
 	`)
-	if err != nil {
-		t.Fatalf("dropping schema: %v", err)
-	}
+	require.NoError(t, err, "dropping schema")
 
 	ctx := context.Background()
-	if err := EnsureSchema(ctx, pg, testSchema); err != nil {
-		t.Fatalf("creating schema: %v", err)
-	}
+	require.NoError(t, EnsureSchema(ctx, pg, testSchema), "creating schema")
 
 	_, err = pg.Exec(`
 		INSERT INTO sessions
@@ -45,9 +42,7 @@ func ensureStoreSchema(t *testing.T, pgURL string) {
 			 '2026-03-12T10:30:00Z'::timestamptz,
 			 2, 1)
 	`)
-	if err != nil {
-		t.Fatalf("inserting test session: %v", err)
-	}
+	require.NoError(t, err, "inserting test session")
 	_, err = pg.Exec(`
 		INSERT INTO messages
 			(session_id, ordinal, role, content,
@@ -60,9 +55,7 @@ func ensureStoreSchema(t *testing.T, pgURL string) {
 			 'hi there',
 			 '2026-03-12T10:00:01Z'::timestamptz, 8)
 	`)
-	if err != nil {
-		t.Fatalf("inserting test messages: %v", err)
-	}
+	require.NoError(t, err, "inserting test messages")
 }
 
 func ensureAnalyticsTokenStoreSchema(
@@ -70,22 +63,16 @@ func ensureAnalyticsTokenStoreSchema(
 ) {
 	t.Helper()
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("connecting to pg: %v", err)
-	}
+	require.NoError(t, err, "connecting to pg")
 	defer pg.Close()
 
 	_, err = pg.Exec(`
 		DROP SCHEMA IF EXISTS ` + testSchema + ` CASCADE;
 	`)
-	if err != nil {
-		t.Fatalf("dropping schema: %v", err)
-	}
+	require.NoError(t, err, "dropping schema")
 
 	ctx := context.Background()
-	if err := EnsureSchema(ctx, pg, testSchema); err != nil {
-		t.Fatalf("creating schema: %v", err)
-	}
+	require.NoError(t, EnsureSchema(ctx, pg, testSchema), "creating schema")
 
 	_, err = pg.Exec(`
 		INSERT INTO sessions (
@@ -115,9 +102,7 @@ func ensureAnalyticsTokenStoreSchema(
 			 '2026-03-13T11:20:00Z'::timestamptz,
 			 9, 5, 0, FALSE)
 	`)
-	if err != nil {
-		t.Fatalf("inserting analytics token sessions: %v", err)
-	}
+	require.NoError(t, err, "inserting analytics token sessions")
 }
 
 func TestNewStore(t *testing.T) {
@@ -125,17 +110,11 @@ func TestNewStore(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
-	if !store.ReadOnly() {
-		t.Error("ReadOnly() = false, want true")
-	}
-	if !store.HasFTS() {
-		t.Error("HasFTS() = false, want true")
-	}
+	assert.True(t, store.ReadOnly())
+	assert.True(t, store.HasFTS())
 }
 
 func TestStoreListSessions(t *testing.T) {
@@ -143,21 +122,15 @@ func TestStoreListSessions(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
 	page, err := store.ListSessions(
 		ctx, db.SessionFilter{Limit: 10},
 	)
-	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
-	}
-	if page.Total == 0 {
-		t.Error("expected at least 1 session")
-	}
+	require.NoError(t, err, "ListSessions")
+	assert.NotZero(t, page.Total, "expected at least 1 session")
 	t.Logf("sessions: %d, total: %d",
 		len(page.Sessions), page.Total)
 }
@@ -167,9 +140,7 @@ func TestStoreListSessions_MachineMultiSelect(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	_, err = store.DB().Exec(`
@@ -191,9 +162,7 @@ func TestStoreListSessions_MachineMultiSelect(t *testing.T) {
 			 '2026-03-12T12:30:00Z'::timestamptz,
 			 2, 1)
 	`)
-	if err != nil {
-		t.Fatalf("inserting extra sessions: %v", err)
-	}
+	require.NoError(t, err, "inserting extra sessions")
 
 	ctx := context.Background()
 	page, err := store.ListSessions(
@@ -203,22 +172,273 @@ func TestStoreListSessions_MachineMultiSelect(t *testing.T) {
 			Limit:   10,
 		},
 	)
-	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
-	}
-	if page.Total != 2 {
-		t.Fatalf("total = %d, want 2", page.Total)
-	}
+	require.NoError(t, err, "ListSessions")
+	require.Equal(t, 2, page.Total)
 	got := []string{
 		page.Sessions[0].Machine,
 		page.Sessions[1].Machine,
 	}
-	if got[0] != "test-machine" && got[1] != "test-machine" {
-		t.Fatalf("machines = %v, want test-machine included", got)
+	assert.Contains(t, got, "test-machine")
+	assert.Contains(t, got, "machine-c")
+}
+
+func ensureSidebarIndexStoreSchema(
+	t *testing.T, pgURL string,
+) *Store {
+	t.Helper()
+	ensureStoreSchema(t, pgURL)
+
+	store, err := NewStore(pgURL, testSchema, true)
+	require.NoError(t, err, "NewStore")
+	_, err = store.DB().Exec(`DELETE FROM messages`)
+	require.NoError(t, err, "clearing seed messages")
+	_, err = store.DB().Exec(`DELETE FROM sessions`)
+	require.NoError(t, err, "clearing seed sessions")
+	return store
+}
+
+func insertSidebarIndexSession(
+	t *testing.T,
+	store *Store,
+	id string,
+	opts ...func(*sidebarIndexSessionSeed),
+) {
+	t.Helper()
+	row := sidebarIndexSessionSeed{
+		id:               id,
+		machine:          "test-machine",
+		project:          "sidebar-project",
+		agent:            "claude",
+		firstMessage:     "sidebar session",
+		startedAt:        "2026-03-12T10:00:00Z",
+		endedAt:          "2026-03-12T10:30:00Z",
+		messageCount:     3,
+		userMessageCount: 2,
 	}
-	if got[0] != "machine-c" && got[1] != "machine-c" {
-		t.Fatalf("machines = %v, want machine-c included", got)
+	for _, opt := range opts {
+		opt(&row)
 	}
+
+	_, err := store.DB().Exec(`
+		INSERT INTO sessions (
+			id, machine, project, agent, first_message,
+			display_name, started_at, ended_at, message_count,
+			user_message_count, parent_session_id,
+			relationship_type, is_automated
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7::timestamptz, $8::timestamptz, $9,
+			$10, $11, $12, $13
+		)
+	`, row.id, row.machine, row.project, row.agent,
+		row.firstMessage, row.displayName, row.startedAt,
+		row.endedAt, row.messageCount, row.userMessageCount,
+		row.parentSessionID, row.relationshipType,
+		row.isAutomated)
+	require.NoError(t, err, "inserting sidebar index session %s", id)
+}
+
+type sidebarIndexSessionSeed struct {
+	id               string
+	machine          string
+	project          string
+	agent            string
+	firstMessage     string
+	displayName      *string
+	startedAt        string
+	endedAt          string
+	messageCount     int
+	userMessageCount int
+	parentSessionID  *string
+	relationshipType string
+	isAutomated      bool
+}
+
+func sidebarIndexRowsByID(
+	sessions []db.SidebarSessionIndexRow,
+) map[string]db.SidebarSessionIndexRow {
+	rows := make(map[string]db.SidebarSessionIndexRow, len(sessions))
+	for _, s := range sessions {
+		rows[s.ID] = s
+	}
+	return rows
+}
+
+func requireSidebarIndexIDs(
+	t *testing.T,
+	sessions []db.SidebarSessionIndexRow,
+	wantIDs []string,
+) {
+	t.Helper()
+	rows := sidebarIndexRowsByID(sessions)
+	require.Len(t, rows, len(wantIDs), "session count; rows=%v", rows)
+	for _, id := range wantIDs {
+		_, ok := rows[id]
+		require.True(t, ok, "session %q missing from rows=%v", id, rows)
+	}
+}
+
+func TestStoreGetSidebarSessionIndexComputesIsTeammate(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	insertSidebarIndexSession(t, store, "teammate", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.firstMessage = `<teammate-message from="reviewer">hi`
+	})
+	insertSidebarIndexSession(t, store, "normal")
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(), db.SessionFilter{},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex")
+
+	rows := sidebarIndexRowsByID(index.Sessions)
+	assert.True(t, rows["teammate"].IsTeammate, "teammate IsTeammate")
+	assert.False(t, rows["normal"].IsTeammate, "normal IsTeammate")
+}
+
+func TestStoreGetSidebarSessionIndexReturnsDisplayName(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	displayName := "Named sidebar session"
+	insertSidebarIndexSession(t, store, "named", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.displayName = &displayName
+	})
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(), db.SessionFilter{},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex")
+	require.Len(t, index.Sessions, 1)
+	got := index.Sessions[0].DisplayName
+	require.NotNil(t, got)
+	assert.Equal(t, displayName, *got)
+}
+
+func TestStoreGetSidebarSessionIndexExcludeAutomated(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	insertSidebarIndexSession(t, store, "normal")
+	insertSidebarIndexSession(t, store, "review", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.firstMessage = "You are a code reviewer. Review the code."
+		s.userMessageCount = 1
+		s.isAutomated = true
+	})
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(),
+		db.SessionFilter{ExcludeAutomated: true},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex exclude automated")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"normal"})
+	assert.Equal(t, 1, index.Total)
+
+	index, err = store.GetSidebarSessionIndex(
+		context.Background(),
+		db.SessionFilter{ExcludeAutomated: false},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex include automated")
+	requireSidebarIndexIDs(
+		t, index.Sessions, []string{"normal", "review"},
+	)
+}
+
+func TestStoreGetSidebarSessionIndexExcludeOneShotKeepsAutomated(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	insertSidebarIndexSession(t, store, "multi", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.userMessageCount = 5
+	})
+	insertSidebarIndexSession(t, store, "oneshot", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.userMessageCount = 1
+	})
+	insertSidebarIndexSession(t, store, "review", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.firstMessage = "You are a code reviewer. Review the code."
+		s.userMessageCount = 1
+		s.isAutomated = true
+	})
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(),
+		db.SessionFilter{
+			ExcludeOneShot:   true,
+			ExcludeAutomated: false,
+		},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(t, index.Sessions, []string{"multi", "review"})
+}
+
+func TestStoreGetSidebarSessionIndexIncludesChildrenForMatchingRoot(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	rootID := "root"
+	subID := "sub"
+	insertSidebarIndexSession(t, store, rootID, func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.agent = "claude"
+		s.userMessageCount = 5
+	})
+	insertSidebarIndexSession(t, store, subID, func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.agent = "codex"
+		s.parentSessionID = &rootID
+		s.relationshipType = "subagent"
+	})
+	insertSidebarIndexSession(t, store, "fork", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.agent = "codex"
+		s.parentSessionID = &subID
+		s.relationshipType = "fork"
+	})
+	insertSidebarIndexSession(t, store, "other", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.agent = "codex"
+		s.userMessageCount = 5
+	})
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(), db.SessionFilter{Agent: "claude"},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex")
+	requireSidebarIndexIDs(
+		t, index.Sessions, []string{"root", "sub", "fork"},
+	)
 }
 
 func TestStoreGetSession(t *testing.T) {
@@ -226,23 +446,14 @@ func TestStoreGetSession(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
 	sess, err := store.GetSession(ctx, "store-test-001")
-	if err != nil {
-		t.Fatalf("GetSession: %v", err)
-	}
-	if sess == nil {
-		t.Fatal("expected session, got nil")
-	}
-	if sess.Project != "test-project" {
-		t.Errorf("project = %q, want %q",
-			sess.Project, "test-project")
-	}
+	require.NoError(t, err, "GetSession")
+	require.NotNil(t, sess, "expected session, got nil")
+	assert.Equal(t, "test-project", sess.Project)
 }
 
 func TestStoreGetMessages(t *testing.T) {
@@ -250,21 +461,15 @@ func TestStoreGetMessages(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
 	msgs, err := store.GetMessages(
 		ctx, "store-test-001", 0, 100, true,
 	)
-	if err != nil {
-		t.Fatalf("GetMessages: %v", err)
-	}
-	if len(msgs) != 2 {
-		t.Errorf("got %d messages, want 2", len(msgs))
-	}
+	require.NoError(t, err, "GetMessages")
+	assert.Len(t, msgs, 2)
 }
 
 func TestStoreGetStats(t *testing.T) {
@@ -272,19 +477,13 @@ func TestStoreGetStats(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
 	stats, err := store.GetStats(ctx, false, false)
-	if err != nil {
-		t.Fatalf("GetStats: %v", err)
-	}
-	if stats.SessionCount == 0 {
-		t.Error("expected at least 1 session in stats")
-	}
+	require.NoError(t, err, "GetStats")
+	assert.NotZero(t, stats.SessionCount, "expected at least 1 session in stats")
 	t.Logf("stats: %+v", stats)
 }
 
@@ -293,9 +492,7 @@ func TestStoreSearch(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
@@ -303,12 +500,8 @@ func TestStoreSearch(t *testing.T) {
 		Query: "hello",
 		Limit: 5,
 	})
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(page.Results) == 0 {
-		t.Error("expected at least 1 search result")
-	}
+	require.NoError(t, err, "Search")
+	assert.NotEmpty(t, page.Results, "expected at least 1 search result")
 	t.Logf("search results: %d", len(page.Results))
 }
 
@@ -317,9 +510,7 @@ func TestStoreAnalyticsSummary(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	ctx := context.Background()
@@ -329,12 +520,8 @@ func TestStoreAnalyticsSummary(t *testing.T) {
 			To:   "2026-12-31",
 		},
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsSummary: %v", err)
-	}
-	if summary.TotalSessions == 0 {
-		t.Error("expected at least 1 session in summary")
-	}
+	require.NoError(t, err, "GetAnalyticsSummary")
+	assert.NotZero(t, summary.TotalSessions, "expected at least 1 session in summary")
 	t.Logf("summary: %+v", summary)
 }
 
@@ -352,17 +539,15 @@ func seedActivitySession(
 
 	// PG doesn't allow multi-statement prepared queries,
 	// so run each statement separately.
-	if _, err := pg.Exec(
+	_, err := pg.Exec(
 		`DELETE FROM messages WHERE session_id = $1`, sid,
-	); err != nil {
-		t.Fatalf("deleting messages: %v", err)
-	}
-	if _, err := pg.Exec(
+	)
+	require.NoError(t, err, "deleting messages")
+	_, err = pg.Exec(
 		`DELETE FROM sessions WHERE id = $1`, sid,
-	); err != nil {
-		t.Fatalf("deleting session: %v", err)
-	}
-	if _, err := pg.Exec(`
+	)
+	require.NoError(t, err, "deleting session")
+	_, err = pg.Exec(`
 		INSERT INTO sessions
 			(id, machine, project, agent, first_message,
 			 started_at, ended_at, message_count,
@@ -373,26 +558,23 @@ func seedActivitySession(
 			 '2026-03-26T10:00:00Z'::timestamptz,
 			 '2026-03-26T11:00:00Z'::timestamptz,
 			 $2, 0)
-	`, sid, len(msgs)); err != nil {
-		t.Fatalf("inserting session: %v", err)
-	}
+	`, sid, len(msgs))
+	require.NoError(t, err, "inserting session")
 
 	for _, m := range msgs {
 		var tsVal interface{} = nil
 		if m.ts != "" {
 			tsVal = m.ts
 		}
-		if _, err := pg.Exec(`
+		_, err := pg.Exec(`
 			INSERT INTO messages
 				(session_id, ordinal, role, content,
 				 timestamp, content_length, is_system)
 			VALUES ($1, $2, $3, $4,
 				$5::timestamptz, $6, $7)
 		`, sid, m.ordinal, m.role, m.content,
-			tsVal, len(m.content), m.system); err != nil {
-			t.Fatalf("inserting message ord=%d: %v",
-				m.ordinal, err)
-		}
+			tsVal, len(m.content), m.system)
+		require.NoError(t, err, "inserting message ord=%d", m.ordinal)
 	}
 }
 
@@ -401,9 +583,7 @@ func TestStoreGetSessionActivity(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-activity"
@@ -426,44 +606,22 @@ func TestStoreGetSessionActivity(t *testing.T) {
 
 	ctx := context.Background()
 	resp, err := store.GetSessionActivity(ctx, sid)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
+	require.NoError(t, err, "GetSessionActivity")
 
-	if resp.IntervalSeconds != 60 {
-		t.Errorf("interval = %d, want 60",
-			resp.IntervalSeconds)
-	}
-
-	if resp.TotalMessages != 7 {
-		t.Errorf("total = %d, want 7",
-			resp.TotalMessages)
-	}
-
-	if len(resp.Buckets) < 28 {
-		t.Errorf("bucket count = %d, want >= 28",
-			len(resp.Buckets))
-	}
+	assert.Equal(t, int64(60), resp.IntervalSeconds)
+	assert.Equal(t, 7, resp.TotalMessages)
+	assert.GreaterOrEqual(t, len(resp.Buckets), 28, "bucket count")
 
 	first := resp.Buckets[0]
-	if first.UserCount != 1 || first.AssistantCount != 1 {
-		t.Errorf("first bucket: user=%d asst=%d, want 1,1",
-			first.UserCount, first.AssistantCount)
-	}
-	if first.FirstOrdinal == nil || *first.FirstOrdinal != 0 {
-		t.Errorf("first bucket first_ordinal: got %v, want 0",
-			first.FirstOrdinal)
-	}
+	assert.Equal(t, 1, first.UserCount)
+	assert.Equal(t, 1, first.AssistantCount)
+	require.NotNil(t, first.FirstOrdinal)
+	assert.Equal(t, 0, *first.FirstOrdinal)
 
 	mid := resp.Buckets[15]
-	if mid.UserCount != 0 || mid.AssistantCount != 0 {
-		t.Errorf("mid bucket: user=%d asst=%d, want 0,0",
-			mid.UserCount, mid.AssistantCount)
-	}
-	if mid.FirstOrdinal != nil {
-		t.Errorf("mid bucket first_ordinal: got %v, want nil",
-			mid.FirstOrdinal)
-	}
+	assert.Equal(t, 0, mid.UserCount)
+	assert.Equal(t, 0, mid.AssistantCount)
+	assert.Nil(t, mid.FirstOrdinal)
 }
 
 func TestStoreGetSessionActivity_NoMessages(t *testing.T) {
@@ -471,9 +629,7 @@ func TestStoreGetSessionActivity_NoMessages(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-activity-empty"
@@ -482,13 +638,8 @@ func TestStoreGetSessionActivity_NoMessages(t *testing.T) {
 	resp, err := store.GetSessionActivity(
 		context.Background(), sid,
 	)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
-	if len(resp.Buckets) != 0 {
-		t.Errorf("buckets = %d, want 0",
-			len(resp.Buckets))
-	}
+	require.NoError(t, err, "GetSessionActivity")
+	assert.Empty(t, resp.Buckets)
 }
 
 func TestStoreGetSessionActivity_NullTimestamps(
@@ -498,9 +649,7 @@ func TestStoreGetSessionActivity_NullTimestamps(
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-activity-nullts"
@@ -518,17 +667,9 @@ func TestStoreGetSessionActivity_NullTimestamps(
 	resp, err := store.GetSessionActivity(
 		context.Background(), sid,
 	)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
-	if len(resp.Buckets) != 0 {
-		t.Errorf("buckets = %d, want 0",
-			len(resp.Buckets))
-	}
-	if resp.TotalMessages != 2 {
-		t.Errorf("total = %d, want 2",
-			resp.TotalMessages)
-	}
+	require.NoError(t, err, "GetSessionActivity")
+	assert.Empty(t, resp.Buckets)
+	assert.Equal(t, 2, resp.TotalMessages)
 }
 
 func TestStoreGetSessionActivity_SingleMessage(
@@ -538,9 +679,7 @@ func TestStoreGetSessionActivity_SingleMessage(
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-activity-single"
@@ -557,17 +696,9 @@ func TestStoreGetSessionActivity_SingleMessage(
 	resp, err := store.GetSessionActivity(
 		context.Background(), sid,
 	)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
-	if len(resp.Buckets) != 1 {
-		t.Fatalf("buckets = %d, want 1",
-			len(resp.Buckets))
-	}
-	if resp.Buckets[0].UserCount != 1 {
-		t.Errorf("user count = %d, want 1",
-			resp.Buckets[0].UserCount)
-	}
+	require.NoError(t, err, "GetSessionActivity")
+	require.Len(t, resp.Buckets, 1)
+	assert.Equal(t, 1, resp.Buckets[0].UserCount)
 }
 
 func TestStoreGetSessionActivity_PrefixInjectedExcluded(
@@ -577,9 +708,7 @@ func TestStoreGetSessionActivity_PrefixInjectedExcluded(
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-activity-prefix"
@@ -599,34 +728,23 @@ func TestStoreGetSessionActivity_PrefixInjectedExcluded(
 
 	ctx := context.Background()
 	resp, err := store.GetSessionActivity(ctx, sid)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
+	require.NoError(t, err, "GetSessionActivity")
 
 	// The prefix-detected message should be excluded from
 	// buckets but still count toward TotalMessages.
-	if resp.TotalMessages != 3 {
-		t.Errorf("total = %d, want 3",
-			resp.TotalMessages)
-	}
+	assert.Equal(t, 3, resp.TotalMessages)
 
 	// Only ordinals 0 and 1 should appear in buckets.
 	totalBucketed := 0
 	for _, b := range resp.Buckets {
 		totalBucketed += b.UserCount + b.AssistantCount
 	}
-	if totalBucketed != 2 {
-		t.Errorf("bucketed messages = %d, want 2",
-			totalBucketed)
-	}
+	assert.Equal(t, 2, totalBucketed)
 
 	// The excluded message at 10:01:00 must not extend the
 	// timestamp range. With only 10:00:00-10:00:30 visible,
 	// a single bucket should cover the entire span.
-	if len(resp.Buckets) != 1 {
-		t.Errorf("bucket count = %d, want 1",
-			len(resp.Buckets))
-	}
+	assert.Len(t, resp.Buckets, 1)
 }
 
 func TestStoreGetSessionActivity_FractionalTimestamps(
@@ -636,9 +754,7 @@ func TestStoreGetSessionActivity_FractionalTimestamps(
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	sid := "store-test-frac-ts"
@@ -656,41 +772,19 @@ func TestStoreGetSessionActivity_FractionalTimestamps(
 
 	ctx := context.Background()
 	resp, err := store.GetSessionActivity(ctx, sid)
-	if err != nil {
-		t.Fatalf("GetSessionActivity: %v", err)
-	}
+	require.NoError(t, err, "GetSessionActivity")
 
-	if resp.IntervalSeconds != 60 {
-		t.Fatalf(
-			"interval = %d, want 60",
-			resp.IntervalSeconds,
-		)
-	}
-
-	if len(resp.Buckets) < 2 {
-		t.Fatalf(
-			"buckets = %d, want >= 2",
-			len(resp.Buckets),
-		)
-	}
+	require.Equal(t, int64(60), resp.IntervalSeconds)
+	require.GreaterOrEqual(t, len(resp.Buckets), 2)
 
 	// First bucket should have both sub-second messages.
 	first := resp.Buckets[0]
-	if first.UserCount != 1 || first.AssistantCount != 1 {
-		t.Errorf(
-			"first bucket: user=%d asst=%d, want 1,1",
-			first.UserCount, first.AssistantCount,
-		)
-	}
+	assert.Equal(t, 1, first.UserCount)
+	assert.Equal(t, 1, first.AssistantCount)
 
 	// Second bucket should have the third message.
 	second := resp.Buckets[1]
-	if second.UserCount != 1 {
-		t.Errorf(
-			"second bucket user=%d, want 1",
-			second.UserCount,
-		)
-	}
+	assert.Equal(t, 1, second.UserCount)
 }
 
 func TestStoreAnalyticsSummaryOutputTokenCoverage(
@@ -700,9 +794,7 @@ func TestStoreAnalyticsSummaryOutputTokenCoverage(
 	ensureAnalyticsTokenStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	summary, err := store.GetAnalyticsSummary(
@@ -712,22 +804,9 @@ func TestStoreAnalyticsSummaryOutputTokenCoverage(
 			To:   "2026-03-13",
 		},
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsSummary: %v", err)
-	}
-
-	if summary.TotalOutputTokens != 1800 {
-		t.Errorf(
-			"TotalOutputTokens = %d, want 1800",
-			summary.TotalOutputTokens,
-		)
-	}
-	if summary.TokenReportingSessions != 3 {
-		t.Errorf(
-			"TokenReportingSessions = %d, want 3",
-			summary.TokenReportingSessions,
-		)
-	}
+	require.NoError(t, err, "GetAnalyticsSummary")
+	assert.Equal(t, 1800, summary.TotalOutputTokens)
+	assert.Equal(t, 3, summary.TokenReportingSessions)
 }
 
 func TestStoreAnalyticsHeatmapOutputTokens(t *testing.T) {
@@ -735,9 +814,7 @@ func TestStoreAnalyticsHeatmapOutputTokens(t *testing.T) {
 	ensureAnalyticsTokenStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	heatmap, err := store.GetAnalyticsHeatmap(
@@ -748,36 +825,14 @@ func TestStoreAnalyticsHeatmapOutputTokens(t *testing.T) {
 		},
 		"output_tokens",
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsHeatmap: %v", err)
-	}
+	require.NoError(t, err, "GetAnalyticsHeatmap")
 
-	if heatmap.Metric != "output_tokens" {
-		t.Fatalf(
-			"Metric = %q, want %q",
-			heatmap.Metric, "output_tokens",
-		)
-	}
-	if len(heatmap.Entries) != 2 {
-		t.Fatalf(
-			"len(Entries) = %d, want 2",
-			len(heatmap.Entries),
-		)
-	}
-	if heatmap.Entries[0].Date != "2026-03-12" ||
-		heatmap.Entries[0].Value != 1500 {
-		t.Errorf(
-			"Entries[0] = %+v, want date 2026-03-12 value 1500",
-			heatmap.Entries[0],
-		)
-	}
-	if heatmap.Entries[1].Date != "2026-03-13" ||
-		heatmap.Entries[1].Value != 300 {
-		t.Errorf(
-			"Entries[1] = %+v, want date 2026-03-13 value 300",
-			heatmap.Entries[1],
-		)
-	}
+	assert.Equal(t, "output_tokens", heatmap.Metric)
+	require.Len(t, heatmap.Entries, 2)
+	assert.Equal(t, "2026-03-12", heatmap.Entries[0].Date)
+	assert.Equal(t, 1500, heatmap.Entries[0].Value)
+	assert.Equal(t, "2026-03-13", heatmap.Entries[1].Date)
+	assert.Equal(t, 300, heatmap.Entries[1].Value)
 }
 
 func TestStoreAnalyticsTopSessionsOutputTokens(
@@ -787,9 +842,7 @@ func TestStoreAnalyticsTopSessionsOutputTokens(
 	ensureAnalyticsTokenStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	top, err := store.GetAnalyticsTopSessions(
@@ -800,36 +853,15 @@ func TestStoreAnalyticsTopSessionsOutputTokens(
 		},
 		"output_tokens",
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsTopSessions: %v", err)
-	}
+	require.NoError(t, err, "GetAnalyticsTopSessions")
 
-	if top.Metric != "output_tokens" {
-		t.Fatalf(
-			"Metric = %q, want %q",
-			top.Metric, "output_tokens",
-		)
-	}
-	if len(top.Sessions) != 3 {
-		t.Fatalf(
-			"len(Sessions) = %d, want 3",
-			len(top.Sessions),
-		)
-	}
-	if top.Sessions[0].ID != "pg-token-001" ||
-		top.Sessions[0].OutputTokens != 900 {
-		t.Errorf(
-			"Sessions[0] = %+v, want pg-token-001 with 900 output tokens",
-			top.Sessions[0],
-		)
-	}
+	assert.Equal(t, "output_tokens", top.Metric)
+	require.Len(t, top.Sessions, 3)
+	assert.Equal(t, "pg-token-001", top.Sessions[0].ID)
+	assert.Equal(t, 900, top.Sessions[0].OutputTokens)
 	for _, session := range top.Sessions {
-		if session.ID == "pg-token-missing" {
-			t.Fatalf(
-				"session without token coverage was included: %+v",
-				session,
-			)
-		}
+		assert.NotEqual(t, "pg-token-missing", session.ID,
+			"session without token coverage was included: %+v", session)
 	}
 }
 
@@ -837,32 +869,13 @@ func TestStoreWriteMethodsReturnReadOnly(t *testing.T) {
 	pgURL := testPGURL(t)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	tests := []struct {
 		name string
 		fn   func() error
 	}{
-		{"StarSession", func() error {
-			_, err := store.StarSession("x")
-			return err
-		}},
-		{"UnstarSession", func() error {
-			return store.UnstarSession("x")
-		}},
-		{"BulkStarSessions", func() error {
-			return store.BulkStarSessions([]string{"x"})
-		}},
-		{"PinMessage", func() error {
-			_, err := store.PinMessage("x", 1, nil)
-			return err
-		}},
-		{"UnpinMessage", func() error {
-			return store.UnpinMessage("x", 1)
-		}},
 		{"InsertInsight", func() error {
 			_, err := store.InsertInsight(db.Insight{})
 			return err
@@ -901,10 +914,7 @@ func TestStoreWriteMethodsReturnReadOnly(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.fn()
-			if err != db.ErrReadOnly {
-				t.Errorf("got %v, want ErrReadOnly", err)
-			}
+			assert.Equal(t, db.ErrReadOnly, tt.fn())
 		})
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -26,15 +29,11 @@ func TestPushThinkingText_SanitizesNullAndInvalidUTF8(t *testing.T) {
 		"thinking-test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	started := time.Now().UTC().Format(time.RFC3339)
 	first := "hello"
@@ -47,48 +46,33 @@ func TestPushThinkingText_SanitizesNullAndInvalidUTF8(t *testing.T) {
 		StartedAt:    &started,
 		MessageCount: 1,
 	}
-	if err := local.UpsertSession(sess); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
+	require.NoError(t, local.UpsertSession(sess), "upsert")
 
 	// Message whose thinking_text contains a NUL byte and a
 	// truncated multi-byte UTF-8 sequence. Before the fix the
 	// insert would fail with "invalid byte sequence".
 	thinking := "plan\x00step\xe2"
-	if err := local.InsertMessages([]db.Message{{
+	require.NoError(t, local.InsertMessages([]db.Message{{
 		SessionID:    "think-1",
 		Ordinal:      0,
 		Role:         "assistant",
 		Content:      "ok",
 		ThinkingText: thinking,
 		HasThinking:  true,
-	}}); err != nil {
-		t.Fatalf("insert local message: %v", err)
-	}
+	}}), "insert local message")
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	store, err := NewStore(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	msgs, err := store.GetMessages(ctx, "think-1", 0, 10, true)
-	if err != nil {
-		t.Fatalf("GetMessages: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("got %d messages, want 1", len(msgs))
-	}
+	require.NoError(t, err, "GetMessages")
+	require.Len(t, msgs, 1)
 	// NUL bytes and invalid UTF-8 must be stripped; the
 	// remaining text stays intact and in order.
-	if got, want := msgs[0].ThinkingText, "planstep"; got != want {
-		t.Errorf(
-			"ThinkingText = %q, want %q (sanitize skipped?)",
-			got, want,
-		)
-	}
+	assert.Equal(t, "planstep", msgs[0].ThinkingText,
+		"sanitize skipped?")
 }

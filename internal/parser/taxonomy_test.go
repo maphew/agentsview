@@ -1,6 +1,10 @@
 package parser
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestNormalizeToolCategory(t *testing.T) {
 	tests := []struct {
@@ -111,12 +115,8 @@ func TestNormalizeToolCategory(t *testing.T) {
 		}
 		t.Run(testName, func(t *testing.T) {
 			got := NormalizeToolCategory(tt.toolName)
-			if got != tt.want {
-				t.Errorf(
-					"NormalizeToolCategory(%q) = %q, want %q",
-					tt.toolName, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got,
+				"NormalizeToolCategory(%q)", tt.toolName)
 		})
 	}
 }

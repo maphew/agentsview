@@ -21,25 +21,16 @@ import (
 )
 
 const (
-	githubAPIURL     = "https://api.github.com/repos/wesm/agentsview/releases/latest"
-	cacheFileName    = "update_check.json"
-	cacheDuration    = 1 * time.Hour
-	devCacheDuration = 15 * time.Minute
+	// githubLatestReleaseURL is the HTML endpoint that 302-redirects to
+	// /releases/tag/<tag>. Unlike api.github.com it is not rate-limited
+	// at 60 req/hr per IP for unauthenticated callers.
+	githubLatestReleaseURL    = "https://github.com/kenn-io/agentsview/releases/latest"
+	githubReleaseDownloadBase = "https://github.com/kenn-io/agentsview/releases/download"
+	updateUserAgent           = "agentsview-update"
+	cacheFileName             = "update_check.json"
+	cacheDuration             = 1 * time.Hour
+	devCacheDuration          = 15 * time.Minute
 )
-
-// Release represents a GitHub release.
-type Release struct {
-	TagName string  `json:"tag_name"`
-	Body    string  `json:"body"`
-	Assets  []Asset `json:"assets"`
-}
-
-// Asset represents a release asset.
-type Asset struct {
-	Name               string `json:"name"`
-	Size               int64  `json:"size"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}
 
 // UpdateInfo contains information about an available update.
 type UpdateInfo struct {
@@ -59,22 +50,6 @@ type UpdateInfo struct {
 // and lacks the download URL/checksum needed for an install.
 func (u *UpdateInfo) NeedsRefetch() bool {
 	return u.cacheOnly
-}
-
-// findAssets locates the platform binary and checksums file.
-func findAssets(
-	assets []Asset, assetName string,
-) (asset *Asset, checksumsAsset *Asset) {
-	for i := range assets {
-		a := &assets[i]
-		if a.Name == assetName {
-			asset = a
-		}
-		if a.Name == "SHA256SUMS" || a.Name == "checksums.txt" {
-			checksumsAsset = a
-		}
-	}
-	return asset, checksumsAsset
 }
 
 type cachedCheck struct {
@@ -100,14 +75,14 @@ func CheckForUpdate(
 		}
 	}
 
-	release, err := fetchLatestRelease()
+	tag, err := resolveLatestTag(githubLatestReleaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
 
-	saveCache(release.TagName, cacheDir)
+	saveCache(tag, cacheDir)
 
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	latestVersion := strings.TrimPrefix(tag, "v")
 
 	if !isDevBuild && !isNewer(latestVersion, cleanVersion) {
 		return nil, nil
@@ -121,30 +96,32 @@ func CheckForUpdate(
 		"agentsview_%s_%s_%s%s",
 		latestVersion, runtime.GOOS, runtime.GOARCH, ext,
 	)
-	asset, checksumsAsset := findAssets(release.Assets, assetName)
-	if asset == nil {
+	downloadURL := fmt.Sprintf(
+		"%s/%s/%s", githubReleaseDownloadBase, tag, assetName,
+	)
+	checksumsURL := fmt.Sprintf(
+		"%s/%s/SHA256SUMS", githubReleaseDownloadBase, tag,
+	)
+
+	// HEAD the asset to confirm it exists for this platform. The previous
+	// API-based code returned "no release asset for OS/ARCH" up front; now
+	// that we construct the URL ourselves, we have to verify it resolves.
+	size, err := fetchContentLength(downloadURL)
+	if err != nil {
 		return nil, fmt.Errorf(
-			"no release asset for %s/%s",
-			runtime.GOOS, runtime.GOARCH,
+			"no release asset for %s/%s: %w",
+			runtime.GOOS, runtime.GOARCH, err,
 		)
 	}
 
-	var checksum string
-	if checksumsAsset != nil {
-		checksum, _ = fetchChecksumFromFile(
-			checksumsAsset.BrowserDownloadURL, assetName,
-		)
-	}
-	if checksum == "" {
-		checksum = extractChecksum(release.Body, assetName)
-	}
+	checksum, _ := fetchChecksumFromFile(checksumsURL, assetName)
 
 	return &UpdateInfo{
 		CurrentVersion: currentVersion,
-		LatestVersion:  release.TagName,
-		DownloadURL:    asset.BrowserDownloadURL,
-		AssetName:      asset.Name,
-		Size:           asset.Size,
+		LatestVersion:  tag,
+		DownloadURL:    downloadURL,
+		AssetName:      assetName,
+		Size:           size,
 		Checksum:       checksum,
 		IsDevBuild:     isDevBuild,
 	}, nil
@@ -358,34 +335,81 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	return true, nil
 }
 
-func fetchLatestRelease() (*Release, error) {
-	req, err := http.NewRequest("GET", githubAPIURL, nil)
-	if err != nil {
-		return nil, err
+// resolveLatestTag follows the /releases/latest 302 redirect to
+// /releases/tag/<tag> and returns the tag. Using the HTML endpoint
+// avoids api.github.com's 60-req/hr unauthenticated rate limit.
+func resolveLatestTag(url string) (string, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	req.Header.Set(
-		"Accept", "application/vnd.github.v3+json",
-	)
-	req.Header.Set("User-Agent", "agentsview-update")
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", updateUserAgent)
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return "", fmt.Errorf(
+			"expected redirect from %s, got %s", url, resp.Status,
+		)
+	}
+
+	loc, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("read Location header: %w", err)
+	}
+
+	const marker = "/releases/tag/"
+	idx := strings.Index(loc.Path, marker)
+	if idx < 0 {
+		return "", fmt.Errorf(
+			"unexpected redirect target %q", loc.String(),
+		)
+	}
+	tag := loc.Path[idx+len(marker):]
+	if tag == "" {
+		return "", fmt.Errorf(
+			"empty tag in redirect target %q", loc.String(),
+		)
+	}
+	return tag, nil
+}
+
+// fetchContentLength does a HEAD request and returns the Content-Length
+// of the eventual asset (following redirects to the S3 backend).
+// Returns 0 if the size can't be determined; callers degrade gracefully.
+func fetchContentLength(url string) (int64, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", updateUserAgent)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"GitHub API returned %s", resp.Status,
+		return 0, fmt.Errorf(
+			"HEAD %s returned %s", url, resp.Status,
 		)
 	}
-
-	var release Release
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, err
+	if resp.ContentLength < 0 {
+		return 0, nil
 	}
-	return &release, nil
+	return resp.ContentLength, nil
 }
 
 func downloadFile(

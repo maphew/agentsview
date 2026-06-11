@@ -19,12 +19,14 @@ const (
 	copilotEventToolComplete    = "tool.execution_complete"
 	copilotEventAssistantReason = "assistant.reasoning"
 	copilotEventModelChange     = "session.model_change"
+	copilotEventSessionShutdown = "session.shutdown"
 )
 
 // copilotSessionBuilder accumulates state while scanning a
 // Copilot JSONL session file line by line.
 type copilotSessionBuilder struct {
 	messages     []ParsedMessage
+	usageEvents  []ParsedUsageEvent
 	firstMessage string
 	startedAt    time.Time
 	endedAt      time.Time
@@ -65,8 +67,10 @@ func (b *copilotSessionBuilder) processLine(line string) {
 		b.handleAssistantReasoning()
 	case copilotEventModelChange:
 		if v := data.Get("newModel"); v.Exists() {
-			b.currentModel = v.Str
+			b.currentModel = normalizeCopilotModel(v.Str)
 		}
+	case copilotEventSessionShutdown:
+		b.handleShutdown(data, ts)
 	}
 }
 
@@ -176,16 +180,21 @@ func (b *copilotSessionBuilder) handleAssistantMessage(
 		return
 	}
 
+	outputTokens := int(data.Get("outputTokens").Int())
+	hasOutputTokens := data.Get("outputTokens").Exists()
+
 	b.messages = append(b.messages, ParsedMessage{
-		Ordinal:       b.ordinal,
-		Role:          RoleAssistant,
-		Content:       displayContent,
-		Timestamp:     ts,
-		HasThinking:   hasThinking,
-		HasToolUse:    hasToolUse,
-		ContentLength: len(displayContent),
-		ToolCalls:     toolCalls,
-		Model:         b.currentModel,
+		Ordinal:         b.ordinal,
+		Role:            RoleAssistant,
+		Content:         displayContent,
+		Timestamp:       ts,
+		HasThinking:     hasThinking,
+		HasToolUse:      hasToolUse,
+		ContentLength:   len(displayContent),
+		ToolCalls:       toolCalls,
+		Model:           b.currentModel,
+		OutputTokens:    outputTokens,
+		HasOutputTokens: hasOutputTokens,
 	})
 	b.ordinal++
 }
@@ -230,6 +239,45 @@ func (b *copilotSessionBuilder) handleAssistantReasoning() {
 	}
 }
 
+// handleShutdown extracts per-model token usage from the
+// session.shutdown event's modelMetrics field.
+func (b *copilotSessionBuilder) handleShutdown(
+	data gjson.Result, ts time.Time,
+) {
+	occurredAt := timeString(ts, b.startedAt)
+	data.Get("modelMetrics").ForEach(
+		func(modelKey, metrics gjson.Result) bool {
+			usage := metrics.Get("usage")
+			totalInput := int(usage.Get("inputTokens").Int())
+			cacheRead := int(usage.Get("cacheReadTokens").Int())
+			cacheWrite := int(usage.Get("cacheWriteTokens").Int())
+			output := int(usage.Get("outputTokens").Int())
+			reasoning := int(usage.Get("reasoningTokens").Int())
+
+			// Fresh input = total - cache_read - cache_write.
+			freshInput := max(totalInput-cacheRead-cacheWrite, 0)
+
+			if freshInput == 0 && output == 0 &&
+				cacheRead == 0 && cacheWrite == 0 &&
+				reasoning == 0 {
+				return true
+			}
+
+			b.usageEvents = append(b.usageEvents, ParsedUsageEvent{
+				Source:                   "shutdown",
+				Model:                    normalizeCopilotModel(modelKey.Str),
+				InputTokens:              freshInput,
+				OutputTokens:             output,
+				CacheCreationInputTokens: cacheWrite,
+				CacheReadInputTokens:     cacheRead,
+				ReasoningTokens:          reasoning,
+				OccurredAt:               occurredAt,
+			})
+			return true
+		},
+	)
+}
+
 func formatCopilotToolCalls(
 	calls []ParsedToolCall,
 ) string {
@@ -239,6 +287,20 @@ func formatCopilotToolCalls(
 			formatToolHeader(tc.Category, tc.ToolName))
 	}
 	return strings.Join(parts, "\n")
+}
+
+// normalizeCopilotModel converts the model identifier used in
+// Copilot session events to the form used in the pricing catalog.
+// Claude model IDs use dots in version numbers in Copilot events
+// (e.g. "claude-sonnet-4.6") but hyphens in the pricing catalog
+// (e.g. "claude-sonnet-4-6"). Other model families such as GPT
+// already use dots in the catalog (e.g. "gpt-5.4"), so only
+// claude-prefixed names are normalized.
+func normalizeCopilotModel(model string) string {
+	if strings.HasPrefix(model, "claude-") {
+		return strings.ReplaceAll(model, ".", "-")
+	}
+	return model
 }
 
 // readCopilotWorkspaceName reads the session name from the
@@ -272,22 +334,22 @@ func readCopilotWorkspaceName(eventsPath string) string {
 }
 
 // ParseCopilotSession parses a Copilot JSONL session file.
-// Returns (nil, nil, nil) if the file doesn't exist or
+// Returns (nil, nil, nil, nil) if the file doesn't exist or
 // contains no user/assistant messages.
 func ParseCopilotSession(
 	path, machine string,
-) (*ParsedSession, []ParsedMessage, error) {
+) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return nil, nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -306,7 +368,7 @@ func ParseCopilotSession(
 	}
 
 	if err := lr.Err(); err != nil {
-		return nil, nil,
+		return nil, nil, nil,
 			fmt.Errorf("reading copilot %s: %w", path, err)
 	}
 
@@ -319,7 +381,7 @@ func ParseCopilotSession(
 		}
 	}
 	if !hasContent {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	sessionID := b.sessionID
@@ -360,7 +422,23 @@ func ParseCopilotSession(
 		},
 	}
 
-	return sess, b.messages, nil
+	accumulateMessageTokenUsage(sess, b.messages)
+
+	// Stamp the session ID on usage events (not known until here).
+	// DedupKey encodes the event's position in the slice so that
+	// multi-segment sessions (where the same model appears in
+	// several shutdown events) each get a distinct key.
+	for i := range b.usageEvents {
+		b.usageEvents[i].SessionID = sessionID
+		b.usageEvents[i].DedupKey = fmt.Sprintf(
+			"shutdown:%s:%s:%d",
+			sessionID,
+			b.usageEvents[i].Model,
+			i,
+		)
+	}
+
+	return sess, b.messages, b.usageEvents, nil
 }
 
 // sessionIDFromPath extracts a session ID from a Copilot

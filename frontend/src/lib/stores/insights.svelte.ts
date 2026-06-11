@@ -1,13 +1,16 @@
 import type {
   Insight,
+  InsightsResponse,
   InsightType,
   AgentName,
 } from "../api/types.js";
 import {
-  listInsights,
-  deleteInsight,
+  ApiError as GeneratedApiError,
+  InsightsService,
+} from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
+import {
   generateInsight,
-  ApiError,
   type GenerateInsightHandle,
   type InsightLogEvent,
 } from "../api/client.js";
@@ -74,7 +77,9 @@ class InsightsStore {
     const v = ++this.#version;
     this.loading = true;
     try {
-      const res = await listInsights();
+      configureGeneratedClient();
+      const res =
+        await InsightsService.getApiV1Insights({}) as unknown as InsightsResponse;
       if (this.#version === v) {
         this.items = res.insights;
         if (
@@ -240,9 +245,10 @@ class InsightsStore {
 
   async deleteItem(id: number) {
     try {
-      await deleteInsight(id);
+      configureGeneratedClient();
+      await InsightsService.deleteApiV1InsightsId({ id });
     } catch (e) {
-      if (!(e instanceof ApiError && e.status === 404)) {
+      if (!(e instanceof GeneratedApiError && e.status === 404)) {
         return;
       }
     }

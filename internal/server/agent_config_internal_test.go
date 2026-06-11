@@ -3,6 +3,8 @@ package server
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"go.kenn.io/agentsview/internal/config"
 )
 
@@ -11,7 +13,5 @@ func TestInsightAgentConfigMapsBinaryOverrides(t *testing.T) {
 		"claude": {Binary: "/opt/claude"},
 	})
 
-	if got["claude"].Binary != "/opt/claude" {
-		t.Fatalf("claude binary = %q", got["claude"].Binary)
-	}
+	assert.Equal(t, "/opt/claude", got["claude"].Binary)
 }

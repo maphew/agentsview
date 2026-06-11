@@ -5,7 +5,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,39 +24,7 @@ func newSessionSyncCommand() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if remote, _ := cmd.Flags().GetString("server"); remote != "" {
-				return errors.New("--server not yet implemented")
-			}
-			cfg, err := config.LoadPFlags(cmd.Flags())
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-			tr, err := detectTransport(cfg.DataDir, 0)
-			if err != nil {
-				return err
-			}
-			if tr.Mode == transportHTTP && tr.ReadOnly {
-				return fmt.Errorf(
-					"daemon at %s is read-only (pg serve); cannot sync: "+
-						"stop 'pg serve' and run 'agentsview sync' against "+
-						"the local DB, or start a local daemon",
-					tr.URL,
-				)
-			}
-			if tr.Mode == transportDirect && tr.DirectReadOnly {
-				// A daemon is active but its TCP probe failed.
-				// Opening a writable engine here would race the
-				// daemon for SQLite write ownership, so refuse
-				// rather than compete.
-				return errors.New(
-					"local daemon is active but not responding; " +
-						"refusing to sync directly to avoid competing " +
-						"for write ownership. Retry once the daemon " +
-						"is reachable, or stop it to sync locally",
-				)
-			}
-
-			svc, cleanup, err := syncService(cfg, tr)
+			svc, cleanup, err := resolveWritableService(cmd)
 			if err != nil {
 				return err
 			}

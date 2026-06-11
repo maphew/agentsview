@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
 )
 
@@ -38,32 +40,16 @@ allowed_subnets = ["10.0.0.0/16"]
 [pg]
 url = "postgres://user:pass@db.example.test:5432/agentsview?sslmode=require"
 `), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cfg, _, err := loadPGServeConfigForTest(t)
-	if err != nil {
-		t.Fatalf("loadPGServeConfigForTest: %v", err)
-	}
-	if cfg.PG.URL == "" {
-		t.Fatal("expected PG URL")
-	}
-	if cfg.PublicURL != "" {
-		t.Fatalf("PublicURL = %q, want empty", cfg.PublicURL)
-	}
-	if len(cfg.PublicOrigins) != 0 {
-		t.Fatalf("PublicOrigins = %v, want empty", cfg.PublicOrigins)
-	}
-	if cfg.Proxy.Mode != "" {
-		t.Fatalf("Proxy.Mode = %q, want empty", cfg.Proxy.Mode)
-	}
-	if cfg.Host != "127.0.0.1" {
-		t.Fatalf("Host = %q, want %q", cfg.Host, "127.0.0.1")
-	}
-	if cfg.Port != 8080 {
-		t.Fatalf("Port = %d, want %d", cfg.Port, 8080)
-	}
+	require.NoError(t, err, "loadPGServeConfigForTest")
+	require.NotEmpty(t, cfg.PG.URL, "expected PG URL")
+	assert.Empty(t, cfg.PublicURL, "PublicURL should be empty")
+	assert.Empty(t, cfg.PublicOrigins, "PublicOrigins should be empty")
+	assert.Empty(t, cfg.Proxy.Mode, "Proxy.Mode should be empty")
+	assert.Equal(t, "127.0.0.1", cfg.Host)
+	assert.Equal(t, 8080, cfg.Port)
 }
 
 func TestLoadPGServeConfigIgnoresInvalidPersistedServeSettings(t *testing.T) {
@@ -79,23 +65,13 @@ mode = "bogus"
 [pg]
 url = "postgres://user:pass@db.example.test:5432/agentsview?sslmode=require"
 `), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cfg, _, err := loadPGServeConfigForTest(t)
-	if err != nil {
-		t.Fatalf("loadPGServeConfigForTest: %v", err)
-	}
-	if cfg.PG.URL == "" {
-		t.Fatal("expected PG URL")
-	}
-	if cfg.PublicURL != "" {
-		t.Fatalf("PublicURL = %q, want empty", cfg.PublicURL)
-	}
-	if cfg.Proxy.Mode != "" {
-		t.Fatalf("Proxy.Mode = %q, want empty", cfg.Proxy.Mode)
-	}
+	require.NoError(t, err, "loadPGServeConfigForTest")
+	require.NotEmpty(t, cfg.PG.URL, "expected PG URL")
+	assert.Empty(t, cfg.PublicURL, "PublicURL should be empty")
+	assert.Empty(t, cfg.Proxy.Mode, "Proxy.Mode should be empty")
 }
 
 func TestPGServeConfigAcceptsManagedCaddyFlags(t *testing.T) {
@@ -114,67 +90,20 @@ func TestPGServeConfigAcceptsManagedCaddyFlags(t *testing.T) {
 		"--tls-key", "/tmp/viewer.key",
 		"--allowed-subnet", "10.0.0.0/16",
 	)
-	if err != nil {
-		t.Fatalf("loadPGServeConfigForTest: %v", err)
-	}
-	if cfg.Proxy.Mode != "caddy" {
-		t.Fatalf(
-			"Proxy.Mode = %q, want %q",
-			cfg.Proxy.Mode,
-			"caddy",
-		)
-	}
-	if cfg.PublicURL != "https://viewer.example.test:8443" {
-		t.Fatalf("PublicURL = %q", cfg.PublicURL)
-	}
-	if got := strings.Join(cfg.PublicOrigins, ","); got != "https://app.example.test,https://viewer.example.test:8443" {
-		t.Fatalf(
-			"PublicOrigins = %q, want %q",
-			got,
-			"https://app.example.test,https://viewer.example.test:8443",
-		)
-	}
-	if cfg.Proxy.Bin != "/usr/local/bin/caddy" {
-		t.Fatalf(
-			"Proxy.Bin = %q, want %q",
-			cfg.Proxy.Bin,
-			"/usr/local/bin/caddy",
-		)
-	}
-	if cfg.Proxy.BindHost != "0.0.0.0" {
-		t.Fatalf(
-			"Proxy.BindHost = %q, want %q",
-			cfg.Proxy.BindHost,
-			"0.0.0.0",
-		)
-	}
-	if cfg.Proxy.PublicPort != 8443 {
-		t.Fatalf("Proxy.PublicPort = %d, want %d", cfg.Proxy.PublicPort, 8443)
-	}
-	if cfg.Proxy.TLSCert != "/tmp/viewer.crt" {
-		t.Fatalf(
-			"Proxy.TLSCert = %q, want %q",
-			cfg.Proxy.TLSCert,
-			"/tmp/viewer.crt",
-		)
-	}
-	if cfg.Proxy.TLSKey != "/tmp/viewer.key" {
-		t.Fatalf(
-			"Proxy.TLSKey = %q, want %q",
-			cfg.Proxy.TLSKey,
-			"/tmp/viewer.key",
-		)
-	}
-	if got := strings.Join(cfg.Proxy.AllowedSubnets, ","); got != "10.0.0.0/16" {
-		t.Fatalf(
-			"Proxy.AllowedSubnets = %q, want %q",
-			got,
-			"10.0.0.0/16",
-		)
-	}
-	if basePath != "" {
-		t.Fatalf("basePath = %q, want empty", basePath)
-	}
+	require.NoError(t, err, "loadPGServeConfigForTest")
+	assert.Equal(t, "caddy", cfg.Proxy.Mode)
+	assert.Equal(t, "https://viewer.example.test:8443", cfg.PublicURL)
+	assert.Equal(t,
+		"https://app.example.test,https://viewer.example.test:8443",
+		strings.Join(cfg.PublicOrigins, ","))
+	assert.Equal(t, "/usr/local/bin/caddy", cfg.Proxy.Bin)
+	assert.Equal(t, "0.0.0.0", cfg.Proxy.BindHost)
+	assert.Equal(t, 8443, cfg.Proxy.PublicPort)
+	assert.Equal(t, "/tmp/viewer.crt", cfg.Proxy.TLSCert)
+	assert.Equal(t, "/tmp/viewer.key", cfg.Proxy.TLSKey)
+	assert.Equal(t, "10.0.0.0/16",
+		strings.Join(cfg.Proxy.AllowedSubnets, ","))
+	assert.Empty(t, basePath, "basePath should be empty")
 }
 
 func TestRunPGServeRejectsInvalidManagedCaddyConfigBeforePGSetup(t *testing.T) {
@@ -192,12 +121,8 @@ func TestRunPGServeRejectsInvalidManagedCaddyConfigBeforePGSetup(t *testing.T) {
 		"AGENTSVIEW_DATA_DIR="+dataDir,
 	)
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("runPGServe unexpectedly succeeded")
-	}
-	if !strings.Contains(string(out), "loopback backend host") {
-		t.Fatalf("output = %s", out)
-	}
+	require.Error(t, err, "runPGServe unexpectedly succeeded")
+	assert.Contains(t, string(out), "loopback backend host")
 }
 
 func TestRunPGServeNonLoopbackWithoutProxyFallsThroughToPGConfig(t *testing.T) {
@@ -213,16 +138,11 @@ func TestRunPGServeNonLoopbackWithoutProxyFallsThroughToPGConfig(t *testing.T) {
 		"AGENTSVIEW_DATA_DIR="+dataDir,
 	)
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("runPGServe unexpectedly succeeded")
-	}
+	require.Error(t, err, "runPGServe unexpectedly succeeded")
 	output := string(out)
-	if strings.Contains(output, "invalid serve config") {
-		t.Fatalf("unexpected serve validation failure: %s", output)
-	}
-	if !strings.Contains(output, "pg serve: url not configured") {
-		t.Fatalf("output = %s", output)
-	}
+	assert.NotContains(t, output, "invalid serve config",
+		"unexpected serve validation failure")
+	assert.Contains(t, output, "pg serve: url not configured")
 }
 
 func TestRunPGServeHelperProcess(t *testing.T) {
@@ -238,17 +158,11 @@ func TestRunPGServeHelperProcess(t *testing.T) {
 			break
 		}
 	}
-	if sep == -1 {
-		t.Fatal("missing argument separator")
-	}
+	require.NotEqual(t, -1, sep, "missing argument separator")
 
 	cmd := newPGServeCommand()
-	if err := cmd.Flags().Parse(args[sep+1:]); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Flags().Parse(args[sep+1:]))
 	cfg, basePath, err := loadPGServeConfig(cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	runPGServe(cfg, basePath)
 }

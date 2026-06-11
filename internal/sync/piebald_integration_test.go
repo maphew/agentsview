@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -18,9 +20,7 @@ func createPiebaldDB(t *testing.T, dir string) *piebaldTestDB {
 	t.Helper()
 	path := filepath.Join(dir, "app.db")
 	d, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatalf("opening piebald test db: %v", err)
-	}
+	require.NoError(t, err, "opening piebald test db")
 	t.Cleanup(func() { d.Close() })
 
 	schema := `
@@ -90,17 +90,15 @@ func createPiebaldDB(t *testing.T, dir string) *piebaldTestDB {
 			sub_agent_chat_id INTEGER
 		);
 	`
-	if _, err := d.Exec(schema); err != nil {
-		t.Fatalf("creating piebald schema: %v", err)
-	}
+	_, err = d.Exec(schema)
+	require.NoError(t, err, "creating piebald schema")
 	return &piebaldTestDB{path: path, db: d}
 }
 
 func (p *piebaldTestDB) mustExec(t *testing.T, msg, query string, args ...any) {
 	t.Helper()
-	if _, err := p.db.Exec(query, args...); err != nil {
-		t.Fatalf("%s: %v", msg, err)
-	}
+	_, err := p.db.Exec(query, args...)
+	require.NoError(t, err, msg)
 }
 
 func (p *piebaldTestDB) addChat(t *testing.T, id int64, title, prompt, answer, updatedAt string) {
@@ -192,21 +190,16 @@ func TestSyncSingleSessionPiebaldFork(t *testing.T) {
 	piebald := createPiebaldDB(t, env.piebaldDir)
 	piebald.addChatWithFork(t, 42)
 
-	if err := env.engine.SyncSingleSession("piebald:42-200"); err != nil {
-		t.Fatalf("SyncSingleSession(fork): %v", err)
-	}
+	require.NoError(t, env.engine.SyncSingleSession("piebald:42-200"), "SyncSingleSession(fork)")
 	assertSessionMessageCount(t, env.db, "piebald:42-200", 2)
 	assertSessionMessageCount(t, env.db, "piebald:42", 4)
 
 	src := env.engine.FindSourceFile("piebald:42-200")
 	wantSrc := filepath.Join(env.piebaldDir, "app.db")
-	if src != wantSrc {
-		t.Fatalf("FindSourceFile(fork) = %q, want %q", src, wantSrc)
-	}
+	assert.Equal(t, wantSrc, src)
 
-	if mtime := env.engine.SourceMtime("piebald:42-200"); mtime == 0 {
-		t.Fatal("SourceMtime(fork) returned zero")
-	}
+	mtime := env.engine.SourceMtime("piebald:42-200")
+	assert.NotZero(t, mtime, "SourceMtime(fork) returned zero")
 }
 
 func TestSyncSingleSessionPiebaldUnknownFork(t *testing.T) {
@@ -214,15 +207,12 @@ func TestSyncSingleSessionPiebaldUnknownFork(t *testing.T) {
 	piebald := createPiebaldDB(t, env.piebaldDir)
 	piebald.addChatWithFork(t, 42)
 
-	if err := env.engine.SyncSingleSession("piebald:42-999"); err == nil {
-		t.Fatal("SyncSingleSession(piebald:42-999) returned nil; want not-found error")
-	}
-	if src := env.engine.FindSourceFile("piebald:42-999"); src != "" {
-		t.Fatalf("FindSourceFile(piebald:42-999) = %q, want empty", src)
-	}
-	if mtime := env.engine.SourceMtime("piebald:42-999"); mtime != 0 {
-		t.Fatalf("SourceMtime(piebald:42-999) = %d, want 0", mtime)
-	}
+	err := env.engine.SyncSingleSession("piebald:42-999")
+	require.Error(t, err, "SyncSingleSession(piebald:42-999) returned nil; want not-found error")
+	src := env.engine.FindSourceFile("piebald:42-999")
+	assert.Empty(t, src, "FindSourceFile(piebald:42-999)")
+	mtime := env.engine.SourceMtime("piebald:42-999")
+	assert.Zero(t, mtime, "SourceMtime(piebald:42-999)")
 }
 
 func TestSyncEnginePiebaldBulkSync(t *testing.T) {
@@ -245,30 +235,20 @@ func TestSyncSingleSessionPiebald(t *testing.T) {
 	piebald := createPiebaldDB(t, env.piebaldDir)
 	piebald.addChat(t, 7, "Single Piebald", "One chat.", "One answer.", "2026-05-01T10:05:00Z")
 
-	if err := env.engine.SyncSingleSession("piebald:7"); err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
-	}
+	require.NoError(t, env.engine.SyncSingleSession("piebald:7"), "SyncSingleSession")
 	assertSessionProject(t, env.db, "piebald:7", "app")
 	assertSessionMessageCount(t, env.db, "piebald:7", 2)
 
 	src := env.engine.FindSourceFile("piebald:7")
 	wantSrc := filepath.Join(env.piebaldDir, "app.db")
-	if src != wantSrc {
-		t.Fatalf("FindSourceFile() = %q, want %q", src, wantSrc)
-	}
+	assert.Equal(t, wantSrc, src)
 
 	mtime := env.engine.SourceMtime("piebald:7")
-	if mtime == 0 {
-		t.Fatal("SourceMtime returned zero")
-	}
+	require.NotZero(t, mtime, "SourceMtime returned zero")
 
 	_, storedMtime, ok := env.db.GetSessionFileInfo("piebald:7")
-	if !ok {
-		t.Fatal("session file info not found")
-	}
-	if storedMtime != mtime {
-		t.Fatalf("stored mtime = %d, want %d", storedMtime, mtime)
-	}
+	require.True(t, ok, "session file info not found")
+	assert.Equal(t, mtime, storedMtime)
 }
 
 func TestSyncPiebaldMultiChatIncremental(t *testing.T) {
@@ -279,9 +259,7 @@ func TestSyncPiebaldMultiChatIncremental(t *testing.T) {
 
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 2, Synced: 2, Skipped: 0})
 	_, storedMtimeA, okA := env.db.GetSessionFileInfo("piebald:1")
-	if !okA {
-		t.Fatal("session A file info not found after initial sync")
-	}
+	require.True(t, okA, "session A file info not found after initial sync")
 
 	piebald.mustExec(t, "update B updated_at",
 		`UPDATE chats SET updated_at = '2026-05-01T10:03:00Z' WHERE id = 2`,
@@ -289,10 +267,6 @@ func TestSyncPiebaldMultiChatIncremental(t *testing.T) {
 
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1, Skipped: 0})
 	_, storedMtimeA2, okA2 := env.db.GetSessionFileInfo("piebald:1")
-	if !okA2 {
-		t.Fatal("session A file info not found after partial sync")
-	}
-	if storedMtimeA != storedMtimeA2 {
-		t.Errorf("A's stored mtime changed: was %d, now %d", storedMtimeA, storedMtimeA2)
-	}
+	require.True(t, okA2, "session A file info not found after partial sync")
+	assert.Equal(t, storedMtimeA, storedMtimeA2, "A's stored mtime changed")
 }

@@ -12,6 +12,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -59,6 +60,41 @@ func TestDirectBackend_List_Empty(t *testing.T) {
 	list, err := svc.List(context.Background(), service.ListFilter{Limit: 10})
 	require.NoError(t, err)
 	assert.Equal(t, 0, list.Total)
+}
+
+func TestDirectBackend_List_HidesStaleSecretIndicators(t *testing.T) {
+	t.Parallel()
+	svc, env := newDirectTestSvc(t)
+	for _, id := range []string{"current", "stale"} {
+		dbtest.SeedSession(t, env.db, id, "proj", func(s *db.Session) {
+			s.MessageCount = 2
+			s.UserMessageCount = 2
+		})
+	}
+	require.NoError(t, env.db.ReplaceSessionSecretFindings(
+		"current", nil, 2, secrets.RulesVersion()))
+	require.NoError(t, env.db.ReplaceSessionSecretFindings(
+		"stale", nil, 1, "old-rules"))
+
+	list, err := svc.List(context.Background(),
+		service.ListFilter{IncludeOneShot: true, Limit: 10})
+	require.NoError(t, err)
+	counts := map[string]int{}
+	for _, s := range list.Sessions {
+		counts[s.ID] = s.SecretLeakCount
+	}
+	require.Equal(t, 2, counts["current"])
+	require.Equal(t, 0, counts["stale"])
+
+	staleDetail, err := svc.Get(context.Background(), "stale")
+	require.NoError(t, err)
+	require.Equal(t, 0, staleDetail.SecretLeakCount)
+
+	hasSecret, err := svc.List(context.Background(),
+		service.ListFilter{IncludeOneShot: true, HasSecret: true, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hasSecret.Sessions, 1)
+	require.Equal(t, "current", hasSecret.Sessions[0].ID)
 }
 
 func TestDirectBackend_List_InvalidDate(t *testing.T) {

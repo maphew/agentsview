@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
@@ -23,9 +26,7 @@ func openTestDB(t *testing.T) *db.DB {
 	d, err := db.Open(
 		filepath.Join(t.TempDir(), "test.db"),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
 	return d
 }
@@ -191,9 +192,8 @@ func TestFilterEmptyMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := pairAndFilter(tt.msgs, nil)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("pairAndFilter() mismatch (-want +got):\n%s", diff)
-			}
+			diff := cmp.Diff(tt.want, got)
+			assert.Empty(t, diff, "pairAndFilter() mismatch (-want +got):\n%s", diff)
 		})
 	}
 }
@@ -253,9 +253,8 @@ func TestPostFilterCounts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			total, user := postFilterCounts(tt.msgs)
 			got := counts{Total: total, User: user}
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("postFilterCounts() mismatch (-want +got):\n%s", diff)
-			}
+			diff := cmp.Diff(tt.want, got)
+			assert.Empty(t, diff, "postFilterCounts() mismatch (-want +got):\n%s", diff)
 		})
 	}
 }
@@ -341,9 +340,8 @@ func TestPairToolResults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pairToolResults(tt.msgs, nil)
-			if diff := cmp.Diff(tt.want, tt.msgs); diff != "" {
-				t.Errorf("pairToolResults() mismatch (-want +got):\n%s", diff)
-			}
+			diff := cmp.Diff(tt.want, tt.msgs)
+			assert.Empty(t, diff, "pairToolResults() mismatch (-want +got):\n%s", diff)
 		})
 	}
 }
@@ -459,9 +457,8 @@ func TestPairToolResultsContent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pairToolResults(tt.msgs, tt.blocked)
-			if diff := cmp.Diff(tt.want, tt.msgs); diff != "" {
-				t.Errorf("pairToolResults() mismatch (-want +got):\n%s", diff)
-			}
+			diff := cmp.Diff(tt.want, tt.msgs)
+			assert.Empty(t, diff, "pairToolResults() mismatch (-want +got):\n%s", diff)
 		})
 	}
 }
@@ -665,9 +662,8 @@ func TestPairToolResultEventSummaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pairToolResultEventSummaries(tt.msgs, tt.blocked)
-			if diff := cmp.Diff(tt.want, tt.msgs); diff != "" {
-				t.Fatalf("pairToolResultEventSummaries() mismatch (-want +got):\n%s", diff)
-			}
+			diff := cmp.Diff(tt.want, tt.msgs)
+			require.Empty(t, diff, "pairToolResultEventSummaries() mismatch (-want +got):\n%s", diff)
 		})
 	}
 }
@@ -771,31 +767,15 @@ func TestApplyRemoteRewrites(t *testing.T) {
 			}
 			e.applyRemoteRewrites(&tt.sess, tt.msgs)
 
-			if tt.sess.ID != tt.wantSessID {
-				t.Errorf(
-					"ID = %q, want %q",
-					tt.sess.ID, tt.wantSessID,
-				)
-			}
-			if diff := cmp.Diff(
-				tt.wantParent, tt.sess.ParentSessionID,
-			); diff != "" {
-				t.Errorf("ParentSessionID %s", diff)
-			}
+			assert.Equal(t, tt.wantSessID, tt.sess.ID)
+			diff := cmp.Diff(tt.wantParent, tt.sess.ParentSessionID)
+			assert.Empty(t, diff, "ParentSessionID %s", diff)
 			if tt.wantFilePath != nil {
-				if diff := cmp.Diff(
-					tt.wantFilePath, tt.sess.FilePath,
-				); diff != "" {
-					t.Errorf("FilePath %s", diff)
-				}
+				diff := cmp.Diff(tt.wantFilePath, tt.sess.FilePath)
+				assert.Empty(t, diff, "FilePath %s", diff)
 			}
 			for _, m := range tt.msgs {
-				if m.SessionID != tt.wantMsgSess {
-					t.Errorf(
-						"msg SessionID = %q, want %q",
-						m.SessionID, tt.wantMsgSess,
-					)
-				}
+				assert.Equal(t, tt.wantMsgSess, m.SessionID)
 			}
 			var gotSubs, gotEvSubs []string
 			for _, m := range tt.msgs {
@@ -811,16 +791,10 @@ func TestApplyRemoteRewrites(t *testing.T) {
 					}
 				}
 			}
-			if diff := cmp.Diff(
-				tt.wantSubs, gotSubs,
-			); diff != "" {
-				t.Errorf("SubagentSessionIDs %s", diff)
-			}
-			if diff := cmp.Diff(
-				tt.wantEvSubs, gotEvSubs,
-			); diff != "" {
-				t.Errorf("ResultEvent SubagentSessionIDs %s", diff)
-			}
+			diff = cmp.Diff(tt.wantSubs, gotSubs)
+			assert.Empty(t, diff, "SubagentSessionIDs %s", diff)
+			diff = cmp.Diff(tt.wantEvSubs, gotEvSubs)
+			assert.Empty(t, diff, "ResultEvent SubagentSessionIDs %s", diff)
 		})
 	}
 }
@@ -840,17 +814,13 @@ func TestShouldSkipFileWithIDPrefix(t *testing.T) {
 			int64(1700000000000000000),
 		),
 	}
-	if err := database.UpsertSession(sess); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, database.UpsertSession(sess))
 	// data_version is no longer persisted by UpsertSession;
 	// stamp it explicitly so the skip check sees a current
 	// row.
-	if err := database.SetSessionDataVersion(
+	require.NoError(t, database.SetSessionDataVersion(
 		sess.ID, db.CurrentDataVersion(),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	// Engine with IDPrefix should find the session.
 	e := &Engine{
@@ -861,9 +831,7 @@ func TestShouldSkipFileWithIDPrefix(t *testing.T) {
 		"abc-123",
 		fakeFileInfo{size: 1024, mtime: 1700000000000000000},
 	)
-	if !got {
-		t.Error("shouldSkipFile should return true")
-	}
+	assert.True(t, got, "shouldSkipFile should return true")
 
 	// Engine WITHOUT IDPrefix should NOT find it.
 	e2 := &Engine{db: database}
@@ -871,11 +839,49 @@ func TestShouldSkipFileWithIDPrefix(t *testing.T) {
 		"abc-123",
 		fakeFileInfo{size: 1024, mtime: 1700000000000000000},
 	)
-	if got2 {
-		t.Error(
-			"shouldSkipFile without prefix should return false",
-		)
+	assert.False(t, got2, "shouldSkipFile without prefix should return false")
+}
+
+func TestCollectAndBatchPrefixesParserExcludedIDs(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+
+	raw := db.Session{
+		ID:      "probe",
+		Project: "local",
+		Machine: "local",
+		Agent:   "claude",
 	}
+	prefixed := db.Session{
+		ID:      "host~probe",
+		Project: "remote",
+		Machine: "host",
+		Agent:   "claude",
+	}
+	require.NoError(t, database.UpsertSession(raw))
+	require.NoError(t, database.UpsertSession(prefixed))
+
+	results := make(chan syncJob, 1)
+	results <- syncJob{
+		processResult: processResult{
+			excludedSessionIDs: []string{"probe"},
+		},
+		path: "/remote/probe.jsonl",
+	}
+	close(results)
+
+	e := &Engine{db: database, idPrefix: "host~"}
+	stats := e.collectAndBatch(
+		ctx, results, 1, 1, nil, syncWriteDefault,
+	)
+
+	assert.Equal(t, []string{"host~probe"}, stats.parserExcludedIDs)
+	gotRaw, err := database.GetSession(ctx, "probe")
+	require.NoError(t, err, "raw local session lookup")
+	assert.NotNil(t, gotRaw, "raw local session must not be deleted")
+	gotPrefixed, err := database.GetSession(ctx, "host~probe")
+	require.NoError(t, err, "prefixed remote session lookup")
+	assert.Nil(t, gotPrefixed, "prefixed remote session should be deleted")
 }
 
 func TestShouldSkipByPathWithRewriter(t *testing.T) {
@@ -893,14 +899,10 @@ func TestShouldSkipByPathWithRewriter(t *testing.T) {
 			int64(1700000000000000000),
 		),
 	}
-	if err := database.UpsertSession(sess); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetSessionDataVersion(
+	require.NoError(t, database.UpsertSession(sess))
+	require.NoError(t, database.SetSessionDataVersion(
 		sess.ID, db.CurrentDataVersion(),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	rewriter := func(p string) string {
 		return "host:" + p
@@ -915,9 +917,7 @@ func TestShouldSkipByPathWithRewriter(t *testing.T) {
 		"/remote/codex/abc.jsonl",
 		fakeFileInfo{size: 2048, mtime: 1700000000000000000},
 	)
-	if !got {
-		t.Error("shouldSkipByPath should return true")
-	}
+	assert.True(t, got, "shouldSkipByPath should return true")
 
 	// Without rewriter, lookup misses.
 	e2 := &Engine{db: database}
@@ -925,12 +925,7 @@ func TestShouldSkipByPathWithRewriter(t *testing.T) {
 		"/remote/codex/abc.jsonl",
 		fakeFileInfo{size: 2048, mtime: 1700000000000000000},
 	)
-	if got2 {
-		t.Error(
-			"shouldSkipByPath without rewriter should " +
-				"return false",
-		)
-	}
+	assert.False(t, got2, "shouldSkipByPath without rewriter should return false")
 }
 
 func TestBlockedCategorySet(t *testing.T) {
@@ -951,12 +946,8 @@ func TestBlockedCategorySet(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := blockedCategorySet(tt.input)
 			got := m[tt.check]
-			if got != tt.want {
-				t.Errorf(
-					"blockedCategorySet(%v)[%q] = %v, want %v",
-					tt.input, tt.check, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got,
+				"blockedCategorySet(%v)[%q]", tt.input, tt.check)
 		})
 	}
 }
@@ -994,9 +985,8 @@ func TestOpenCodeLegacyArchiveLooksIncomplete(t *testing.T) {
 			},
 		}
 
-		if !openCodeLegacyArchiveLooksIncomplete(parsed, stored) {
-			t.Fatal("want incomplete archive detection")
-		}
+		require.True(t, openCodeLegacyArchiveLooksIncomplete(parsed, stored),
+			"want incomplete archive detection")
 	})
 
 	t.Run("extra parsed messages with complete prefix do not preserve", func(t *testing.T) {
@@ -1019,9 +1009,8 @@ func TestOpenCodeLegacyArchiveLooksIncomplete(t *testing.T) {
 			},
 		}
 
-		if openCodeLegacyArchiveLooksIncomplete(parsed, stored) {
-			t.Fatal("got incomplete archive detection, want false")
-		}
+		require.False(t, openCodeLegacyArchiveLooksIncomplete(parsed, stored),
+			"got incomplete archive detection, want false")
 	})
 }
 
@@ -1090,12 +1079,8 @@ func (fx *engineFixture) writeClaudeSession(
 		AddClaudeUser("2024-01-01T00:00:00Z", firstMessage).
 		String()
 	path := filepath.Join(fx.claudeDir, proj, filename)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
 }
 
@@ -1110,13 +1095,10 @@ func (fx *engineFixture) appendClaudeMessage(
 		AddClaudeUser("2024-01-01T00:00:05Z", message).
 		String()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
+	require.NoError(t, err, "OpenFile")
 	defer f.Close()
-	if _, err := f.WriteString(line); err != nil {
-		t.Fatalf("WriteString: %v", err)
-	}
+	_, err = f.WriteString(line)
+	require.NoError(t, err, "WriteString")
 }
 
 // sessionIDFor returns the session ID the engine uses for the
@@ -1136,16 +1118,10 @@ func TestEngine_SyncAllEmitsWhenSessionsChange(t *testing.T) {
 
 	fx.writeClaudeSession(t, "proj", "s1.jsonl", "hello")
 	stats := fx.engine.SyncAll(context.Background(), nil)
-	if stats.Synced == 0 {
-		t.Fatal("expected Synced > 0")
-	}
+	require.NotZero(t, stats.Synced, "expected Synced > 0")
 	got := em.got()
-	if len(got) != 1 {
-		t.Fatalf("expected 1 emission, got %d: %v", len(got), got)
-	}
-	if got[0] != "sessions" {
-		t.Errorf("SyncAll scope: got %q, want %q", got[0], "sessions")
-	}
+	require.Len(t, got, 1, "expected 1 emission, got %v", got)
+	assert.Equal(t, "sessions", got[0], "SyncAll scope")
 }
 
 func TestEngine_SyncAllDoesNotEmitOnEmptyRun(t *testing.T) {
@@ -1155,12 +1131,8 @@ func TestEngine_SyncAllDoesNotEmitOnEmptyRun(t *testing.T) {
 
 	// No session files — sync finds nothing.
 	stats := fx.engine.SyncAll(context.Background(), nil)
-	if stats.Synced != 0 {
-		t.Fatalf("expected Synced == 0, got %d", stats.Synced)
-	}
-	if got := em.got(); len(got) != 0 {
-		t.Fatalf("expected no emissions, got %v", got)
-	}
+	require.Zero(t, stats.Synced)
+	assert.Empty(t, em.got(), "expected no emissions")
 }
 
 func TestEngine_SyncPathsEmitsWhenSessionsChange(t *testing.T) {
@@ -1172,12 +1144,8 @@ func TestEngine_SyncPathsEmitsWhenSessionsChange(t *testing.T) {
 	fx.engine.SyncPaths([]string{path})
 
 	got := em.got()
-	if len(got) != 1 {
-		t.Fatalf("expected 1 emission, got %d: %v", len(got), got)
-	}
-	if got[0] != "sessions" {
-		t.Errorf("SyncPaths scope: got %q, want %q", got[0], "sessions")
-	}
+	require.Len(t, got, 1, "expected 1 emission, got %v", got)
+	assert.Equal(t, "sessions", got[0], "SyncPaths scope")
 }
 
 // emitterFunc adapts a plain function to the Emitter interface so
@@ -1207,9 +1175,8 @@ func TestEngine_SyncPathsEmitsAfterSyncMuReleased(t *testing.T) {
 	path := fx.writeClaudeSession(t, "proj", "s1.jsonl", "hello")
 	fx.engine.SyncPaths([]string{path})
 
-	if !acquired.Load() {
-		t.Fatal("syncMu was still held when SyncPaths emitted — defer-order regression")
-	}
+	assert.True(t, acquired.Load(),
+		"syncMu was still held when SyncPaths emitted — defer-order regression")
 }
 
 func TestEngine_SyncPathsDoesNotEmitOnNoMatches(t *testing.T) {
@@ -1221,9 +1188,7 @@ func TestEngine_SyncPathsDoesNotEmitOnNoMatches(t *testing.T) {
 	// returns zero files and SyncPaths returns early.
 	fx.engine.SyncPaths([]string{"/nonexistent/bogus.txt"})
 
-	if got := em.got(); len(got) != 0 {
-		t.Fatalf("expected no emissions, got %v", got)
-	}
+	assert.Empty(t, em.got(), "expected no emissions")
 }
 
 func TestEngine_ClassifyOnePathClaudeStatPermissionErrorStillClassifies(
@@ -1244,29 +1209,17 @@ func TestEngine_ClassifyOnePathClaudeStatPermissionErrorStillClassifies(
 
 	projectDir := filepath.Join(claudeDir, "proj")
 	path := filepath.Join(projectDir, "session.jsonl")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%q): %v", projectDir, err)
-	}
-	if err := os.WriteFile(path, []byte("[]"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%q): %v", path, err)
-	}
-	if err := os.Chmod(projectDir, 0o000); err != nil {
-		t.Fatalf("Chmod(%q): %v", projectDir, err)
-	}
+	require.NoError(t, os.MkdirAll(projectDir, 0o755), "MkdirAll(%q)", projectDir)
+	require.NoError(t, os.WriteFile(path, []byte("[]"), 0o644), "WriteFile(%q)", path)
+	require.NoError(t, os.Chmod(projectDir, 0o000), "Chmod(%q)", projectDir)
 	defer func() {
 		_ = os.Chmod(projectDir, 0o755)
 	}()
 
 	got, ok := engine.classifyOnePath(path, nil)
-	if !ok {
-		t.Fatal("expected path to classify despite stat permission error")
-	}
-	if got.Path != path {
-		t.Fatalf("Path = %q, want %q", got.Path, path)
-	}
-	if got.Agent != parser.AgentClaude {
-		t.Fatalf("Agent = %q, want %q", got.Agent, parser.AgentClaude)
-	}
+	require.True(t, ok, "expected path to classify despite stat permission error")
+	assert.Equal(t, path, got.Path)
+	assert.Equal(t, parser.AgentClaude, got.Agent)
 }
 
 func TestEngine_ClassifyPathsDedupesOpenCodeChildPaths(t *testing.T) {
@@ -1296,27 +1249,16 @@ func TestEngine_ClassifyPathsDedupesOpenCodeChildPaths(t *testing.T) {
 		messagePath: `{"id":"msg_1","sessionID":"ses_123","role":"user","time":{"created":1}}`,
 		partPath:    `{"id":"part_1","sessionID":"ses_123","messageID":"msg_1","type":"text","text":"hi","time":{"created":1}}`,
 	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", path, err)
-		}
-		if err := os.WriteFile(
-			path, []byte(content), 0o644,
-		); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll(%q)", path)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "WriteFile(%q)", path)
 	}
 
 	files := engine.classifyPaths([]string{
 		messagePath,
 		partPath,
 	})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != sessionPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, sessionPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, sessionPath, files[0].Path)
 }
 
 func TestEngine_ClassifyPathsOpenCodeRemovedMessageDir(
@@ -1343,29 +1285,16 @@ func TestEngine_ClassifyPathsOpenCodeRemovedMessageDir(
 		sessionPath: `{"id":"ses_123","directory":"/tmp/proj","time":{"created":1,"updated":2}}`,
 		messagePath: `{"id":"msg_1","sessionID":"ses_123","role":"user","time":{"created":1}}`,
 	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", path, err)
-		}
-		if err := os.WriteFile(
-			path, []byte(content), 0o644,
-		); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll(%q)", path)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "WriteFile(%q)", path)
 	}
 
 	messageDir := filepath.Dir(messagePath)
-	if err := os.RemoveAll(messageDir); err != nil {
-		t.Fatalf("RemoveAll(%q): %v", messageDir, err)
-	}
+	require.NoError(t, os.RemoveAll(messageDir), "RemoveAll(%q)", messageDir)
 
 	files := engine.classifyPaths([]string{messageDir})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != sessionPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, sessionPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, sessionPath, files[0].Path)
 }
 
 func TestEngine_ClassifyPathsOpenCodeSQLiteWALFile(
@@ -1381,22 +1310,13 @@ func TestEngine_ClassifyPathsOpenCodeSQLiteWALFile(
 	})
 
 	dbPath := filepath.Join(opencodeDir, "opencode.db")
-	if err := os.WriteFile(dbPath, []byte("db"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%q): %v", dbPath, err)
-	}
+	require.NoError(t, os.WriteFile(dbPath, []byte("db"), 0o644), "WriteFile(%q)", dbPath)
 	walPath := filepath.Join(opencodeDir, "opencode.db-wal")
-	if err := os.WriteFile(walPath, []byte("wal"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%q): %v", walPath, err)
-	}
+	require.NoError(t, os.WriteFile(walPath, []byte("wal"), 0o644), "WriteFile(%q)", walPath)
 
 	files := engine.classifyPaths([]string{walPath})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != dbPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, dbPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, dbPath, files[0].Path)
 }
 
 func TestEngine_ClassifyPathsOpenCodeRemovedMessageFile(
@@ -1423,28 +1343,15 @@ func TestEngine_ClassifyPathsOpenCodeRemovedMessageFile(
 		sessionPath: `{"id":"ses_123","directory":"/tmp/proj","time":{"created":1,"updated":2}}`,
 		messagePath: `{"id":"msg_1","sessionID":"ses_123","role":"user","time":{"created":1}}`,
 	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", path, err)
-		}
-		if err := os.WriteFile(
-			path, []byte(content), 0o644,
-		); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll(%q)", path)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "WriteFile(%q)", path)
 	}
 
-	if err := os.Remove(messagePath); err != nil {
-		t.Fatalf("Remove(%q): %v", messagePath, err)
-	}
+	require.NoError(t, os.Remove(messagePath), "Remove(%q)", messagePath)
 
 	files := engine.classifyPaths([]string{messagePath})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != sessionPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, sessionPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, sessionPath, files[0].Path)
 }
 
 func TestEngine_ClassifyPathsOpenCodeRemovedPartDir(
@@ -1476,29 +1383,16 @@ func TestEngine_ClassifyPathsOpenCodeRemovedPartDir(
 		messagePath: `{"id":"msg_1","sessionID":"ses_123","role":"user","time":{"created":1}}`,
 		partPath:    `{"id":"part_1","messageID":"msg_1","type":"text","text":"hi","time":{"created":1}}`,
 	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", path, err)
-		}
-		if err := os.WriteFile(
-			path, []byte(content), 0o644,
-		); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll(%q)", path)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "WriteFile(%q)", path)
 	}
 
 	partDir := filepath.Dir(partPath)
-	if err := os.RemoveAll(partDir); err != nil {
-		t.Fatalf("RemoveAll(%q): %v", partDir, err)
-	}
+	require.NoError(t, os.RemoveAll(partDir), "RemoveAll(%q)", partDir)
 
 	files := engine.classifyPaths([]string{partDir})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != sessionPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, sessionPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, sessionPath, files[0].Path)
 }
 
 func TestEngine_ClassifyPathsOpenCodeRemovedPartFile(
@@ -1530,28 +1424,15 @@ func TestEngine_ClassifyPathsOpenCodeRemovedPartFile(
 		messagePath: `{"id":"msg_1","sessionID":"ses_123","role":"user","time":{"created":1}}`,
 		partPath:    `{"id":"part_1","messageID":"msg_1","type":"text","text":"hi","time":{"created":1}}`,
 	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", path, err)
-		}
-		if err := os.WriteFile(
-			path, []byte(content), 0o644,
-		); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll(%q)", path)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "WriteFile(%q)", path)
 	}
 
-	if err := os.Remove(partPath); err != nil {
-		t.Fatalf("Remove(%q): %v", partPath, err)
-	}
+	require.NoError(t, os.Remove(partPath), "Remove(%q)", partPath)
 
 	files := engine.classifyPaths([]string{partPath})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1", len(files))
-	}
-	if files[0].Path != sessionPath {
-		t.Fatalf("files[0].Path = %q, want %q",
-			files[0].Path, sessionPath)
-	}
+	require.Len(t, files, 1)
+	assert.Equal(t, sessionPath, files[0].Path)
 }
 
 // TestEngine_ClassifyPathsQwenSession verifies fsnotify events for
@@ -1573,27 +1454,15 @@ func TestEngine_ClassifyPathsQwenSession(t *testing.T) {
 	sessionID := "adc026b4-c620-43e4-8cc4-295593889d18"
 	encodedProject := "-Users-alice-code-sample-project"
 	chatsDir := filepath.Join(qwenDir, encodedProject, "chats")
-	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%q): %v", chatsDir, err)
-	}
+	require.NoError(t, os.MkdirAll(chatsDir, 0o755), "MkdirAll(%q)", chatsDir)
 	sessionPath := filepath.Join(chatsDir, sessionID+".jsonl")
-	if err := os.WriteFile(sessionPath, []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%q): %v", sessionPath, err)
-	}
+	require.NoError(t, os.WriteFile(sessionPath, []byte("{}\n"), 0o644), "WriteFile(%q)", sessionPath)
 
 	files := engine.classifyPaths([]string{sessionPath})
-	if len(files) != 1 {
-		t.Fatalf("len(files) = %d, want 1 (%v)", len(files), files)
-	}
-	if files[0].Path != sessionPath {
-		t.Errorf("Path = %q, want %q", files[0].Path, sessionPath)
-	}
-	if files[0].Agent != parser.AgentQwen {
-		t.Errorf("Agent = %q, want %q", files[0].Agent, parser.AgentQwen)
-	}
-	if files[0].Project != "sample_project" {
-		t.Errorf("Project = %q, want %q", files[0].Project, "sample_project")
-	}
+	require.Len(t, files, 1, "len(files) = %d, want 1 (%v)", len(files), files)
+	assert.Equal(t, sessionPath, files[0].Path)
+	assert.Equal(t, parser.AgentQwen, files[0].Agent)
+	assert.Equal(t, "sample_project", files[0].Project)
 
 	// Non-Qwen siblings (a stray file directly under projectsDir, a
 	// file under <project>/<not-chats>/, a non-jsonl in chats/, and a
@@ -1606,17 +1475,77 @@ func TestEngine_ClassifyPathsQwenSession(t *testing.T) {
 		filepath.Join(qwenDir, "chats", sessionID+".jsonl"),
 	}
 	for _, p := range bogus {
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", p, err)
-		}
-		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
-			t.Fatalf("WriteFile(%q): %v", p, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755), "MkdirAll(%q)", p)
+		require.NoError(t, os.WriteFile(p, []byte("{}"), 0o644), "WriteFile(%q)", p)
 	}
-	if got := engine.classifyPaths(bogus); len(got) != 0 {
-		t.Fatalf("expected no Qwen classifications for %v, got %v",
-			bogus, got)
+	got := engine.classifyPaths(bogus)
+	assert.Empty(t, got, "expected no Qwen classifications for %v, got %v", bogus, got)
+}
+
+func TestEngine_ClassifyPathsQClawSession(t *testing.T) {
+	db := openTestDB(t)
+	qclawDir := t.TempDir()
+	engine := NewEngine(db, EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentQClaw: {qclawDir},
+		},
+		Machine: "local",
+	})
+
+	agentID := "main"
+	sessionID := "adc026b4-c620-43e4-8cc4-295593889d18"
+	sessionsDir := filepath.Join(qclawDir, agentID, "sessions")
+	sessionPath := filepath.Join(sessionsDir, sessionID+".jsonl")
+	dbtest.WriteTestFile(t, sessionPath, []byte("{}\n"))
+
+	files := engine.classifyPaths([]string{sessionPath})
+	require.Len(t, files, 1, "len(files) = %d, want 1 (%v)", len(files), files)
+	assert.Equal(t, sessionPath, files[0].Path)
+	assert.Equal(t, parser.AgentQClaw, files[0].Agent)
+
+	bogus := []string{
+		filepath.Join(qclawDir, "stray.jsonl"),
+		filepath.Join(qclawDir, agentID, "notes", sessionID+".jsonl"),
+		filepath.Join(sessionsDir, "notes.txt"),
+		filepath.Join(qclawDir, "not a session id", "sessions", sessionID+".jsonl"),
 	}
+	for _, p := range bogus {
+		dbtest.WriteTestFile(t, p, []byte("{}"))
+	}
+	got := engine.classifyPaths(bogus)
+	assert.Empty(t, got, "expected no QClaw classifications for %v, got %v", bogus, got)
+}
+
+func TestEngine_ClassifyPathsQClawArchivedSession(t *testing.T) {
+	db := openTestDB(t)
+	qclawDir := t.TempDir()
+	engine := NewEngine(db, EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentQClaw: {qclawDir},
+		},
+		Machine: "local",
+	})
+
+	agentID := "main"
+	sessionID := "adc026b4-c620-43e4-8cc4-295593889d18"
+	sessionsDir := filepath.Join(qclawDir, agentID, "sessions")
+
+	active := filepath.Join(sessionsDir, sessionID+".jsonl")
+	archived := filepath.Join(
+		sessionsDir,
+		sessionID+".jsonl.deleted.2026-02-19T08-59-24.951Z",
+	)
+	dbtest.WriteTestFile(t, active, []byte("{}\n"))
+	dbtest.WriteTestFile(t, archived, []byte("{}\n"))
+
+	got := engine.classifyPaths([]string{archived})
+	require.Empty(t, got, "expected archived file shadowed by active to be ignored, got %v", got)
+
+	require.NoError(t, os.Remove(active), "Remove(%q)", active)
+	files := engine.classifyPaths([]string{archived})
+	require.Len(t, files, 1, "len(files) = %d, want 1 (%v)", len(files), files)
+	assert.Equal(t, archived, files[0].Path)
+	assert.Equal(t, parser.AgentQClaw, files[0].Agent)
 }
 
 func TestEngine_SyncSingleSessionEmitsOnSuccess(t *testing.T) {
@@ -1635,16 +1564,10 @@ func TestEngine_SyncSingleSessionEmitsOnSuccess(t *testing.T) {
 
 	fx.appendClaudeMessage(t, path, "world")
 	sessionID := fx.sessionIDFor(t, path)
-	if err := fx.engine.SyncSingleSession(sessionID); err != nil {
-		t.Fatalf("SyncSingleSession: %v", err)
-	}
+	require.NoError(t, fx.engine.SyncSingleSession(sessionID), "SyncSingleSession")
 	got := em.got()
-	if len(got) != 1 {
-		t.Fatalf("expected 1 emission, got %d: %v", len(got), got)
-	}
-	if got[0] != "messages" {
-		t.Errorf("SyncSingleSession scope: got %q, want %q", got[0], "messages")
-	}
+	require.Len(t, got, 1, "expected 1 emission, got %v", got)
+	assert.Equal(t, "messages", got[0], "SyncSingleSession scope")
 }
 
 func TestToDBSessionTerminationStatus(t *testing.T) {
@@ -1676,13 +1599,11 @@ func TestToDBSessionTerminationStatus(t *testing.T) {
 			}
 			got := toDBSession(pw)
 
-			if (got.TerminationStatus == nil) != (tc.want == nil) {
-				t.Fatalf("nil mismatch: got=%v want=%v",
-					got.TerminationStatus, tc.want)
-			}
-			if got.TerminationStatus != nil && *got.TerminationStatus != *tc.want {
-				t.Fatalf("value mismatch: got=%q want=%q",
-					*got.TerminationStatus, *tc.want)
+			if tc.want == nil {
+				assert.Nil(t, got.TerminationStatus)
+			} else {
+				require.NotNil(t, got.TerminationStatus)
+				assert.Equal(t, *tc.want, *got.TerminationStatus)
 			}
 		})
 	}

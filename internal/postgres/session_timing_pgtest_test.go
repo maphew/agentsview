@@ -6,17 +6,17 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // timingResetSession deletes any prior fixtures for the given session id
 // (and cascades to messages and tool_calls) so each test starts clean.
 func timingResetSession(t *testing.T, pg *sql.DB, sessionID string) {
 	t.Helper()
-	if _, err := pg.Exec(
-		`DELETE FROM sessions WHERE id = $1`, sessionID,
-	); err != nil {
-		t.Fatalf("reset session: %v", err)
-	}
+	_, err := pg.Exec(`DELETE FROM sessions WHERE id = $1`, sessionID)
+	require.NoError(t, err, "reset session")
 }
 
 func timingInsertSessionPG(
@@ -38,9 +38,7 @@ func timingInsertSessionPG(
 		VALUES ($1, '', '', 'claude',
 		        $2::timestamptz, $3::timestamptz, 0, 0)
 	`, id, startedAt, endedAt)
-	if err != nil {
-		t.Fatalf("insert session %s: %v", id, err)
-	}
+	require.NoError(t, err, "insert session %s", id)
 }
 
 func timingInsertMessagePG(
@@ -54,10 +52,7 @@ func timingInsertMessagePG(
 			 has_tool_use, content_length)
 		VALUES ($1, $2, $3, $4, $5::timestamptz, $6, 0)
 	`, sessionID, ordinal, role, content, ts, hasToolUse)
-	if err != nil {
-		t.Fatalf("insert message %s/%d: %v",
-			sessionID, ordinal, err)
-	}
+	require.NoError(t, err, "insert message %s/%d", sessionID, ordinal)
 }
 
 func timingInsertToolCallPG(
@@ -78,10 +73,7 @@ func timingInsertToolCallPG(
 		VALUES ($1, $2, $3, $4, $5, '{}', $6, $7)
 	`, sessionID, toolName, category, callIndex, toolUseID,
 		sub, msgOrdinal)
-	if err != nil {
-		t.Fatalf("insert tool_call %s/%d: %v",
-			sessionID, msgOrdinal, err)
-	}
+	require.NoError(t, err, "insert tool_call %s/%d", sessionID, msgOrdinal)
 }
 
 func TestPGGetSessionTiming_Solo(t *testing.T) {
@@ -89,9 +81,7 @@ func TestPGGetSessionTiming_Solo(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-solo")
@@ -107,42 +97,22 @@ func TestPGGetSessionTiming_Solo(t *testing.T) {
 		"ok", "2026-04-26T10:00:30Z", false)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-solo",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got == nil {
-		t.Fatal("GetSessionTiming returned nil, want timing")
-	}
-	if got.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", got.TurnCount)
-	}
-	if got.ToolCallCount != 1 {
-		t.Errorf("ToolCallCount = %d, want 1", got.ToolCallCount)
-	}
-	if got.Running {
-		t.Errorf("Running = true, want false")
-	}
-	if len(got.Turns) != 1 {
-		t.Fatalf("len(Turns) = %d, want 1", len(got.Turns))
-	}
-	if got.Turns[0].DurationMs == nil ||
-		*got.Turns[0].DurationMs != 29_000 {
-		t.Errorf("turn duration = %v, want 29000",
-			got.Turns[0].DurationMs)
-	}
-	if got.Turns[0].Calls[0].DurationMs == nil ||
-		*got.Turns[0].Calls[0].DurationMs != 29_000 {
-		t.Errorf("call duration = %v, want 29000",
-			got.Turns[0].Calls[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	require.NotNil(t, got, "GetSessionTiming returned nil, want timing")
+	assert.Equal(t, 1, got.TurnCount)
+	assert.Equal(t, 1, got.ToolCallCount)
+	assert.False(t, got.Running)
+	require.Len(t, got.Turns, 1)
+	require.NotNil(t, got.Turns[0].DurationMs)
+	assert.Equal(t, int64(29_000), *got.Turns[0].DurationMs)
+	require.NotNil(t, got.Turns[0].Calls[0].DurationMs)
+	assert.Equal(t, int64(29_000), *got.Turns[0].Calls[0].DurationMs)
 }
 
 func TestPGGetSessionTiming_LastMessageFallsBackToSessionEnd(t *testing.T) {
@@ -150,9 +120,7 @@ func TestPGGetSessionTiming_LastMessageFallsBackToSessionEnd(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-fallback")
@@ -166,32 +134,19 @@ func TestPGGetSessionTiming_LastMessageFallsBackToSessionEnd(t *testing.T) {
 		"tu_1", "Bash", "Bash", "")
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-fallback",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.Turns[0].DurationMs == nil {
-		t.Fatalf("turn duration = nil, want 20000 " +
-			"(fallback to ended_at)")
-	}
-	if *got.Turns[0].DurationMs != 20_000 {
-		t.Errorf("turn duration = %d, want 20000 "+
-			"(fallback to ended_at)",
-			*got.Turns[0].DurationMs)
-	}
-	if got.Turns[0].Calls[0].DurationMs == nil ||
-		*got.Turns[0].Calls[0].DurationMs != 20_000 {
-		t.Errorf("call duration = %v, want 20000 "+
-			"(solo non-subagent inherits turn duration)",
-			got.Turns[0].Calls[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	require.NotNil(t, got.Turns[0].DurationMs,
+		"turn duration nil, want 20000 (fallback to ended_at)")
+	assert.Equal(t, int64(20_000), *got.Turns[0].DurationMs)
+	require.NotNil(t, got.Turns[0].Calls[0].DurationMs,
+		"solo non-subagent inherits turn duration")
+	assert.Equal(t, int64(20_000), *got.Turns[0].Calls[0].DurationMs)
 }
 
 func TestPGGetSessionTiming_RunningSessionLastTurnNull(t *testing.T) {
@@ -199,9 +154,7 @@ func TestPGGetSessionTiming_RunningSessionLastTurnNull(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-running")
@@ -215,24 +168,15 @@ func TestPGGetSessionTiming_RunningSessionLastTurnNull(t *testing.T) {
 		"tu_1", "Bash", "Bash", "")
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-running",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if !got.Running {
-		t.Errorf("Running = false, want true")
-	}
-	if got.Turns[0].DurationMs != nil {
-		t.Errorf("turn duration = %v, want nil (running)",
-			*got.Turns[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.True(t, got.Running)
+	assert.Nil(t, got.Turns[0].DurationMs, "turn duration should be nil (running)")
 }
 
 func TestPGGetSessionTiming_NonMonotonicTimestampClampsNull(t *testing.T) {
@@ -240,9 +184,7 @@ func TestPGGetSessionTiming_NonMonotonicTimestampClampsNull(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-nonmono")
@@ -258,21 +200,14 @@ func TestPGGetSessionTiming_NonMonotonicTimestampClampsNull(t *testing.T) {
 		"ok", "2026-04-26T10:00:00Z", false)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-nonmono",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.Turns[0].DurationMs != nil {
-		t.Errorf("turn duration = %v, want nil (clamp)",
-			*got.Turns[0].DurationMs)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Nil(t, got.Turns[0].DurationMs, "turn duration should be nil (clamp)")
 }
 
 func TestPGGetSessionTiming_NoToolUseHasNoTurnDuration(t *testing.T) {
@@ -280,9 +215,7 @@ func TestPGGetSessionTiming_NoToolUseHasNoTurnDuration(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-notool")
@@ -294,20 +227,14 @@ func TestPGGetSessionTiming_NoToolUseHasNoTurnDuration(t *testing.T) {
 		"hi back", "2026-04-26T10:00:01Z", false)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-notool",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got.TurnCount != 0 {
-		t.Errorf("TurnCount = %d, want 0", got.TurnCount)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Equal(t, 0, got.TurnCount)
 }
 
 func TestPGGetSessionTiming_SubagentExactDuration(t *testing.T) {
@@ -315,9 +242,7 @@ func TestPGGetSessionTiming_SubagentExactDuration(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	pg, err := Open(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	defer pg.Close()
 
 	timingResetSession(t, pg, "timing-parent")
@@ -336,24 +261,16 @@ func TestPGGetSessionTiming_SubagentExactDuration(t *testing.T) {
 		"done", "2026-04-26T10:02:16Z", false)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "timing-parent",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	dms := got.Turns[0].Calls[0].DurationMs
-	if dms == nil || *dms != 134_000 {
-		t.Errorf("subagent duration = %v, want 134000", dms)
-	}
-	if got.SubagentCount != 1 {
-		t.Errorf("SubagentCount = %d, want 1", got.SubagentCount)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	require.NotNil(t, got.Turns[0].Calls[0].DurationMs)
+	assert.Equal(t, int64(134_000), *got.Turns[0].Calls[0].DurationMs)
+	assert.Equal(t, 1, got.SubagentCount)
 }
 
 func TestPGGetSessionTiming_MissingSessionReturnsNil(t *testing.T) {
@@ -361,18 +278,12 @@ func TestPGGetSessionTiming_MissingSessionReturnsNil(t *testing.T) {
 	ensureStoreSchema(t, pgURL)
 
 	store, err := NewStore(pgURL, testSchema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	got, err := store.GetSessionTiming(
 		context.Background(), "no-such-session",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionTiming: %v", err)
-	}
-	if got != nil {
-		t.Errorf("GetSessionTiming = %v, want nil", got)
-	}
+	require.NoError(t, err, "GetSessionTiming")
+	assert.Nil(t, got)
 }

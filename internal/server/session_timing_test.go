@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 )
@@ -16,24 +19,12 @@ func TestHandleSessionTiming_OK(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	got := decode[db.SessionTiming](t, w)
-	if got.SessionID != "timing-handler-ok" {
-		t.Errorf("SessionID = %q, want timing-handler-ok",
-			got.SessionID)
-	}
-	if got.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", got.TurnCount)
-	}
-	if got.ToolCallCount != 1 {
-		t.Errorf("ToolCallCount = %d, want 1", got.ToolCallCount)
-	}
-	if len(got.Turns) != 1 {
-		t.Fatalf("len(Turns) = %d, want 1", len(got.Turns))
-	}
-	if got.Turns[0].DurationMs == nil ||
-		*got.Turns[0].DurationMs != 29_000 {
-		t.Errorf("turn duration = %v, want 29000",
-			got.Turns[0].DurationMs)
-	}
+	assert.Equal(t, "timing-handler-ok", got.SessionID)
+	assert.Equal(t, 1, got.TurnCount)
+	assert.Equal(t, 1, got.ToolCallCount)
+	require.Len(t, got.Turns, 1)
+	require.NotNil(t, got.Turns[0].DurationMs)
+	assert.Equal(t, int64(29_000), *got.Turns[0].DurationMs)
 }
 
 func TestHandleSessionTiming_NotFound(t *testing.T) {
@@ -96,7 +87,5 @@ func seedTimingFixture(t *testing.T, d *db.DB, sessionID string) {
 			Timestamp:     "2026-04-26T10:00:30Z",
 		},
 	}
-	if err := d.ReplaceSessionMessages(sessionID, msgs); err != nil {
-		t.Fatalf("seeding timing fixture: %v", err)
-	}
+	require.NoError(t, d.ReplaceSessionMessages(sessionID, msgs))
 }

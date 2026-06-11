@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFindSessionIDsByPartial(t *testing.T) {
@@ -15,37 +18,20 @@ func TestFindSessionIDsByPartial(t *testing.T) {
 	ctx := context.Background()
 
 	got, err := d.FindSessionIDsByPartial(ctx, "abcdef", 5)
-	if err != nil {
-		t.Fatalf("FindSessionIDsByPartial: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("abcdef matches = %v, want 2", got)
-	}
+	require.NoError(t, err, "FindSessionIDsByPartial")
+	assert.Len(t, got, 2, "abcdef matches")
 
 	got, err = d.FindSessionIDsByPartial(ctx, "fedcba", 5)
-	if err != nil {
-		t.Fatalf("FindSessionIDsByPartial: %v", err)
-	}
-	if len(got) != 1 || got[0] != "fedcba-5555" {
-		t.Fatalf("fedcba matches = %v, want [fedcba-5555]",
-			got)
-	}
+	require.NoError(t, err, "FindSessionIDsByPartial")
+	assert.Equal(t, []string{"fedcba-5555"}, got, "fedcba matches")
 
 	got, err = d.FindSessionIDsByPartial(ctx, "nope", 5)
-	if err != nil {
-		t.Fatalf("FindSessionIDsByPartial: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("nope matches = %v, want empty", got)
-	}
+	require.NoError(t, err, "FindSessionIDsByPartial")
+	assert.Empty(t, got, "nope matches")
 
 	got, err = d.FindSessionIDsByPartial(ctx, "", 5)
-	if err != nil {
-		t.Fatalf("FindSessionIDsByPartial: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("empty input = %v, want nil", got)
-	}
+	require.NoError(t, err, "FindSessionIDsByPartial")
+	assert.Nil(t, got, "empty input")
 }
 
 func TestListSessions_OutcomeFilter(t *testing.T) {
@@ -70,9 +56,7 @@ func TestListSessions_OutcomeFilter(t *testing.T) {
 		err := d.UpdateSessionSignals(tc.id, SessionSignalUpdate{
 			Outcome: tc.outcome,
 		})
-		if err != nil {
-			t.Fatalf("UpdateSessionSignals %s: %v", tc.id, err)
-		}
+		require.NoError(t, err, "UpdateSessionSignals %s", tc.id)
 	}
 
 	// Single outcome.
@@ -109,9 +93,7 @@ func TestListSessions_HealthGradeFilter(t *testing.T) {
 			HealthGrade: new(tc.grade),
 			HealthScore: new(tc.score),
 		})
-		if err != nil {
-			t.Fatalf("UpdateSessionSignals %s: %v", tc.id, err)
-		}
+		require.NoError(t, err, "UpdateSessionSignals %s", tc.id)
 	}
 
 	requireSessions(t, d, filterWith(func(f *SessionFilter) {
@@ -143,9 +125,7 @@ func TestListSessions_MinToolFailuresFilter(t *testing.T) {
 		err := d.UpdateSessionSignals(tc.id, SessionSignalUpdate{
 			ToolFailureSignalCount: tc.failures,
 		})
-		if err != nil {
-			t.Fatalf("UpdateSessionSignals %s: %v", tc.id, err)
-		}
+		require.NoError(t, err, "UpdateSessionSignals %s", tc.id)
 	}
 
 	requireSessions(t, d, filterWith(func(f *SessionFilter) {
@@ -175,20 +155,14 @@ func TestUpsertSession_DisplayNameInsertOnly(t *testing.T) {
 		DisplayName:  &displayName,
 		MessageCount: 1,
 	})
-	requireNoError(t, err, "UpsertSession insert")
+	require.NoError(t, err, "UpsertSession insert")
 
 	// Verify display_name was set.
 	s, err := d.GetSession(ctx, "claude-ai:dn-test")
-	requireNoError(t, err, "GetSession after insert")
-	if s == nil {
-		t.Fatal("GetSession returned nil after insert")
-	}
-	if s.DisplayName == nil {
-		t.Fatal("DisplayName is nil after insert, want non-nil")
-	}
-	if *s.DisplayName != "My Chat Title" {
-		t.Errorf("DisplayName = %q, want %q", *s.DisplayName, "My Chat Title")
-	}
+	require.NoError(t, err, "GetSession after insert")
+	require.NotNil(t, s, "GetSession returned nil after insert")
+	require.NotNil(t, s.DisplayName, "DisplayName is nil after insert")
+	assert.Equal(t, "My Chat Title", *s.DisplayName, "DisplayName")
 
 	// Re-upsert with a different display_name.
 	newName := "Updated Title"
@@ -200,27 +174,17 @@ func TestUpsertSession_DisplayNameInsertOnly(t *testing.T) {
 		DisplayName:  &newName,
 		MessageCount: 2,
 	})
-	requireNoError(t, err, "UpsertSession update")
+	require.NoError(t, err, "UpsertSession update")
 
 	// display_name should NOT be overwritten by re-upsert.
 	s, err = d.GetSession(ctx, "claude-ai:dn-test")
-	requireNoError(t, err, "GetSession after re-upsert")
-	if s == nil {
-		t.Fatal("GetSession returned nil after re-upsert")
-	}
-	if s.DisplayName == nil {
-		t.Fatal("DisplayName is nil after re-upsert, want non-nil")
-	}
-	if *s.DisplayName != "My Chat Title" {
-		t.Errorf(
-			"DisplayName = %q after re-upsert, want %q (should be preserved)",
-			*s.DisplayName, "My Chat Title",
-		)
-	}
+	require.NoError(t, err, "GetSession after re-upsert")
+	require.NotNil(t, s, "GetSession returned nil after re-upsert")
+	require.NotNil(t, s.DisplayName, "DisplayName is nil after re-upsert")
+	assert.Equal(t, "My Chat Title", *s.DisplayName,
+		"DisplayName should be preserved")
 	// But other fields should update.
-	if s.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", s.MessageCount)
-	}
+	assert.Equal(t, 2, s.MessageCount, "MessageCount")
 }
 
 // TestUpsertSessionDoesNotAdvanceDataVersion guards the
@@ -235,59 +199,39 @@ func TestUpsertSessionDoesNotAdvanceDataVersion(t *testing.T) {
 
 	// New session: data_version stays 0 even when the
 	// caller passes a non-zero value on the struct.
-	if err := d.UpsertSession(Session{
+	require.NoError(t, d.UpsertSession(Session{
 		ID:           "dv-1",
 		Project:      "p",
 		Machine:      "m",
 		Agent:        "claude",
 		MessageCount: 1,
 		DataVersion:  CurrentDataVersion(),
-	}); err != nil {
-		t.Fatalf("UpsertSession (insert): %v", err)
-	}
-	if got := d.GetSessionDataVersion("dv-1"); got != 0 {
-		t.Errorf(
-			"after insert, data_version = %d, want 0", got,
-		)
-	}
+	}), "UpsertSession (insert)")
+	assert.Equal(t, 0, d.GetSessionDataVersion("dv-1"),
+		"after insert, data_version")
 
 	// Stamp a current value to simulate a successful write.
-	if err := d.SetSessionDataVersion(
+	require.NoError(t, d.SetSessionDataVersion(
 		"dv-1", CurrentDataVersion(),
-	); err != nil {
-		t.Fatalf("SetSessionDataVersion: %v", err)
-	}
-	if got := d.GetSessionDataVersion("dv-1"); got !=
-		CurrentDataVersion() {
-		t.Errorf(
-			"after Set, data_version = %d, want %d",
-			got, CurrentDataVersion(),
-		)
-	}
+	), "SetSessionDataVersion")
+	assert.Equal(t, CurrentDataVersion(), d.GetSessionDataVersion("dv-1"),
+		"after Set, data_version")
 
 	// Re-upserting (e.g. as part of an incremental sync)
 	// must NOT clobber the stamped version with the
 	// struct's value (here 0), and must NOT replace it
 	// with a future "current" value before the rewrite
 	// succeeds.
-	if err := d.UpsertSession(Session{
+	require.NoError(t, d.UpsertSession(Session{
 		ID:           "dv-1",
 		Project:      "p",
 		Machine:      "m",
 		Agent:        "claude",
 		MessageCount: 5,
 		DataVersion:  0,
-	}); err != nil {
-		t.Fatalf("UpsertSession (update): %v", err)
-	}
-	if got := d.GetSessionDataVersion("dv-1"); got !=
-		CurrentDataVersion() {
-		t.Errorf(
-			"after re-upsert, data_version = %d, want %d "+
-				"(must be preserved across UpsertSession)",
-			got, CurrentDataVersion(),
-		)
-	}
+	}), "UpsertSession (update)")
+	assert.Equal(t, CurrentDataVersion(), d.GetSessionDataVersion("dv-1"),
+		"after re-upsert, data_version (must be preserved across UpsertSession)")
 }
 
 func TestUpsertSessionTerminationStatus(t *testing.T) {
@@ -318,29 +262,17 @@ func TestUpsertSessionTerminationStatus(t *testing.T) {
 				UserMessageCount:  1,
 				TerminationStatus: tc.val,
 			}
-			if err := d.UpsertSession(s); err != nil {
-				t.Fatalf("upsert: %v", err)
-			}
+			require.NoError(t, d.UpsertSession(s), "upsert")
 
 			got, err := d.GetSession(ctx, id)
-			if err != nil {
-				t.Fatalf("get: %v", err)
-			}
-			if got == nil {
-				t.Fatal("session not found")
-			}
+			require.NoError(t, err, "get")
+			require.NotNil(t, got, "session not found")
 
-			if (got.TerminationStatus == nil) != (tc.val == nil) {
-				t.Fatalf(
-					"nil mismatch: got=%v want=%v",
-					got.TerminationStatus, tc.val,
-				)
-			}
-			if got.TerminationStatus != nil && *got.TerminationStatus != *tc.val {
-				t.Fatalf(
-					"value mismatch: got=%q want=%q",
-					*got.TerminationStatus, *tc.val,
-				)
+			if tc.val == nil {
+				assert.Nil(t, got.TerminationStatus, "nil mismatch")
+			} else {
+				require.NotNil(t, got.TerminationStatus, "nil mismatch")
+				assert.Equal(t, *tc.val, *got.TerminationStatus, "value mismatch")
 			}
 		})
 	}
@@ -372,9 +304,7 @@ func TestListSessionsTerminationFilter(t *testing.T) {
 			UserMessageCount:  2,
 			TerminationStatus: term,
 		}
-		if err := d.UpsertSession(s); err != nil {
-			t.Fatalf("upsert %s: %v", id, err)
-		}
+		require.NoError(t, d.UpsertSession(s), "upsert %s", id)
 	}
 
 	// Active (< 10 min idle): regardless of termination_status,
@@ -395,9 +325,7 @@ func TestListSessionsTerminationFilter(t *testing.T) {
 
 	collect := func(f SessionFilter) []string {
 		page, err := d.ListSessions(ctx, f)
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
+		require.NoError(t, err, "list")
 		ids := make([]string, len(page.Sessions))
 		for i, s := range page.Sessions {
 			ids[i] = s.ID
@@ -460,21 +388,5 @@ func TestListSessionsTerminationFilter(t *testing.T) {
 // elements regardless of order.
 func assertStringSetsEqual(t *testing.T, got, want []string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("len mismatch: got=%d want=%d (got=%v want=%v)",
-			len(got), len(want), got, want)
-	}
-	seen := make(map[string]int)
-	for _, s := range want {
-		seen[s]++
-	}
-	for _, s := range got {
-		seen[s]--
-	}
-	for s, n := range seen {
-		if n != 0 {
-			t.Fatalf("set mismatch on %q: leftover=%d (got=%v want=%v)",
-				s, n, got, want)
-		}
-	}
+	assert.ElementsMatch(t, want, got)
 }

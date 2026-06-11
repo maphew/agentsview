@@ -4,11 +4,16 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsDevBuildVersion(t *testing.T) {
@@ -27,13 +32,7 @@ func TestIsDevBuildVersion(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
-			got := IsDevBuildVersion(tt.version)
-			if got != tt.want {
-				t.Errorf(
-					"IsDevBuildVersion(%q) = %v, want %v",
-					tt.version, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, IsDevBuildVersion(tt.version))
 		})
 	}
 }
@@ -53,13 +52,7 @@ func TestIsNewer(t *testing.T) {
 	for _, tt := range tests {
 		name := tt.v1 + "_vs_" + tt.v2
 		t.Run(name, func(t *testing.T) {
-			got := isNewer(tt.v1, tt.v2)
-			if got != tt.want {
-				t.Errorf(
-					"isNewer(%q, %q) = %v, want %v",
-					tt.v1, tt.v2, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, isNewer(tt.v1, tt.v2))
 		})
 	}
 }
@@ -79,10 +72,116 @@ fff000  yet_another.zip`
 
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
-			got := extractChecksum(body, tt.filename)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
+			assert.Equal(t, tt.want, extractChecksum(body, tt.filename))
+		})
+	}
+}
+
+func TestResolveLatestTag(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		location   string
+		wantTag    string
+		wantErrSub string
+	}{
+		{
+			name:     "valid 302 redirect",
+			status:   http.StatusFound,
+			location: "https://github.com/kenn-io/agentsview/releases/tag/v0.30.1",
+			wantTag:  "v0.30.1",
+		},
+		{
+			name:     "pre-release tag",
+			status:   http.StatusFound,
+			location: "https://github.com/kenn-io/agentsview/releases/tag/v0.9.0-rc1",
+			wantTag:  "v0.9.0-rc1",
+		},
+		{
+			name:       "200 OK is not a redirect",
+			status:     http.StatusOK,
+			wantErrSub: "expected redirect",
+		},
+		{
+			name:       "redirect target without /tag/",
+			status:     http.StatusFound,
+			location:   "https://github.com/kenn-io/agentsview/releases",
+			wantErrSub: "unexpected redirect target",
+		},
+		{
+			name:       "empty tag after /tag/",
+			status:     http.StatusFound,
+			location:   "https://github.com/kenn-io/agentsview/releases/tag/",
+			wantErrSub: "empty tag",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					if tt.location != "" {
+						w.Header().Set("Location", tt.location)
+					}
+					w.WriteHeader(tt.status)
+				},
+			))
+			defer srv.Close()
+
+			tag, err := resolveLatestTag(srv.URL)
+			if tt.wantErrSub != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrSub)
+				return
 			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTag, tag)
+		})
+	}
+}
+
+func TestFetchContentLength(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		bodySize   int
+		wantSize   int64
+		wantErrSub string
+	}{
+		{
+			name:     "200 with body",
+			status:   http.StatusOK,
+			bodySize: 1234,
+			wantSize: 1234,
+		},
+		{
+			name:       "404",
+			status:     http.StatusNotFound,
+			wantErrSub: "404",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					if tt.bodySize > 0 {
+						w.Header().Set(
+							"Content-Length",
+							fmt.Sprintf("%d", tt.bodySize),
+						)
+					}
+					w.WriteHeader(tt.status)
+				},
+			))
+			defer srv.Close()
+
+			size, err := fetchContentLength(srv.URL)
+			if tt.wantErrSub != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSize, size)
 		})
 	}
 }
@@ -105,19 +204,12 @@ func TestSanitizePath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotPath, err := sanitizePath(destDir, tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf(
-					"sanitizePath(%q) error = %v, wantErr %v",
-					tt.path, err, tt.wantErr,
-				)
+			if tt.wantErr {
+				assert.Error(t, err)
 				return
 			}
-			if err == nil && gotPath != tt.wantPath {
-				t.Errorf(
-					"sanitizePath(%q) path = %q, wantPath %q",
-					tt.path, gotPath, tt.wantPath,
-				)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPath, gotPath)
 		})
 	}
 }
@@ -130,19 +222,13 @@ func TestExtractTarGz(t *testing.T) {
 	archivePath := filepath.Join(srcDir, "test.tar.gz")
 	createTestTarGz(t, archivePath, "agentsview", "binary-content")
 
-	if err := extractTarGz(archivePath, destDir); err != nil {
-		t.Fatalf("extractTarGz: %v", err)
-	}
+	require.NoError(t, extractTarGz(archivePath, destDir))
 
 	content, err := os.ReadFile(
 		filepath.Join(destDir, "agentsview"),
 	)
-	if err != nil {
-		t.Fatalf("read extracted file: %v", err)
-	}
-	if string(content) != "binary-content" {
-		t.Errorf("got %q, want %q", content, "binary-content")
-	}
+	require.NoError(t, err, "read extracted file")
+	assert.Equal(t, "binary-content", string(content))
 }
 
 func TestInstallBinaryToSetsExecutableMode(t *testing.T) {
@@ -155,53 +241,33 @@ func TestInstallBinaryToSetsExecutableMode(t *testing.T) {
 	srcPath := filepath.Join(srcDir, "agentsview")
 	dstPath := filepath.Join(dstDir, "agentsview")
 
-	if err := os.WriteFile(srcPath, []byte("binary"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(srcPath, []byte("binary"), 0o644))
 
-	if err := installBinaryTo(srcPath, dstPath); err != nil {
-		t.Fatalf("installBinaryTo: %v", err)
-	}
+	require.NoError(t, installBinaryTo(srcPath, dstPath))
 
 	info, err := os.Stat(dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o755 {
-		t.Errorf("dstPath mode = %o, want 0755", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
 }
 
 func TestInstallBinaryToPreservesOnSourceMissing(t *testing.T) {
 	dstDir := t.TempDir()
 	dstPath := filepath.Join(dstDir, "agentsview")
 
-	if err := os.WriteFile(
-		dstPath, []byte("original"), 0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(dstPath, []byte("original"), 0o755))
 
 	missingSrc := filepath.Join(t.TempDir(), "does-not-exist")
 
-	if err := installBinaryTo(missingSrc, dstPath); err == nil {
-		t.Fatal("expected error from missing source")
-	}
+	require.Error(t, installBinaryTo(missingSrc, dstPath), "expected error from missing source")
 
 	got, err := os.ReadFile(dstPath)
-	if err != nil {
-		t.Fatalf("dstPath should still exist: %v", err)
-	}
-	if string(got) != "original" {
-		t.Errorf("dstPath content = %q, want %q", got, "original")
-	}
+	require.NoError(t, err, "dstPath should still exist")
+	assert.Equal(t, "original", string(got))
 
-	if _, err := os.Stat(dstPath + ".new"); !os.IsNotExist(err) {
-		t.Error("staging .new file should not be left behind")
-	}
-	if _, err := os.Stat(dstPath + ".old"); !os.IsNotExist(err) {
-		t.Error("backup .old file should not be left behind")
-	}
+	_, err = os.Stat(dstPath + ".new")
+	assert.True(t, os.IsNotExist(err), "staging .new file should not be left behind")
+	_, err = os.Stat(dstPath + ".old")
+	assert.True(t, os.IsNotExist(err), "backup .old file should not be left behind")
 }
 
 func TestInstallBinaryToNeverMissingDuringUpdate(t *testing.T) {
@@ -217,12 +283,8 @@ func TestInstallBinaryToNeverMissingDuringUpdate(t *testing.T) {
 	srcPath := filepath.Join(srcDir, "agentsview")
 	dstPath := filepath.Join(dstDir, "agentsview")
 
-	if err := os.WriteFile(srcPath, []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dstPath, []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(srcPath, []byte("new"), 0o755))
+	require.NoError(t, os.WriteFile(dstPath, []byte("old"), 0o755))
 
 	var observations, missing atomic.Uint64
 	stop := make(chan struct{})
@@ -267,12 +329,8 @@ func TestInstallBinaryToNeverMissingDuringUpdate(t *testing.T) {
 			observations.Load(),
 		)
 	}
-	if missing.Load() > 0 {
-		t.Errorf(
-			"dstPath observed missing %d times during install",
-			missing.Load(),
-		)
-	}
+	assert.Zero(t, missing.Load(),
+		"dstPath observed missing %d times during install", missing.Load())
 }
 
 func TestInstallBinaryToRemovesStaleStagingFile(t *testing.T) {
@@ -281,28 +339,15 @@ func TestInstallBinaryToRemovesStaleStagingFile(t *testing.T) {
 	srcPath := filepath.Join(srcDir, "agentsview")
 	dstPath := filepath.Join(dstDir, "agentsview")
 
-	if err := os.WriteFile(srcPath, []byte("new-binary"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dstPath, []byte("old-binary"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(srcPath, []byte("new-binary"), 0o755))
+	require.NoError(t, os.WriteFile(dstPath, []byte("old-binary"), 0o755))
 	stagingPath := dstPath + ".new"
-	if err := os.WriteFile(
-		stagingPath, []byte("stale-staging"), 0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(stagingPath, []byte("stale-staging"), 0o644))
 
-	if err := installBinaryTo(srcPath, dstPath); err != nil {
-		t.Fatalf("installBinaryTo: %v", err)
-	}
+	require.NoError(t, installBinaryTo(srcPath, dstPath))
 
-	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
-		t.Errorf(
-			"stale staging file should be removed, got err=%v", err,
-		)
-	}
+	_, err := os.Stat(stagingPath)
+	assert.True(t, os.IsNotExist(err), "stale staging file should be removed, got err=%v", err)
 }
 
 func TestInstallBinaryTo(t *testing.T) {
@@ -335,31 +380,20 @@ func TestInstallBinaryTo(t *testing.T) {
 			dstPath := filepath.Join(dstDir, "agentsview")
 
 			if tt.existingDest != "" {
-				if err := os.WriteFile(dstPath, []byte(tt.existingDest), 0o755); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(dstPath, []byte(tt.existingDest), 0o755))
 			}
 
-			if err := os.WriteFile(srcPath, []byte(tt.newBinary), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(srcPath, []byte(tt.newBinary), 0o755))
 
-			if err := installBinaryTo(srcPath, dstPath); err != nil {
-				t.Fatalf("installBinaryTo: %v", err)
-			}
+			require.NoError(t, installBinaryTo(srcPath, dstPath))
 
 			got, err := os.ReadFile(dstPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(got))
 
 			if tt.existingDest != "" {
-				if _, err := os.Stat(dstPath + ".old"); !os.IsNotExist(err) {
-					t.Error("backup .old file should be removed")
-				}
+				_, err := os.Stat(dstPath + ".old")
+				assert.True(t, os.IsNotExist(err), "backup .old file should be removed")
 			}
 		})
 	}
@@ -379,13 +413,7 @@ func TestFormatSize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%d_bytes", tt.bytes), func(t *testing.T) {
-			got := FormatSize(tt.bytes)
-			if got != tt.want {
-				t.Errorf(
-					"FormatSize(%d) = %q, want %q",
-					tt.bytes, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, FormatSize(tt.bytes))
 		})
 	}
 }
@@ -396,12 +424,8 @@ func TestCacheRoundtrip(t *testing.T) {
 	saveCache("v1.2.3", dir)
 
 	cached, err := loadCache(dir)
-	if err != nil {
-		t.Fatalf("loadCache: %v", err)
-	}
-	if cached.Version != "v1.2.3" {
-		t.Errorf("got version %q, want %q", cached.Version, "v1.2.3")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "v1.2.3", cached.Version)
 }
 
 func TestNormalizeSemver(t *testing.T) {
@@ -418,13 +442,7 @@ func TestNormalizeSemver(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeSemver(tt.input)
-			if got != tt.want {
-				t.Errorf(
-					"normalizeSemver(%q) = %q, want %q",
-					tt.input, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, normalizeSemver(tt.input))
 		})
 	}
 }
@@ -435,9 +453,7 @@ func createTestTarGz(
 ) {
 	t.Helper()
 	f, err := os.Create(archivePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer f.Close()
 
 	gw := gzip.NewWriter(f)
@@ -452,10 +468,7 @@ func createTestTarGz(
 		Mode: 0o755,
 		Size: int64(len(data)),
 	}
-	if err := tw.WriteHeader(header); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(data); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tw.WriteHeader(header))
+	_, err = tw.Write(data)
+	require.NoError(t, err)
 }

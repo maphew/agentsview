@@ -2,10 +2,11 @@ package db
 
 import (
 	"context"
-	"slices"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseTrendTerms(t *testing.T) {
@@ -15,44 +16,27 @@ func TestParseTrendTerms(t *testing.T) {
 		"seam | Seam | seams",
 		"slic",
 	})
-	if err != nil {
-		t.Fatalf("ParseTrendTerms: %v", err)
-	}
-	if got[0].Term != "load bearing" {
-		t.Fatalf("term label = %q", got[0].Term)
-	}
-	if want := []string{"load bearing", "load-bearing"}; !slices.Equal(got[0].Variants, want) {
-		t.Fatalf("variants = %#v, want %#v", got[0].Variants, want)
-	}
-	if want := []string{"seam", "seams"}; !slices.Equal(got[1].Matchers, want) {
-		t.Fatalf("matchers = %#v, want %#v", got[1].Matchers, want)
-	}
-	if got[2].Term != "seam" {
-		t.Fatalf("deduped term label = %q", got[2].Term)
-	}
-	if want := []string{"seam", "seams"}; !slices.Equal(got[2].Variants, want) {
-		t.Fatalf("deduped variants = %#v, want %#v", got[2].Variants, want)
-	}
-	if want := []string{"slic", "slics", "slice", "slices", "sliced", "slicing"}; !slices.Equal(got[3].Matchers, want) {
-		t.Fatalf("stem matchers = %#v, want %#v", got[3].Matchers, want)
-	}
+	require.NoError(t, err, "ParseTrendTerms")
+	assert.Equal(t, "load bearing", got[0].Term, "term label")
+	assert.Equal(t, []string{"load bearing", "load-bearing"}, got[0].Variants, "variants")
+	assert.Equal(t, []string{"seam", "seams"}, got[1].Matchers, "matchers")
+	assert.Equal(t, "seam", got[2].Term, "deduped term label")
+	assert.Equal(t, []string{"seam", "seams"}, got[2].Variants, "deduped variants")
+	assert.Equal(t, []string{"slic", "slics", "slice", "slices", "sliced", "slicing"},
+		got[3].Matchers, "stem matchers")
 }
 
 func TestParseTrendTermsValidation(t *testing.T) {
 	t.Run("empty input", func(t *testing.T) {
-		if _, err := ParseTrendTerms(nil); err == nil {
-			t.Fatal("expected error")
-		}
+		_, err := ParseTrendTerms(nil)
+		require.Error(t, err)
 	})
 
 	t.Run("empty rows dropped before limit", func(t *testing.T) {
 		got, err := ParseTrendTerms([]string{"", "  ", "seam"})
-		if err != nil {
-			t.Fatalf("ParseTrendTerms: %v", err)
-		}
-		if len(got) != 1 || got[0].Term != "seam" {
-			t.Fatalf("terms = %#v, want only seam", got)
-		}
+		require.NoError(t, err, "ParseTrendTerms")
+		require.Len(t, got, 1, "terms")
+		assert.Equal(t, "seam", got[0].Term)
 	})
 
 	t.Run("more than 12 terms", func(t *testing.T) {
@@ -61,26 +45,20 @@ func TestParseTrendTermsValidation(t *testing.T) {
 			values[i] = "term"
 		}
 		_, err := ParseTrendTerms(values)
-		if err == nil || !strings.Contains(err.Error(), "at most 12") {
-			t.Fatalf("error = %v, want max terms", err)
-		}
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at most 12", "want max terms")
 	})
 
 	t.Run("more than 8 variants after dedupe", func(t *testing.T) {
 		_, err := ParseTrendTerms([]string{"a|b|c|d|e|f|g|h|i"})
-		if err == nil || !strings.Contains(err.Error(), "at most 8") {
-			t.Fatalf("error = %v, want max variants", err)
-		}
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at most 8", "want max variants")
 	})
 
 	t.Run("variant limit after dedupe", func(t *testing.T) {
 		got, err := ParseTrendTerms([]string{"a|A|b|c|d|e|f|g|h"})
-		if err != nil {
-			t.Fatalf("ParseTrendTerms: %v", err)
-		}
-		if len(got[0].Variants) != MaxTrendTermVariants {
-			t.Fatalf("variant count = %d, want %d", len(got[0].Variants), MaxTrendTermVariants)
-		}
+		require.NoError(t, err, "ParseTrendTerms")
+		assert.Len(t, got[0].Variants, MaxTrendTermVariants, "variant count")
 	})
 }
 
@@ -101,25 +79,19 @@ func TestCountTrendOccurrences(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countTrendOccurrences(tc.text, term); got != tc.want {
-				t.Fatalf("count = %d, want %d", got, tc.want)
-			}
+			assert.Equal(t, tc.want, countTrendOccurrences(tc.text, term))
 		})
 	}
 }
 
 func TestCountTrendOccurrencesSilentEStem(t *testing.T) {
 	terms, err := ParseTrendTerms([]string{"slic"})
-	if err != nil {
-		t.Fatalf("ParseTrendTerms: %v", err)
-	}
+	require.NoError(t, err, "ParseTrendTerms")
 	got := countTrendOccurrences(
 		"slice slices sliced slicing slicer sliced-up",
 		terms[0],
 	)
-	if got != 5 {
-		t.Fatalf("count = %d, want 5", got)
-	}
+	assert.Equal(t, 5, got)
 }
 
 func TestCountTrendOccurrencesPhrases(t *testing.T) {
@@ -129,9 +101,7 @@ func TestCountTrendOccurrencesPhrases(t *testing.T) {
 		Matchers: []string{"load bearing", "load-bearing"},
 	}
 	got := countTrendOccurrences("Load bearing and load-bearing", term)
-	if got != 2 {
-		t.Fatalf("count = %d, want 2", got)
-	}
+	assert.Equal(t, 2, got)
 }
 
 func TestTrendBucketDate(t *testing.T) {
@@ -147,9 +117,7 @@ func TestTrendBucketDate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		parsed, _ := time.Parse(time.RFC3339, tc.ts)
-		if got := trendBucketDate(parsed, loc, tc.gran); got != tc.want {
-			t.Fatalf("%s got %s want %s", tc.gran, got, tc.want)
-		}
+		assert.Equal(t, tc.want, trendBucketDate(parsed, loc, tc.gran), tc.gran)
 	}
 }
 
@@ -169,37 +137,23 @@ func TestGetTrendsTermsSQLite(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 2, Role: "user", Content: "seam system", Timestamp: "2024-06-08T09:00:00Z", ContentLength: 11, IsSystem: true},
 	)
 	terms, err := ParseTrendTerms([]string{"load bearing | load-bearing", "seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-01", To: "2024-06-09", Timezone: "UTC",
 	}, terms, "week")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if want := []string{"2024-05-27", "2024-06-03"}; !slices.Equal(trendBucketDates(got.Buckets), want) {
-		t.Fatalf("bucket dates = %#v, want %#v", trendBucketDates(got.Buckets), want)
-	}
-	if want := []int{1, 1}; !slices.Equal(trendBucketMessageCounts(got.Buckets), want) {
-		t.Fatalf("bucket message counts = %#v, want %#v", trendBucketMessageCounts(got.Buckets), want)
-	}
-	if got.MessageCount != 2 {
-		t.Fatalf("message count = %d, want 2", got.MessageCount)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, []string{"2024-05-27", "2024-06-03"},
+		trendBucketDates(got.Buckets), "bucket dates")
+	assert.Equal(t, []int{1, 1}, trendBucketMessageCounts(got.Buckets),
+		"bucket message counts")
+	assert.Equal(t, 2, got.MessageCount, "message count")
 	byTerm := trendSeriesByTerm(got.Series)
-	if got := byTerm["load bearing"].Total; got != 2 {
-		t.Fatalf("load bearing total = %d, want 2", got)
-	}
-	if got := byTerm["seam"].Total; got != 3 {
-		t.Fatalf("seam total = %d, want 3", got)
-	}
-	if want := []int{1, 1}; !slices.Equal(trendPointCounts(byTerm["load bearing"].Points), want) {
-		t.Fatalf("load bearing points = %#v, want %#v", trendPointCounts(byTerm["load bearing"].Points), want)
-	}
-	if want := []int{1, 2}; !slices.Equal(trendPointCounts(byTerm["seam"].Points), want) {
-		t.Fatalf("seam points = %#v, want %#v", trendPointCounts(byTerm["seam"].Points), want)
-	}
+	assert.Equal(t, 2, byTerm["load bearing"].Total, "load bearing total")
+	assert.Equal(t, 3, byTerm["seam"].Total, "seam total")
+	assert.Equal(t, []int{1, 1}, trendPointCounts(byTerm["load bearing"].Points),
+		"load bearing points")
+	assert.Equal(t, []int{1, 2}, trendPointCounts(byTerm["seam"].Points),
+		"seam points")
 }
 
 func TestGetTrendsTermsSQLiteProjectFilter(t *testing.T) {
@@ -223,18 +177,13 @@ func TestGetTrendsTermsSQLiteProjectFilter(t *testing.T) {
 		Message{SessionID: "s2", Ordinal: 0, Role: "user", Content: "seam", Timestamp: start, ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-01", To: "2024-06-01", Timezone: "UTC", Project: "proj-a",
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("project-filtered total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"project-filtered total")
 }
 
 func TestGetTrendsTermsSQLiteUsesMessageTimestampRange(t *testing.T) {
@@ -252,18 +201,13 @@ func TestGetTrendsTermsSQLiteUsesMessageTimestampRange(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 0, Role: "user", Content: "seam", Timestamp: "2024-06-05T09:00:00Z", ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-05", To: "2024-06-05", Timezone: "UTC",
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("message timestamp total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"message timestamp total")
 }
 
 func TestGetTrendsTermsSQLiteDoesNotFilterBySessionTimestamp(t *testing.T) {
@@ -279,18 +223,13 @@ func TestGetTrendsTermsSQLiteDoesNotFilterBySessionTimestamp(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 0, Role: "user", Content: "seam", Timestamp: "2024-06-05T09:00:00Z", ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-05", To: "2024-06-05", Timezone: "UTC",
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("message timestamp total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"message timestamp total")
 }
 
 func TestGetTrendsTermsSQLiteAppliesDayAndHourToMessageTimestamp(t *testing.T) {
@@ -307,9 +246,7 @@ func TestGetTrendsTermsSQLiteAppliesDayAndHourToMessageTimestamp(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 1, Role: "user", Content: "seam", Timestamp: "2024-06-05T10:00:00Z", ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	dow := 2
 	hour := 9
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
@@ -319,12 +256,9 @@ func TestGetTrendsTermsSQLiteAppliesDayAndHourToMessageTimestamp(t *testing.T) {
 		DayOfWeek: &dow,
 		Hour:      &hour,
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("hour-filtered message total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"hour-filtered message total")
 }
 
 func TestGetTrendsTermsSQLiteTimestampFallback(t *testing.T) {
@@ -342,18 +276,13 @@ func TestGetTrendsTermsSQLiteTimestampFallback(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 0, Role: "user", Content: "seam", Timestamp: "not-a-time", ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-05", To: "2024-06-05", Timezone: "UTC",
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("fallback timestamp total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"fallback timestamp total")
 }
 
 func TestGetTrendsTermsSQLiteExcludesLegacySystemPrefixes(t *testing.T) {
@@ -371,18 +300,13 @@ func TestGetTrendsTermsSQLiteExcludesLegacySystemPrefixes(t *testing.T) {
 		Message{SessionID: "s1", Ordinal: 1, Role: "user", Content: "seam", Timestamp: start, ContentLength: 4},
 	)
 	terms, err := ParseTrendTerms([]string{"seam"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := d.GetTrendsTerms(ctx, AnalyticsFilter{
 		From: "2024-06-01", To: "2024-06-01", Timezone: "UTC",
 	}, terms, "day")
-	if err != nil {
-		t.Fatalf("GetTrendsTerms: %v", err)
-	}
-	if got := trendSeriesByTerm(got.Series)["seam"].Total; got != 1 {
-		t.Fatalf("system-prefix-filtered total = %d, want 1", got)
-	}
+	require.NoError(t, err, "GetTrendsTerms")
+	assert.Equal(t, 1, trendSeriesByTerm(got.Series)["seam"].Total,
+		"system-prefix-filtered total")
 }
 
 func trendBucketDates(buckets []TrendBucket) []string {

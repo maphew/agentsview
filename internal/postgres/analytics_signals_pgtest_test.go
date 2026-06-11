@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -26,15 +29,11 @@ func TestStoreGetAnalyticsSignals(t *testing.T) {
 		"signals-test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx := context.Background()
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
 
 	score := 90
 	grade := "A"
@@ -53,10 +52,9 @@ func TestStoreGetAnalyticsSignals(t *testing.T) {
 			StartedAt:    &started,
 			MessageCount: 4,
 		}
-		if err := local.UpsertSession(sess); err != nil {
-			t.Fatalf("upsert %s: %v", id, err)
-		}
-		if err := local.UpdateSessionSignals(
+		require.NoError(t, local.UpsertSession(sess),
+			"upsert %s", id)
+		require.NoError(t, local.UpdateSessionSignals(
 			id,
 			db.SessionSignalUpdate{
 				Outcome:                "completed",
@@ -71,19 +69,14 @@ func TestStoreGetAnalyticsSignals(t *testing.T) {
 				HealthScore:            &score,
 				HealthGrade:            &grade,
 			},
-		); err != nil {
-			t.Fatalf("UpdateSessionSignals %s: %v", id, err)
-		}
+		), "UpdateSessionSignals %s", id)
 	}
 
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	store, err := NewStore(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	// Empty AnalyticsFilter must be accepted -- exercises the
@@ -92,56 +85,19 @@ func TestStoreGetAnalyticsSignals(t *testing.T) {
 	resp, err := store.GetAnalyticsSignals(
 		ctx, db.AnalyticsFilter{},
 	)
-	if err != nil {
-		t.Fatalf("GetAnalyticsSignals: %v", err)
-	}
+	require.NoError(t, err, "GetAnalyticsSignals")
 
-	if resp.ScoredSessions != 2 {
-		t.Errorf(
-			"ScoredSessions = %d, want 2",
-			resp.ScoredSessions,
-		)
-	}
-	if resp.GradeDistribution["A"] != 2 {
-		t.Errorf(
-			"GradeDistribution[A] = %d, want 2",
-			resp.GradeDistribution["A"],
-		)
-	}
-	if resp.OutcomeDistribution["completed"] != 2 {
-		t.Errorf(
-			"OutcomeDistribution[completed] = %d, want 2",
-			resp.OutcomeDistribution["completed"],
-		)
-	}
-	if resp.AvgHealthScore == nil ||
-		*resp.AvgHealthScore != 90 {
-		t.Errorf(
-			"AvgHealthScore = %v, want 90", resp.AvgHealthScore,
-		)
-	}
-	if resp.ContextHealth.MidTaskCompactionCount != 2 {
-		t.Errorf(
-			"MidTaskCompactionCount = %d, want 2",
-			resp.ContextHealth.MidTaskCompactionCount,
-		)
-	}
-	if resp.ToolHealth.TotalFailureSignals != 2 {
-		t.Errorf(
-			"TotalFailureSignals = %d, want 2",
-			resp.ToolHealth.TotalFailureSignals,
-		)
-	}
-	if len(resp.ByAgent) != 1 ||
-		resp.ByAgent[0].Agent != "claude" ||
-		resp.ByAgent[0].SessionCount != 2 {
-		t.Errorf("ByAgent = %+v, want [claude / 2]", resp.ByAgent)
-	}
-	if len(resp.ByProject) != 1 ||
-		resp.ByProject[0].Project != "proj" ||
-		resp.ByProject[0].SessionCount != 2 {
-		t.Errorf(
-			"ByProject = %+v, want [proj / 2]", resp.ByProject,
-		)
-	}
+	assert.Equal(t, 2, resp.ScoredSessions)
+	assert.Equal(t, 2, resp.GradeDistribution["A"])
+	assert.Equal(t, 2, resp.OutcomeDistribution["completed"])
+	require.NotNil(t, resp.AvgHealthScore)
+	assert.Equal(t, 90.0, *resp.AvgHealthScore)
+	assert.Equal(t, 2, resp.ContextHealth.MidTaskCompactionCount)
+	assert.Equal(t, 2, resp.ToolHealth.TotalFailureSignals)
+	require.Len(t, resp.ByAgent, 1)
+	assert.Equal(t, "claude", resp.ByAgent[0].Agent)
+	assert.Equal(t, 2, resp.ByAgent[0].SessionCount)
+	require.Len(t, resp.ByProject, 1)
+	assert.Equal(t, "proj", resp.ByProject[0].Project)
+	assert.Equal(t, 2, resp.ByProject[0].SessionCount)
 }

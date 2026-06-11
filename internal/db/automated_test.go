@@ -1,9 +1,10 @@
 package db
 
 import (
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIsAutomatedSession(t *testing.T) {
@@ -297,12 +298,8 @@ func TestIsAutomatedSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := IsAutomatedSession(tt.firstMessage)
-			if got != tt.want {
-				t.Errorf(
-					"IsAutomatedSession(%q) = %v, want %v",
-					tt.firstMessage, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, got,
+				"IsAutomatedSession(%q)", tt.firstMessage)
 		})
 	}
 }
@@ -336,10 +333,8 @@ func TestNormalizeUserPrefixes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := normalizeUserPrefixes(tt.in)
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("normalizeUserPrefixes(%q) = %q, want %q",
-					tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got,
+				"normalizeUserPrefixes(%q)", tt.in)
 		})
 	}
 }
@@ -380,10 +375,8 @@ func TestIsAutomatedSessionWithUserPrefixes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := IsAutomatedSession(tt.firstMessage)
-			if got != tt.want {
-				t.Errorf("IsAutomatedSession(%q) = %v, want %v",
-					tt.firstMessage, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got,
+				"IsAutomatedSession(%q)", tt.firstMessage)
 		})
 	}
 }
@@ -396,7 +389,9 @@ func TestUserAutomationPrefixesReturnsCopy(t *testing.T) {
 		got[0] = "MUTATED"
 	}
 	again := UserAutomationPrefixes()
-	if len(again) == 0 || again[0] != "alpha" {
-		t.Errorf("singleton mutated through returned slice: got %q", again)
+	assert.NotEmpty(t, again, "singleton mutated through returned slice")
+	if len(again) > 0 {
+		assert.Equal(t, "alpha", again[0],
+			"singleton mutated through returned slice")
 	}
 }

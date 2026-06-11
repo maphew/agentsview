@@ -10,31 +10,36 @@ import (
 type AgentType string
 
 const (
-	AgentClaude        AgentType = "claude"
-	AgentCodex         AgentType = "codex"
-	AgentCopilot       AgentType = "copilot"
-	AgentGemini        AgentType = "gemini"
-	AgentOpenCode      AgentType = "opencode"
-	AgentOpenHands     AgentType = "openhands"
-	AgentCursor        AgentType = "cursor"
-	AgentIflow         AgentType = "iflow"
-	AgentAmp           AgentType = "amp"
-	AgentZencoder      AgentType = "zencoder"
-	AgentVSCodeCopilot AgentType = "vscode-copilot"
-	AgentPi            AgentType = "pi"
-	AgentQwen          AgentType = "qwen"
-	AgentOpenClaw      AgentType = "openclaw"
-	AgentKimi          AgentType = "kimi"
-	AgentClaudeAI      AgentType = "claude-ai"
-	AgentChatGPT       AgentType = "chatgpt"
-	AgentKiro          AgentType = "kiro"
-	AgentKiroIDE       AgentType = "kiro-ide"
-	AgentCortex        AgentType = "cortex"
-	AgentHermes        AgentType = "hermes"
-	AgentForge         AgentType = "forge"
-	AgentPiebald       AgentType = "piebald"
-	AgentWarp          AgentType = "warp"
-	AgentPositron      AgentType = "positron"
+	AgentClaude         AgentType = "claude"
+	AgentCodex          AgentType = "codex"
+	AgentCopilot        AgentType = "copilot"
+	AgentGemini         AgentType = "gemini"
+	AgentOpenCode       AgentType = "opencode"
+	AgentOpenHands      AgentType = "openhands"
+	AgentCursor         AgentType = "cursor"
+	AgentIflow          AgentType = "iflow"
+	AgentAmp            AgentType = "amp"
+	AgentZencoder       AgentType = "zencoder"
+	AgentVSCodeCopilot  AgentType = "vscode-copilot"
+	AgentPi             AgentType = "pi"
+	AgentQwen           AgentType = "qwen"
+	AgentOpenClaw       AgentType = "openclaw"
+	AgentQClaw          AgentType = "qclaw"
+	AgentKimi           AgentType = "kimi"
+	AgentClaudeAI       AgentType = "claude-ai"
+	AgentChatGPT        AgentType = "chatgpt"
+	AgentKiro           AgentType = "kiro"
+	AgentKiroIDE        AgentType = "kiro-ide"
+	AgentCortex         AgentType = "cortex"
+	AgentHermes         AgentType = "hermes"
+	AgentWorkBuddy      AgentType = "workbuddy"
+	AgentForge          AgentType = "forge"
+	AgentPiebald        AgentType = "piebald"
+	AgentWarp           AgentType = "warp"
+	AgentPositron       AgentType = "positron"
+	AgentAntigravity    AgentType = "antigravity"
+	AgentAntigravityCLI AgentType = "antigravity-cli"
+	AgentZed            AgentType = "zed"
 )
 
 // AgentDef describes a supported coding agent's filesystem
@@ -249,6 +254,17 @@ var Registry = []AgentDef{
 		FindSourceFunc: FindOpenClawSourceFile,
 	},
 	{
+		Type:           AgentQClaw,
+		DisplayName:    "QClaw",
+		EnvVar:         "QCLAW_DIR",
+		ConfigKey:      "qclaw_dirs",
+		DefaultDirs:    []string{".qclaw/agents"},
+		IDPrefix:       "qclaw:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverQClawSessions,
+		FindSourceFunc: FindQClawSourceFile,
+	},
+	{
 		Type:           AgentKimi,
 		DisplayName:    "Kimi",
 		EnvVar:         "KIMI_DIR",
@@ -321,6 +337,17 @@ var Registry = []AgentDef{
 		FindSourceFunc: FindHermesSourceFile,
 	},
 	{
+		Type:           AgentWorkBuddy,
+		DisplayName:    "WorkBuddy",
+		EnvVar:         "WORKBUDDY_PROJECTS_DIR",
+		ConfigKey:      "workbuddy_project_dirs",
+		DefaultDirs:    []string{".workbuddy/projects"},
+		IDPrefix:       "workbuddy:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverWorkBuddySessions,
+		FindSourceFunc: FindWorkBuddySourceFile,
+	},
+	{
 		Type:        AgentForge,
 		DisplayName: "Forge",
 		EnvVar:      "FORGE_DIR",
@@ -367,6 +394,50 @@ var Registry = []AgentDef{
 		FileBased:      true,
 		DiscoverFunc:   DiscoverPositronSessions,
 		FindSourceFunc: FindPositronSourceFile,
+	},
+	{
+		Type:           AgentZed,
+		DisplayName:    "Zed",
+		EnvVar:         "ZED_DIR",
+		ConfigKey:      "zed_dirs",
+		DefaultDirs:    zedDefaultDirs(),
+		IDPrefix:       "zed:",
+		FileBased:      true,
+		WatchSubdirs:   []string{"threads"},
+		DiscoverFunc:   DiscoverZedSessions,
+		FindSourceFunc: FindZedSourceFile,
+	},
+	{
+		Type:        AgentAntigravity,
+		DisplayName: "Antigravity",
+		EnvVar:      "ANTIGRAVITY_DIR",
+		ConfigKey:   "antigravity_dirs",
+		DefaultDirs: []string{".gemini/antigravity"},
+		IDPrefix:    "antigravity:",
+		WatchSubdirs: []string{
+			"conversations",
+			"brain",
+			"annotations",
+		},
+		FileBased:      true,
+		DiscoverFunc:   DiscoverAntigravitySessions,
+		FindSourceFunc: FindAntigravitySourceFile,
+	},
+	{
+		Type:        AgentAntigravityCLI,
+		DisplayName: "Antigravity CLI",
+		EnvVar:      "ANTIGRAVITY_CLI_DIR",
+		ConfigKey:   "antigravity_cli_dirs",
+		DefaultDirs: []string{".gemini/antigravity-cli"},
+		IDPrefix:    "antigravity-cli:",
+		WatchSubdirs: []string{
+			"conversations",
+			"implicit",
+			"brain",
+		},
+		FileBased:      true,
+		DiscoverFunc:   DiscoverAntigravityCLISessions,
+		FindSourceFunc: FindAntigravityCLISourceFile,
 	},
 }
 

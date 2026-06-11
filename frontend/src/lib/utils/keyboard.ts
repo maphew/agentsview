@@ -4,10 +4,13 @@ import { starred } from "../stores/starred.svelte.js";
 import { sync } from "../stores/sync.svelte.js";
 import { router } from "../stores/router.svelte.js";
 import { inSessionSearch } from "../stores/inSessionSearch.svelte.js";
+import { getExportUrl } from "../api/client.js";
 import {
-  getExportUrl,
-  resumeSession,
-} from "../api/client.js";
+  SessionsService,
+  type ResumeRequest,
+  type ResumeResponse,
+} from "../api/generated/index";
+import { configureGeneratedClient } from "../api/runtime.js";
 import {
   supportsResume,
   buildResumeCommand,
@@ -185,9 +188,15 @@ export function registerShortcuts(
         if (session && supportsResume(session.agent) && !session.id.includes("~")) {
           // Copy a runnable resume command. Cursor needs the backend cwd
           // applied client-side so the copied command is self-contained.
-          resumeSession(session.id, { command_only: true }).then((resp) => {
+          configureGeneratedClient();
+          SessionsService.postApiV1SessionsIdResume({
+            id: session.id,
+            requestBody: {
+              command_only: true,
+            } satisfies ResumeRequest,
+          }).then((resp) => {
             const cmd = formatResumeResponseCommand(
-              session.agent, resp,
+              session.agent, resp as ResumeResponse,
             ) || buildResumeCommand(
               session.agent,
               session.id,

@@ -32,12 +32,14 @@ func newSessionCommand() *cobra.Command {
 	)
 
 	cmd.AddCommand(newSessionGetCommand())
+	cmd.AddCommand(newSessionUsageCommand())
 	cmd.AddCommand(newSessionListCommand())
 	cmd.AddCommand(newSessionMessagesCommand())
 	cmd.AddCommand(newSessionToolCallsCommand())
 	cmd.AddCommand(newSessionExportCommand())
 	cmd.AddCommand(newSessionSyncCommand())
 	cmd.AddCommand(newSessionWatchCommand())
+	cmd.AddCommand(newSessionSearchCommand())
 	return cmd
 }
 
@@ -59,11 +61,47 @@ func resolveService(
 			"loading config: %w", err,
 		)
 	}
-	tr, err := detectTransport(cfg.DataDir, 0)
+	tr, err := detectTransport(cfg.DataDir, cfg.AuthToken, 0)
 	if err != nil {
 		return nil, nil, err
 	}
 	return newService(cfg, tr)
+}
+
+// resolveWritableService constructs a write-capable SessionService:
+// HTTP when a writable daemon is reachable, otherwise a direct
+// backend wired with a real sync.Engine. It refuses read-only
+// daemons (pg serve) and unreachable writable daemons. Callers MUST defer the returned
+// cleanup. Read-only commands should use resolveService instead.
+func resolveWritableService(
+	cmd *cobra.Command,
+) (service.SessionService, func(), error) {
+	if remote, _ := cmd.Flags().GetString("server"); remote != "" {
+		return nil, nil, errors.New("--server not yet implemented")
+	}
+	cfg, err := config.LoadPFlags(cmd.Flags())
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	tr, err := detectTransport(cfg.DataDir, cfg.AuthToken, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tr.Mode == transportHTTP && tr.ReadOnly {
+		return nil, nil, fmt.Errorf(
+			"daemon at %s is read-only (pg serve); cannot write: stop "+
+				"'pg serve' and use the local DB, or start a local daemon",
+			tr.URL,
+		)
+	}
+	if tr.Mode == transportDirect && tr.DirectReadOnly {
+		return nil, nil, errors.New(
+			"local daemon owns the SQLite archive but is not responding; " +
+				"refusing to write directly. Retry once the daemon is " +
+				"reachable, or stop it to write locally",
+		)
+	}
+	return syncService(cfg, tr)
 }
 
 // outputFormat returns the requested --format flag value

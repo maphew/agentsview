@@ -33,21 +33,24 @@ var errCodexIncrementalNeedsFullParse = errors.New(
 // codexSessionBuilder accumulates state while scanning a Codex
 // JSONL session file line by line.
 type codexSessionBuilder struct {
-	messages             []ParsedMessage
-	firstMessage         string
-	startedAt            time.Time
-	endedAt              time.Time
-	sessionID            string
-	project              string
-	ordinal              int
-	currentModel         string
-	callNames            map[string]string
-	callRefs             map[string]codexToolCallRef
-	agentSpawnCalls      map[string]string
-	agentWaitCalls       map[string]string
-	pendingAgentEvents   map[string][]codexPendingEvent
-	orphanNotificationIx map[string]int
-	lastTokenUsageRaw    string // dedup streaming duplicates
+	messages                 []ParsedMessage
+	firstMessage             string
+	firstUserContent         string
+	sawUserTurnAfterFirst    bool
+	mayReplayFirstUserPrompt bool
+	startedAt                time.Time
+	endedAt                  time.Time
+	sessionID                string
+	project                  string
+	ordinal                  int
+	currentModel             string
+	callNames                map[string]string
+	callRefs                 map[string]codexToolCallRef
+	agentSpawnCalls          map[string]string
+	agentWaitCalls           map[string]string
+	pendingAgentEvents       map[string][]codexPendingEvent
+	orphanNotificationIx     map[string]int
+	lastTokenUsageRaw        string // dedup streaming duplicates
 
 	// Most recent task lifecycle event seen on the file. Used to
 	// classify termination_status — task_complete maps to
@@ -160,14 +163,39 @@ func (b *codexSessionBuilder) handleResponseItem(
 		return
 	}
 
-	if role == "user" && isCodexSystemMessage(content) {
-		return
+	if role == "user" {
+		if isCodexTurnAbortedMessage(content) {
+			b.markFirstUserReplayPossible()
+		}
+		if isCodexSystemMessage(content) {
+			return
+		}
 	}
 
-	if role == "user" && b.firstMessage == "" {
-		b.firstMessage = truncate(
-			strings.ReplaceAll(content, "\n", " "), 300,
-		)
+	if role == "user" {
+		switch {
+		case b.firstUserContent == "":
+			b.firstUserContent = content
+			b.firstMessage = truncate(
+				strings.ReplaceAll(content, "\n", " "), 300,
+			)
+		case content == b.firstUserContent:
+			if !b.sawUserTurnAfterFirst &&
+				b.mayReplayFirstUserPrompt {
+				// Codex can re-emit the initial prompt verbatim after
+				// a turn_aborted continuation signal. Drop only that
+				// positively identified replay; otherwise an identical
+				// second prompt is real transcript content. The match
+				// is on full content, not the truncated preview.
+				b.mayReplayFirstUserPrompt = false
+				return
+			}
+			b.sawUserTurnAfterFirst = true
+			b.mayReplayFirstUserPrompt = false
+		default:
+			b.sawUserTurnAfterFirst = true
+			b.mayReplayFirstUserPrompt = false
+		}
 	}
 
 	b.messages = append(b.messages, ParsedMessage{
@@ -182,14 +210,25 @@ func (b *codexSessionBuilder) handleResponseItem(
 }
 
 func (b *codexSessionBuilder) handleEventMsg(payload gjson.Result) {
-	switch payload.Get("type").Str {
+	eventType := payload.Get("type").Str
+	switch eventType {
 	case "task_started", "task_complete", "turn_aborted":
-		b.lastTaskEvent = payload.Get("type").Str
+		b.lastTaskEvent = eventType
+		if eventType == "turn_aborted" {
+			b.markFirstUserReplayPossible()
+		}
 	case "token_count":
 		b.handleTokenCountEvent(payload)
 	case "collab_agent_spawn_end":
 		b.handleCollabAgentSpawnEnd(payload)
 	}
+}
+
+func (b *codexSessionBuilder) markFirstUserReplayPossible() {
+	if b.firstUserContent == "" || b.sawUserTurnAfterFirst {
+		return
+	}
+	b.mayReplayFirstUserPrompt = true
 }
 
 func (b *codexSessionBuilder) handleTokenCountEvent(
@@ -1266,6 +1305,82 @@ func readCodexModelAtOffset(
 	return model
 }
 
+// seedCodexUserDedup scans a Codex JSONL prefix [0, offset) to recover
+// the state the re-emitted-prompt dedup needs when resuming an
+// incremental parse: the full content of the first real user message,
+// whether another real user turn already occurred, and whether a
+// turn_aborted signal allows the next identical first prompt to be
+// dropped. It mirrors handleResponseItem's user-message filtering and
+// full-content matching so the incremental path dedups re-emitted
+// prompts identically to a full parse.
+func seedCodexUserDedup(
+	path string, offset int64,
+) (
+	firstContent string,
+	sawUserTurnAfterFirst bool,
+	mayReplayFirstUserPrompt bool,
+) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false, false
+	}
+	defer f.Close()
+
+	lr := newLineReader(io.LimitReader(f, offset), maxLineSize)
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		if !gjson.Valid(line) {
+			continue
+		}
+		switch gjson.Get(line, "type").Str {
+		case codexTypeEventMsg:
+			if gjson.Get(line, "payload.type").Str == "turn_aborted" &&
+				firstContent != "" &&
+				!sawUserTurnAfterFirst {
+				mayReplayFirstUserPrompt = true
+			}
+			continue
+		case codexTypeResponseItem:
+		default:
+			continue
+		}
+		payload := gjson.Get(line, "payload")
+		if payload.Get("role").Str != "user" {
+			continue
+		}
+		content := extractCodexContent(payload)
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		if isCodexTurnAbortedMessage(content) &&
+			firstContent != "" &&
+			!sawUserTurnAfterFirst {
+			mayReplayFirstUserPrompt = true
+		}
+		if isCodexSystemMessage(content) {
+			continue
+		}
+		switch {
+		case firstContent == "":
+			firstContent = content
+		case content == firstContent &&
+			!sawUserTurnAfterFirst &&
+			mayReplayFirstUserPrompt:
+			mayReplayFirstUserPrompt = false
+		case content == firstContent:
+			sawUserTurnAfterFirst = true
+			mayReplayFirstUserPrompt = false
+		default:
+			sawUserTurnAfterFirst = true
+			mayReplayFirstUserPrompt = false
+		}
+	}
+	return firstContent, sawUserTurnAfterFirst, mayReplayFirstUserPrompt
+}
+
 // ParseCodexSessionFrom parses only new lines from a Codex
 // JSONL file starting at the given byte offset. Returns only
 // the newly parsed messages (with ordinals starting at
@@ -1280,6 +1395,12 @@ func ParseCodexSessionFrom(
 	b := newCodexSessionBuilder(includeExec)
 	b.ordinal = startOrdinal
 	b.currentModel = readCodexModelAtOffset(path, offset)
+	// Recover the re-emitted-prompt dedup state from the already-parsed
+	// prefix so a replay appended across syncs is dropped just as a
+	// full parse would.
+	b.firstUserContent,
+		b.sawUserTurnAfterFirst,
+		b.mayReplayFirstUserPrompt = seedCodexUserDedup(path, offset)
 	var fallbackErr error
 
 	consumed, err := readJSONLFrom(
@@ -1327,9 +1448,16 @@ func isCodexSystemMessage(content string) bool {
 	return strings.HasPrefix(content, "# AGENTS.md") ||
 		strings.HasPrefix(content, "<environment_context>") ||
 		strings.HasPrefix(content, "<INSTRUCTIONS>") ||
-		strings.HasPrefix(trimmed, "<turn_aborted>") ||
+		isCodexTurnAbortedMessage(content) ||
 		strings.HasPrefix(trimmed, "<skill>") ||
 		isCodexSubagentNotification(content)
+}
+
+func isCodexTurnAbortedMessage(content string) bool {
+	return strings.HasPrefix(
+		strings.TrimSpace(content),
+		"<turn_aborted>",
+	)
 }
 
 func isCodexSubagentNotification(content string) bool {

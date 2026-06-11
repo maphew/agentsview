@@ -55,12 +55,13 @@
     if (!hq.trim()) {
       searchExpandedInput = false;
       searchExpandedOutput = false;
+      contentFullyExpanded = false;
       prevQuery = hq;
       return;
     }
     const q = hq.toLowerCase();
     const inputText = (
-      taskPrompt ?? content ?? fallbackContent ?? ""
+      taskPrompt ?? fallbackContent ?? content ?? ""
     ).toLowerCase();
     const historyText = (
       toolCall?.result_events?.map((event) => event.content).join("\n\n") ?? ""
@@ -71,6 +72,7 @@
     searchExpandedInput = inputText.includes(q);
     searchExpandedOutput = outputText.includes(q);
     searchExpandedHistory = historyText.includes(q);
+    if (searchExpandedInput) contentFullyExpanded = true;
     if (hq !== prevQuery) {
       userOverride = false;
       userOutputOverride = false;
@@ -274,6 +276,24 @@
   let subagentSessionId = $derived(
     isTask ? toolCall?.subagent_session_id ?? null : null,
   );
+  const CONTENT_PREVIEW_LINES = 20;
+  let contentFullyExpanded: boolean = $state(false);
+
+  let displayContent = $derived.by(() => {
+    const raw = fallbackContent ?? content ?? "";
+    if (!raw) return { text: "", isLong: false };
+    const lines = raw.split("\n");
+    const isLong = lines.length > CONTENT_PREVIEW_LINES;
+    if (isLong && !contentFullyExpanded) {
+      return {
+        text: lines.slice(0, CONTENT_PREVIEW_LINES).join("\n"),
+        isLong: true,
+        totalLines: lines.length,
+      };
+    }
+    return { text: raw, isLong, totalLines: lines.length };
+  });
+
   let isDiff = $derived.by(() => {
     const text = fallbackContent ?? content ?? "";
     return text.startsWith("--- a/") || text.startsWith("@@");
@@ -294,6 +314,7 @@
       if (sel && sel.toString().length > 0) return;
       userCollapsed = !userCollapsed;
       userOverride = true;
+      if (userCollapsed) contentFullyExpanded = false;
     }}
   >
     <span class="tool-chevron" class:open={!collapsed}>
@@ -328,16 +349,25 @@
     {/if}
     {#if taskPrompt}
       <pre class="tool-content" use:applyHighlight={{ q: highlightQuery, current: isCurrentHighlight, content: taskPrompt }}>{@html escapeHTML(taskPrompt)}</pre>
-    {:else if content}
-      <pre class="tool-content" use:applyHighlight={{ q: highlightQuery, current: isCurrentHighlight, content }}>{@html escapeHTML(content)}</pre>
     {:else if fallbackContent && isDiff}
       <div class="diff-view">
         {#each diffLines as line}
           <div class="diff-line {line.startsWith('@@') ? 'diff-hunk' : line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : 'diff-ctx'}">{line}</div>
         {/each}
       </div>
-    {:else if fallbackContent}
-      <pre class="tool-content" use:applyHighlight={{ q: highlightQuery, current: isCurrentHighlight, content: fallbackContent }}>{@html escapeHTML(fallbackContent)}</pre>
+    {:else if displayContent.text}
+      <pre class="tool-content" use:applyHighlight={{ q: highlightQuery, current: isCurrentHighlight, content: displayContent.text }}>{@html escapeHTML(displayContent.text)}</pre>
+      {#if displayContent.isLong}
+        <button
+          class="show-more-btn"
+          onclick={(e) => {
+            e.stopPropagation();
+            contentFullyExpanded = !contentFullyExpanded;
+          }}
+        >
+          {contentFullyExpanded ? "show less" : `show all ${displayContent.totalLines} lines`}
+        </button>
+      {/if}
     {/if}
     {#if toolCall?.result_content}
       <button
@@ -523,6 +553,22 @@
   .meta-label {
     color: var(--text-secondary);
     font-weight: 500;
+  }
+
+  .show-more-btn {
+    display: block;
+    width: 100%;
+    padding: 4px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent-blue, #58a6ff);
+    text-align: left;
+    border-top: 1px solid var(--border-muted);
+    transition: background 0.1s;
+  }
+
+  .show-more-btn:hover {
+    background: var(--bg-surface-hover);
   }
 
   .tool-content {

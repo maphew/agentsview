@@ -1,16 +1,30 @@
 <script lang="ts">
+  import {
+    ChartColumnIcon,
+    CheckIcon,
+    ChevronDownIcon,
+    CirclePlayIcon,
+    CodeIcon,
+    CopyIcon,
+    EllipsisVerticalIcon,
+    FileTextIcon,
+    FolderIcon,
+    LinkIcon,
+    SearchIcon,
+    SquareTerminalIcon,
+  } from "../../icons.js";
   import { onMount } from "svelte";
   import type { Session } from "../../api/types.js";
   import {
-    resumeSession,
-    openSession,
-    getSessionDirectory,
-    listOpeners,
-    type Opener,
-  } from "../../api/client.js";
+    OpenersService,
+    SessionsService,
+    type ResumeRequest,
+    type ResumeResponse,
+  } from "../../api/generated/index";
+  import { configureGeneratedClient } from "../../api/runtime.js";
   import { copyToClipboard } from "../../utils/clipboard.js";
   import { agentColor, agentLabel } from "../../utils/agents.js";
-  import { formatTokenUsage } from "../../utils/format.js";
+  import { formatCost, formatTokenUsage } from "../../utils/format.js";
   import { normalizeMessagePreview } from "../../utils/messages.js";
   import { getGradeStyle, getGradeLabel } from "../../utils/grade.js";
   import SignalPanel from "../content/SignalPanel.svelte";
@@ -45,9 +59,27 @@
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
   let sessionDir = $state<string | null>(null);
 
+  interface Opener {
+    id: string;
+    name: string;
+    kind: "editor" | "terminal" | "files" | "action";
+    bin: string;
+  }
+
+  interface OpenersResponse {
+    openers: Opener[];
+  }
+
+  interface SessionDirectoryResponse {
+    path: string;
+  }
+
   onMount(() => {
-    listOpeners()
-      .then((res) => { openers = res.openers; })
+    configureGeneratedClient();
+    OpenersService.getApiV1Openers()
+      .then((res) => {
+        openers = (res as unknown as OpenersResponse).openers;
+      })
       .catch(() => {});
   });
 
@@ -61,10 +93,11 @@
     const id = session.id;
     if (id === resolvedSessionDirId) return;
     sessionDir = null;
-    getSessionDirectory(id)
+    configureGeneratedClient();
+    SessionsService.getApiV1SessionsIdDirectory({ id })
       .then(({ path }) => {
         if (session?.id === id) {
-          sessionDir = path || null;
+          sessionDir = (path as SessionDirectoryResponse["path"]) || null;
           resolvedSessionDirId = id;
         }
       })
@@ -73,6 +106,63 @@
         // session refresh retries the lookup.
       });
   });
+
+  let sessionCost = $state<number | null>(null);
+  // Key of the last successful usage fetch. Cost depends on more
+  // than output tokens (input/cache tokens and explicit usage-event
+  // costs), so the key includes every cost-affecting field present
+  // in API session responses. A resync that changes none of these
+  // (e.g. a cost-only usage event) keeps a stale cost until the
+  // next keyed field moves; closing that would need a freshness
+  // marker in the session API.
+  let costFetchKey: string | null = null;
+  let costSessionId: string | null = null;
+  let costRequestSeq = 0;
+  $effect(() => {
+    if (!session) {
+      sessionCost = null;
+      costFetchKey = null;
+      costSessionId = null;
+      costRequestSeq++;
+      return;
+    }
+    const id = session.id;
+    const key = [
+      id,
+      session.total_output_tokens ?? 0,
+      session.peak_context_tokens ?? 0,
+      session.has_total_output_tokens ?? "",
+      session.has_peak_context_tokens ?? "",
+      session.message_count ?? 0,
+      session.ended_at ?? "",
+    ].join("\n");
+    if (id !== costSessionId) {
+      // Entering a different session invalidates both the displayed
+      // cost and the fetch cache; the cached key must never satisfy
+      // the early return below while another session's request is
+      // still in flight.
+      sessionCost = null;
+      costFetchKey = null;
+    }
+    if (key === costFetchKey) return;
+    costSessionId = id;
+    const seq = ++costRequestSeq;
+    configureGeneratedClient();
+    SessionsService.getApiV1SessionsIdUsage({ id })
+      .then((res) => {
+        if (seq !== costRequestSeq) return;
+        costFetchKey = key;
+        sessionCost = res.has_cost ? res.cost_usd : null;
+      })
+      .catch(() => {
+        // Leave the fetch key unset so the next
+        // session refresh retries the lookup.
+      });
+  });
+
+  let sessionCostLabel = $derived(
+    sessionCost !== null ? formatCost(sessionCost) : null,
+  );
 
   let sessionContextTokens = $derived(session?.peak_context_tokens ?? 0);
   let sessionOutputTokens = $derived(session?.total_output_tokens ?? 0);
@@ -201,9 +291,14 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, {
-        opener_id: opener.id,
-      });
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: {
+            opener_id: opener.id,
+          } satisfies ResumeRequest,
+        }) as ResumeResponse;
       if (resp.launched) {
         showFeedback(`Resumed in ${resp.terminal ?? opener.name}`);
         return;
@@ -231,7 +326,12 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, { command_only: true });
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: { command_only: true } satisfies ResumeRequest,
+        }) as ResumeResponse;
       if (resp.command) {
         const cmd = formatResumeResponseCommand(session.agent, resp);
         const ok = cmd ? await copyToClipboard(cmd) : false;
@@ -264,7 +364,11 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      await openSession(session.id, opener.id);
+      configureGeneratedClient();
+      await SessionsService.postApiV1SessionsIdOpen({
+        id: session.id,
+        requestBody: { opener_id: opener.id },
+      });
       showFeedback(`Opened in ${opener.name}`);
     } catch {
       showFeedback("Failed to open");
@@ -275,7 +379,12 @@
     if (!session) return;
     showOpenMenu = false;
     try {
-      const resp = await resumeSession(session.id, {});
+      configureGeneratedClient();
+      const resp =
+        await SessionsService.postApiV1SessionsIdResume({
+          id: session.id,
+          requestBody: {},
+        }) as ResumeResponse;
       if (resp.launched) {
         showFeedback(
           `Resumed in ${resp.terminal ?? "terminal"}`,
@@ -388,7 +497,11 @@
 
 
 <div class="session-breadcrumb">
-  <button class="breadcrumb-link" onclick={onBack}>
+  <button
+    class="breadcrumb-link"
+    onclick={onBack}
+    title="Back to sessions"
+  >
     Sessions
   </button>
   <span class="breadcrumb-sep">/</span>
@@ -447,15 +560,11 @@
             aria-label={canResume ? "Resume session" : "Session actions"}
           >
             {#if openFeedback}
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-              </svg>
+              <CheckIcon size="11" strokeWidth="2.4" aria-hidden="true" />
               {openFeedback}
             {:else}
               {canResume ? "Resume" : "Open"}
-              <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                <path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
-              </svg>
+              <ChevronDownIcon size="8" strokeWidth="2.6" aria-hidden="true" />
             {/if}
           </button>
           {#if showOpenMenu}
@@ -472,19 +581,14 @@
                 {/each}
                 <button class="open-menu-item" onclick={handleResumeDefault}>
                   <span class="open-menu-num">
-                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v3.585a.746.746 0 010 .83v3.585a.747.747 0 010 .83v3.67A1.75 1.75 0 0114.25 16H1.75A1.75 1.75 0 010 14.25V1.75zM1.5 6.5v3h13v-3h-13zm0 4.5v3.25c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25V11h-13zm13-5.5v-3.25a.25.25 0 00-.25-.25H1.75a.25.25 0 00-.25.25V5.5h13z"/>
-                    </svg>
+                    <SquareTerminalIcon size="10" strokeWidth="2" aria-hidden="true" />
                   </span>
                   <span class="open-menu-name">Default terminal</span>
                 </button>
                 <div class="open-menu-divider"></div>
                 <button class="open-menu-item" onclick={handleCopyResumeCommand}>
                   <span class="open-menu-num">
-                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/>
-                      <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/>
-                    </svg>
+                    <CopyIcon size="10" strokeWidth="2" aria-hidden="true" />
                   </span>
                   <span class="open-menu-name">Copy command</span>
                 </button>
@@ -492,9 +596,7 @@
               {#if isLocal}
               <button class="open-menu-item" onclick={handleCopyFilePath}>
                 <span class="open-menu-num">
-                  <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                    <path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V6H9.75A1.75 1.75 0 018 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v9.086A1.75 1.75 0 0112.25 16h-8.5A1.75 1.75 0 012 14.25V1.75z"/>
-                  </svg>
+                  <FileTextIcon size="10" strokeWidth="2" aria-hidden="true" />
                 </span>
                 <span class="open-menu-name">Copy directory path</span>
               </button>
@@ -507,10 +609,7 @@
                     onclick={() => handleOpenIn(opener)}
                   >
                     <span class="open-menu-num">
-                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M4.708 5.578L2.061 8.224l2.647 2.646-.708.708L.94 8.578V7.87L4 4.87l.708.708zm7.292 0l2.647 2.646-2.647 2.646.708.708L15.768 8.578V7.87L12.708 4.87 12 5.578z"/>
-                        <path d="M5.708 13.578L9.258 2.578l.984.344-3.55 11-.984-.344z"/>
-                      </svg>
+                      <CodeIcon size="10" strokeWidth="2" aria-hidden="true" />
                     </span>
                     <span class="open-menu-name">{opener.name}</span>
                   </button>
@@ -521,9 +620,7 @@
                     onclick={() => handleOpenIn(opener)}
                   >
                     <span class="open-menu-num">
-                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/>
-                      </svg>
+                      <FolderIcon size="10" strokeWidth="2" aria-hidden="true" />
                     </span>
                     <span class="open-menu-name">{opener.name}</span>
                   </button>
@@ -537,9 +634,7 @@
                   onclick={() => handleResumeIn(claudeDesktopOpener)}
                 >
                   <span class="open-menu-num">
-                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 8.9l-5 3a.75.75 0 01-1.125-.65v-6a.75.75 0 011.125-.65l5 3a.75.75 0 010 1.3z"/>
-                    </svg>
+                    <CirclePlayIcon size="10" strokeWidth="2" aria-hidden="true" />
                   </span>
                   <span class="open-menu-name">Claude Desktop</span>
                 </button>
@@ -552,8 +647,9 @@
         {@const rawId = sessionDisplayId(session.id)}
         <button
           class="session-id"
-          title={rawId}
+          title="Copy session ID: {rawId}"
           onclick={() => copySessionId(rawId, session.id)}
+          aria-label="Copy session ID"
         >
           {copiedSessionId === session.id
             ? "Copied!"
@@ -571,6 +667,11 @@
           {sessionTokenSummary}
         </span>
       {/if}
+      {#if sessionCostLabel}
+        <span class="cost-badge" title="Estimated session cost">
+          {sessionCostLabel}
+        </span>
+      {/if}
       {#if mainModel}
         <span class="model-badge" title={mainModel}>{mainModel}</span>
       {/if}
@@ -583,26 +684,23 @@
           aria-label="Copy link to session"
         >
           {#if copiedLinkId === session?.id}
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-            </svg>
+            <CheckIcon size="13" strokeWidth="2.4" aria-hidden="true" />
           {:else}
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4.715 6.542L3.343 7.914a3 3 0 104.243 4.243l1.828-1.829A3 3 0 008.586 5.5L8 6.086a1.002 1.002 0 00-.154.199 2 2 0 01.861 3.337L6.88 11.45a2 2 0 11-2.83-2.83l.793-.792a4.018 4.018 0 01-.128-1.287z"/>
-              <path d="M11.285 9.458l1.372-1.372a3 3 0 10-4.243-4.243L6.586 5.671A3 3 0 007.414 10.5l.586-.586a1.002 1.002 0 00.154-.199 2 2 0 01-.861-3.337L9.12 4.55a2 2 0 112.83 2.83l-.793.792c.112.42.155.855.128 1.287z"/>
-            </svg>
+            <LinkIcon size="13" strokeWidth="2" aria-hidden="true" />
           {/if}
         </button>
         <button
           class="minimap-btn"
           class:minimap-btn--active={ui.vitalsOpen}
-          title="Session vital signs"
+          title={ui.vitalsOpen
+            ? "Hide session analysis"
+            : "Show session analysis"}
           onclick={() => ui.toggleVitals()}
-          aria-label="Toggle session vital signs"
+          aria-label={ui.vitalsOpen
+            ? "Hide session analysis"
+            : "Show session analysis"}
         >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1 14V8h2v6H1zm4 0V2h2v12H5zm4 0V5h2v9H9zm4 0V9h2v5h-2z"/>
-          </svg>
+          <ChartColumnIcon size="13" strokeWidth="2" aria-hidden="true" />
         </button>
         <button
           class="find-btn"
@@ -611,26 +709,16 @@
           onclick={() => inSessionSearch.toggle()}
           aria-label="Find in session"
         >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.099zm-5.242 1.156a5.5 5.5 0 110-11 5.5 5.5 0 010 11z"/>
-          </svg>
+          <SearchIcon size="13" strokeWidth="2" aria-hidden="true" />
         </button>
         <button
           class="actions-btn"
           title="Session actions"
+          aria-label="Session actions"
           bind:this={menuBtnEl}
           onclick={toggleMenu}
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-          >
-            <circle cx="8" cy="2.5" r="1.5" />
-            <circle cx="8" cy="8" r="1.5" />
-            <circle cx="8" cy="13.5" r="1.5" />
-          </svg>
+          <EllipsisVerticalIcon size="14" strokeWidth="2.4" aria-hidden="true" />
         </button>
         {#if menuOpen}
           <div class="actions-menu" bind:this={menuEl}>
@@ -882,6 +970,17 @@
   .token-badge--mobile {
     display: none;
     white-space: nowrap;
+  }
+
+  .cost-badge {
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .model-badge {

@@ -5,6 +5,8 @@ package parser
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // parseAndGetToolCalls is a helper function that takes test lines, runs the parser,
@@ -14,12 +16,8 @@ func parseAndGetToolCalls(t *testing.T, filename string, lines []string) []Parse
 	content := strings.Join(lines, "\n")
 	path := createTestFile(t, filename, content)
 	results, err := ParseClaudeSession(path, "proj", "local")
-	if err != nil {
-		t.Fatalf("ParseClaudeSession: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("no results")
-	}
+	require.NoError(t, err, "ParseClaudeSession")
+	require.NotEmpty(t, results, "no results")
 
 	var toolCalls []ParsedToolCall
 	for _, msg := range results[0].Messages {

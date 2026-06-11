@@ -11,8 +11,10 @@ type errReadOnly struct{}
 func (errReadOnly) Error() string { return "not available in remote mode" }
 
 // Store is the interface the HTTP server uses for all data access.
-// The concrete *DB (SQLite) satisfies it implicitly. The pgdb
-// package provides a read-only PostgreSQL implementation.
+// Any new server-visible query or mutation belongs here, not only on
+// the SQLite *DB type, so PostgreSQL and DuckDB fail compilation until
+// they implement the same capability surface. The backendcontract package
+// centralizes compile-time assertions for every concrete provider.
 type Store interface {
 	// Cursor pagination.
 	SetCursorSecret(secret []byte)
@@ -21,6 +23,7 @@ type Store interface {
 
 	// Sessions.
 	ListSessions(ctx context.Context, f SessionFilter) (SessionPage, error)
+	GetSidebarSessionIndex(ctx context.Context, f SessionFilter) (SidebarSessionIndex, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	GetSessionFull(ctx context.Context, id string) (*Session, error)
 	GetChildSessions(ctx context.Context, parentID string) ([]Session, error)
@@ -37,6 +40,9 @@ type Store interface {
 	HasFTS() bool
 	Search(ctx context.Context, f SearchFilter) (SearchPage, error)
 	SearchSession(ctx context.Context, sessionID, query string) ([]int, error)
+	SearchContent(ctx context.Context, f ContentSearchFilter) (ContentSearchPage, error)
+	ListSecretFindings(ctx context.Context, f SecretFindingFilter) (SecretFindingPage, error)
+	SecretFindingSource(ctx context.Context, f SecretFinding) (string, bool, error)
 
 	// SSE change detection.
 	GetSessionVersion(id string) (count int, fileMtime int64, ok bool)
@@ -64,14 +70,15 @@ type Store interface {
 	GetDailyUsage(ctx context.Context, f UsageFilter) (DailyUsageResult, error)
 	GetTopSessionsByCost(ctx context.Context, f UsageFilter, limit int) ([]TopSessionEntry, error)
 	GetUsageSessionCounts(ctx context.Context, f UsageFilter) (UsageSessionCounts, error)
+	GetSessionUsage(ctx context.Context, sessionID string) (*SessionUsage, error)
 
-	// Stars (local-only; PG returns ErrReadOnly).
+	// Stars.
 	StarSession(sessionID string) (bool, error)
 	UnstarSession(sessionID string) error
 	ListStarredSessionIDs(ctx context.Context) ([]string, error)
 	BulkStarSessions(sessionIDs []string) error
 
-	// Pins (local-only; PG returns ErrReadOnly).
+	// Pins.
 	PinMessage(sessionID string, messageID int64, note *string) (int64, error)
 	UnpinMessage(sessionID string, messageID int64) error
 	ListPinnedMessages(ctx context.Context, sessionID string, project string) ([]PinnedMessage, error)

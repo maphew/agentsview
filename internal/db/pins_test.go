@@ -3,6 +3,9 @@ package db
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // pinFirstMessage pins the first message of a session and returns
@@ -11,15 +14,11 @@ func pinFirstMessage(t *testing.T, d *DB, sessionID string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	msgs, err := d.GetMessages(ctx, sessionID, 0, 1, true)
-	requireNoError(t, err, "GetMessages")
-	if len(msgs) == 0 {
-		t.Fatalf("no messages in session %s", sessionID)
-	}
+	require.NoError(t, err, "GetMessages")
+	require.NotEmpty(t, msgs, "no messages in session %s", sessionID)
 	id, err := d.PinMessage(sessionID, msgs[0].ID, nil)
-	requireNoError(t, err, "PinMessage")
-	if id == 0 {
-		t.Fatalf("PinMessage returned 0 for session %s msg %d", sessionID, msgs[0].ID)
-	}
+	require.NoError(t, err, "PinMessage")
+	require.NotZero(t, id, "PinMessage returned 0 for session %s msg %d", sessionID, msgs[0].ID)
 	return msgs[0].ID
 }
 
@@ -35,10 +34,8 @@ func TestListPinnedMessages_NoFilter(t *testing.T) {
 	pinFirstMessage(t, d, "s2")
 
 	pins, err := d.ListPinnedMessages(ctx, "", "")
-	requireNoError(t, err, "ListPinnedMessages no filter")
-	if len(pins) != 2 {
-		t.Fatalf("got %d pins, want 2", len(pins))
-	}
+	require.NoError(t, err, "ListPinnedMessages no filter")
+	require.Len(t, pins, 2)
 }
 
 func TestListPinnedMessages_ProjectFilter(t *testing.T) {
@@ -67,16 +64,13 @@ func TestListPinnedMessages_ProjectFilter(t *testing.T) {
 	for _, tc := range tests {
 		t.Run("project="+tc.project, func(t *testing.T) {
 			pins, err := d.ListPinnedMessages(ctx, "", tc.project)
-			requireNoError(t, err, "ListPinnedMessages")
-			if len(pins) != tc.wantCount {
-				t.Errorf("got %d pins, want %d", len(pins), tc.wantCount)
-			}
+			require.NoError(t, err, "ListPinnedMessages")
+			assert.Len(t, pins, tc.wantCount)
 			// Verify project metadata on returned pins matches filter.
 			for _, p := range pins {
-				if tc.project != "" && p.SessionProject != nil &&
-					*p.SessionProject != tc.project {
-					t.Errorf("pin session_project = %q, want %q",
-						*p.SessionProject, tc.project)
+				if tc.project != "" && p.SessionProject != nil {
+					assert.Equal(t, tc.project, *p.SessionProject,
+						"pin session_project")
 				}
 			}
 		})
@@ -99,16 +93,13 @@ func TestListPinnedMessages_ProjectFilterExcludesTrashed(t *testing.T) {
 		"UPDATE sessions SET deleted_at = ? WHERE id = ?",
 		tsZeroS1, "trashed",
 	)
-	requireNoError(t, err, "soft-delete session")
+	require.NoError(t, err, "soft-delete session")
 
 	pins, err := d.ListPinnedMessages(ctx, "", "alpha")
-	requireNoError(t, err, "ListPinnedMessages")
-	if len(pins) != 1 {
-		t.Fatalf("got %d pins, want 1 (trashed session excluded)", len(pins))
-	}
-	if pins[0].SessionID != "live" {
-		t.Errorf("expected pin from live session, got session_id %q", pins[0].SessionID)
-	}
+	require.NoError(t, err, "ListPinnedMessages")
+	require.Len(t, pins, 1, "trashed session excluded")
+	assert.Equal(t, "live", pins[0].SessionID,
+		"expected pin from live session")
 }
 
 func TestListPinnedMessages_SessionFilterIgnoresProject(t *testing.T) {
@@ -121,8 +112,6 @@ func TestListPinnedMessages_SessionFilterIgnoresProject(t *testing.T) {
 
 	// project param is ignored when sessionID is set.
 	pins, err := d.ListPinnedMessages(ctx, "s1", "beta")
-	requireNoError(t, err, "ListPinnedMessages by session")
-	if len(pins) != 1 {
-		t.Fatalf("got %d pins, want 1", len(pins))
-	}
+	require.NoError(t, err, "ListPinnedMessages by session")
+	require.Len(t, pins, 1)
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { CheckIcon, ChevronDownIcon } from "../../icons.js";
 
   interface FilterItem {
     name: string;
@@ -117,16 +118,7 @@
     }}
   >
     <span class="trigger-label">{buttonLabel}</span>
-    <svg
-      class="chevron"
-      class:open
-      width="10"
-      height="10"
-      viewBox="0 0 10 10"
-      fill="currentColor"
-    >
-      <path d="M2.5 3.5L5 6.5L7.5 3.5" />
-    </svg>
+    <ChevronDownIcon class={open ? "chevron open" : "chevron"} size="10" strokeWidth="2.2" aria-hidden="true" />
   </button>
 
   {#if open}
@@ -164,21 +156,7 @@
               class:on={filteredCount === 0}
             >
               {#if filteredCount === 0}
-                <svg
-                  width="8"
-                  height="8"
-                  viewBox="0 0 8 8"
-                  fill="currentColor"
-                >
-                  <path
-                    d="M1.5 4L3.2 5.8L6.5 2.2"
-                    fill="none"
-                    stroke="white"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <CheckIcon size="8" strokeWidth="2.4" aria-hidden="true" />
               {/if}
             </span>
             <span class="item-name">All {label.toLowerCase()}s</span>
@@ -201,21 +179,7 @@
               class:on={included}
             >
               {#if included}
-                <svg
-                  width="8"
-                  height="8"
-                  viewBox="0 0 8 8"
-                  fill="currentColor"
-                >
-                  <path
-                    d="M1.5 4L3.2 5.8L6.5 2.2"
-                    fill="none"
-                    stroke="white"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <CheckIcon size="8" strokeWidth="2.4" aria-hidden="true" />
               {/if}
             </span>
             {#if color}
@@ -277,12 +241,12 @@
     text-overflow: ellipsis;
   }
 
-  .chevron {
+  :global(.chevron) {
     flex-shrink: 0;
     transition: transform 0.15s;
   }
 
-  .chevron.open {
+  :global(.chevron.open) {
     transform: rotate(180deg);
   }
 

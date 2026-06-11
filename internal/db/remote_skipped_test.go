@@ -4,6 +4,9 @@ import (
 	"maps"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/dbtest"
 )
 
@@ -11,12 +14,8 @@ func TestRemoteSkippedFiles_InitiallyEmpty(t *testing.T) {
 	d := dbtest.OpenTestDB(t)
 
 	loaded, err := d.LoadRemoteSkippedFiles("devbox1")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles: %v", err)
-	}
-	if len(loaded) != 0 {
-		t.Fatalf("expected empty, got %d entries", len(loaded))
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles")
+	require.Empty(t, loaded)
 }
 
 func TestRemoteSkippedFiles_RoundTrip(t *testing.T) {
@@ -27,19 +26,12 @@ func TestRemoteSkippedFiles_RoundTrip(t *testing.T) {
 		"/home/user/.claude/sessions/b.jsonl": 2000,
 		"/home/user/.claude/sessions/c.jsonl": 3000,
 	}
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", entries,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles: %v", err)
-	}
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox1", entries))
 
 	loaded, err := d.LoadRemoteSkippedFiles("devbox1")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles: %v", err)
-	}
-	if !maps.Equal(loaded, entries) {
-		t.Errorf("loaded %v, want %v", loaded, entries)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles")
+	assert.True(t, maps.Equal(loaded, entries),
+		"loaded %v, want %v", loaded, entries)
 }
 
 func TestRemoteSkippedFiles_HostIsolation(t *testing.T) {
@@ -49,32 +41,18 @@ func TestRemoteSkippedFiles_HostIsolation(t *testing.T) {
 		"/a.jsonl": 100,
 		"/b.jsonl": 200,
 	}
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", entries,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles: %v", err)
-	}
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox1", entries))
 
 	// Different host should return empty.
 	loaded, err := d.LoadRemoteSkippedFiles("devbox2")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles devbox2: %v", err)
-	}
-	if len(loaded) != 0 {
-		t.Fatalf(
-			"devbox2: expected empty, got %d entries",
-			len(loaded),
-		)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles devbox2")
+	require.Empty(t, loaded, "devbox2 should be empty")
 
 	// Original host still has its entries.
 	loaded, err = d.LoadRemoteSkippedFiles("devbox1")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles devbox1: %v", err)
-	}
-	if !maps.Equal(loaded, entries) {
-		t.Errorf("devbox1: loaded %v, want %v", loaded, entries)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles devbox1")
+	assert.True(t, maps.Equal(loaded, entries),
+		"devbox1: loaded %v, want %v", loaded, entries)
 }
 
 func TestRemoteSkippedFiles_ReplaceOverwrites(t *testing.T) {
@@ -84,35 +62,18 @@ func TestRemoteSkippedFiles_ReplaceOverwrites(t *testing.T) {
 		"/a.jsonl": 100,
 		"/b.jsonl": 200,
 	}
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", first,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles: %v", err)
-	}
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox1", first))
 
 	// Replace with different entries.
 	second := map[string]int64{
 		"/c.jsonl": 300,
 	}
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", second,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles: %v", err)
-	}
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox1", second))
 
 	loaded, err := d.LoadRemoteSkippedFiles("devbox1")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles: %v", err)
-	}
-	if len(loaded) != 1 {
-		t.Fatalf("got %d entries, want 1", len(loaded))
-	}
-	if loaded["/c.jsonl"] != 300 {
-		t.Errorf(
-			"loaded[/c.jsonl] = %d, want 300",
-			loaded["/c.jsonl"],
-		)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles")
+	require.Len(t, loaded, 1)
+	assert.Equal(t, int64(300), loaded["/c.jsonl"])
 }
 
 func TestRemoteSkippedFiles_ReplaceDoesNotAffectOtherHosts(
@@ -123,41 +84,19 @@ func TestRemoteSkippedFiles_ReplaceDoesNotAffectOtherHosts(
 	host1 := map[string]int64{"/a.jsonl": 100}
 	host2 := map[string]int64{"/b.jsonl": 200}
 
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", host1,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles devbox1: %v", err)
-	}
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox2", host2,
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles devbox2: %v", err)
-	}
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox1", host1))
+	require.NoError(t, d.ReplaceRemoteSkippedFiles("devbox2", host2))
 
 	// Replace devbox1 with empty — devbox2 unaffected.
-	if err := d.ReplaceRemoteSkippedFiles(
-		"devbox1", map[string]int64{},
-	); err != nil {
-		t.Fatalf("ReplaceRemoteSkippedFiles empty: %v", err)
-	}
+	require.NoError(t,
+		d.ReplaceRemoteSkippedFiles("devbox1", map[string]int64{}))
 
 	loaded1, err := d.LoadRemoteSkippedFiles("devbox1")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles devbox1: %v", err)
-	}
-	if len(loaded1) != 0 {
-		t.Fatalf(
-			"devbox1: got %d entries, want 0", len(loaded1),
-		)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles devbox1")
+	require.Empty(t, loaded1, "devbox1 should be empty")
 
 	loaded2, err := d.LoadRemoteSkippedFiles("devbox2")
-	if err != nil {
-		t.Fatalf("LoadRemoteSkippedFiles devbox2: %v", err)
-	}
-	if !maps.Equal(loaded2, host2) {
-		t.Errorf(
-			"devbox2: loaded %v, want %v", loaded2, host2,
-		)
-	}
+	require.NoError(t, err, "LoadRemoteSkippedFiles devbox2")
+	assert.True(t, maps.Equal(loaded2, host2),
+		"devbox2: loaded %v, want %v", loaded2, host2)
 }

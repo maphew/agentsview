@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -17,23 +20,16 @@ func prepareUsageSchema(
 
 	pgURL := testPGURL(t)
 	pg, err := Open(pgURL, schema, true)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	t.Cleanup(func() { _ = pg.Close() })
 
 	ctx := context.Background()
-	if _, err := pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`); err != nil {
-		t.Fatalf("drop schema: %v", err)
-	}
-	if err := EnsureSchema(ctx, pg, schema); err != nil {
-		t.Fatalf("EnsureSchema: %v", err)
-	}
+	_, err = pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	require.NoError(t, err, "drop schema")
+	require.NoError(t, EnsureSchema(ctx, pg, schema), "EnsureSchema")
 
 	store, err := NewStore(pgURL, schema, true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	t.Cleanup(func() { _ = store.Close() })
 	return pgURL, store
 }
@@ -50,9 +46,7 @@ func TestStoreGetDailyUsageUsesFallbackPricing(t *testing.T) {
 			'usage-fallback-001', 'test-machine', 'proj', 'claude',
 			'2026-03-12T10:00:00Z'::timestamptz, 1, 1
 		)`)
-	if err != nil {
-		t.Fatalf("insert session: %v", err)
-	}
+	require.NoError(t, err, "insert session")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp,
@@ -63,24 +57,16 @@ func TestStoreGetDailyUsageUsesFallbackPricing(t *testing.T) {
 			'claude-sonnet-4-20250514',
 			'{"input_tokens":1000000}'
 		)`)
-	if err != nil {
-		t.Fatalf("insert message: %v", err)
-	}
+	require.NoError(t, err, "insert message")
 
 	result, err := store.GetDailyUsage(ctx, db.UsageFilter{
 		From:     "2026-03-12",
 		To:       "2026-03-12",
 		Timezone: "UTC",
 	})
-	if err != nil {
-		t.Fatalf("GetDailyUsage: %v", err)
-	}
-	if got := result.Totals.TotalCost; got != 3.0 {
-		t.Fatalf("TotalCost = %.2f, want 3.0", got)
-	}
-	if len(result.Daily) != 1 {
-		t.Fatalf("daily len = %d, want 1", len(result.Daily))
-	}
+	require.NoError(t, err, "GetDailyUsage")
+	assert.Equal(t, 3.0, result.Totals.TotalCost)
+	assert.Len(t, result.Daily, 1)
 }
 
 func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
@@ -94,9 +80,7 @@ func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
 		) VALUES
 			('test-model-a', 1, 2, 3, 0.5, 'seed'),
 			('test-model-b', 2, 4, 0, 0, 'seed')`)
-	if err != nil {
-		t.Fatalf("insert pricing: %v", err)
-	}
+	require.NoError(t, err, "insert pricing")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO sessions (
 			id, machine, project, agent, started_at,
@@ -106,9 +90,7 @@ func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
 			 '2026-03-12T10:00:00Z'::timestamptz, 1, 1),
 			('usage-breakdown-002', 'test-machine', 'proj-b', 'codex',
 			 '2026-03-12T11:00:00Z'::timestamptz, 1, 1)`)
-	if err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
+	require.NoError(t, err, "insert sessions")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp, content_length,
@@ -122,9 +104,7 @@ func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
 			 '2026-03-12T11:00:00Z'::timestamptz, 3,
 			 'test-model-b',
 			 '{"input_tokens":500000,"output_tokens":250000}')`)
-	if err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	require.NoError(t, err, "insert messages")
 
 	result, err := store.GetDailyUsage(ctx, db.UsageFilter{
 		From:       "2026-03-12",
@@ -132,31 +112,99 @@ func TestStoreGetDailyUsageWithBreakdowns(t *testing.T) {
 		Timezone:   "UTC",
 		Breakdowns: true,
 	})
-	if err != nil {
-		t.Fatalf("GetDailyUsage: %v", err)
-	}
-	if len(result.Daily) != 1 {
-		t.Fatalf("daily len = %d, want 1", len(result.Daily))
-	}
+	require.NoError(t, err, "GetDailyUsage")
+	require.Len(t, result.Daily, 1)
 	day := result.Daily[0]
-	if got, want := day.InputTokens, 1500000; got != want {
-		t.Fatalf("InputTokens = %d, want %d", got, want)
-	}
-	if got, want := day.OutputTokens, 750000; got != want {
-		t.Fatalf("OutputTokens = %d, want %d", got, want)
-	}
-	if got, want := len(day.ProjectBreakdowns), 2; got != want {
-		t.Fatalf("ProjectBreakdowns len = %d, want %d", got, want)
-	}
-	if got, want := len(day.AgentBreakdowns), 2; got != want {
-		t.Fatalf("AgentBreakdowns len = %d, want %d", got, want)
-	}
-	if got, want := len(day.ModelBreakdowns), 2; got != want {
-		t.Fatalf("ModelBreakdowns len = %d, want %d", got, want)
-	}
-	if day.TotalCost <= 0 {
-		t.Fatalf("TotalCost = %.4f, want > 0", day.TotalCost)
-	}
+	assert.Equal(t, 1500000, day.InputTokens)
+	assert.Equal(t, 750000, day.OutputTokens)
+	assert.Len(t, day.ProjectBreakdowns, 2)
+	assert.Len(t, day.AgentBreakdowns, 2)
+	assert.Len(t, day.ModelBreakdowns, 2)
+	assert.Greater(t, day.TotalCost, 0.0)
+}
+
+func TestStoreGetSessionUsagePricedModel(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_priced_test")
+
+	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `
+		INSERT INTO model_pricing (
+			model_pattern, input_per_mtok, output_per_mtok,
+			cache_creation_per_mtok, cache_read_per_mtok, updated_at
+		) VALUES ('gpt-5.1', 3, 15, 3.75, 0.30, 'seed')`)
+	require.NoError(t, err, "insert pricing")
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, machine, project, agent, started_at,
+			message_count, user_message_count,
+			total_output_tokens, peak_context_tokens,
+			has_total_output_tokens, has_peak_context_tokens
+		) VALUES (
+			'codex:usage-priced', 'test-machine', 'my-project', 'codex',
+			'2026-03-12T10:00:00Z'::timestamptz, 2, 1,
+			1234, 56789, true, true
+		)`)
+	require.NoError(t, err, "insert session")
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO messages (
+			session_id, ordinal, role, content, timestamp, content_length,
+			model, token_usage
+		) VALUES (
+			'codex:usage-priced', 1, 'assistant', 'done',
+			'2026-03-12T10:01:00Z'::timestamptz, 4,
+			'gpt-5.1',
+			'{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}'
+		)`)
+	require.NoError(t, err, "insert message")
+
+	got, err := store.GetSessionUsage(ctx, "codex:usage-priced")
+	require.NoError(t, err, "GetSessionUsage")
+	require.NotNil(t, got, "GetSessionUsage result")
+	assert.Equal(t, "codex:usage-priced", got.SessionID)
+	assert.Equal(t, "codex", got.Agent)
+	assert.Equal(t, "my-project", got.Project)
+	assert.Equal(t, 1234, got.TotalOutputTokens)
+	assert.Equal(t, 56789, got.PeakContextTokens)
+	assert.True(t, got.HasTokenData)
+	assert.True(t, got.HasCost)
+	assert.InDelta(t, 0.01134, got.CostUSD, 1e-9)
+	assert.Equal(t, []string{"gpt-5.1"}, got.Models)
+	assert.Empty(t, got.UnpricedModels)
+}
+
+func TestStoreGetSessionUsageNoTokenRowsKeepsMetadata(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_empty_test")
+
+	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, machine, project, agent, started_at,
+			message_count, user_message_count
+		) VALUES (
+			'codex:usage-empty', 'test-machine', 'quiet-project', 'codex',
+			'2026-03-12T10:00:00Z'::timestamptz, 1, 1
+		)`)
+	require.NoError(t, err, "insert session")
+
+	got, err := store.GetSessionUsage(ctx, "codex:usage-empty")
+	require.NoError(t, err, "GetSessionUsage")
+	require.NotNil(t, got, "GetSessionUsage result")
+	assert.Equal(t, "codex:usage-empty", got.SessionID)
+	assert.Equal(t, "codex", got.Agent)
+	assert.Equal(t, "quiet-project", got.Project)
+	assert.False(t, got.HasTokenData)
+	assert.False(t, got.HasCost)
+	assert.Zero(t, got.CostUSD)
+	assert.Empty(t, got.Models)
+	assert.Empty(t, got.UnpricedModels)
+}
+
+func TestStoreGetSessionUsageNotFound(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_session_usage_missing_test")
+
+	got, err := store.GetSessionUsage(context.Background(), "missing")
+	require.NoError(t, err, "GetSessionUsage")
+	assert.Nil(t, got, "GetSessionUsage")
 }
 
 func TestStoreGetTopSessionsByCostDedupesClaudeKeys(t *testing.T) {
@@ -168,9 +216,7 @@ func TestStoreGetTopSessionsByCostDedupesClaudeKeys(t *testing.T) {
 			model_pattern, input_per_mtok, output_per_mtok,
 			cache_creation_per_mtok, cache_read_per_mtok, updated_at
 		) VALUES ('test-model-top', 1, 0, 0, 0, 'seed')`)
-	if err != nil {
-		t.Fatalf("insert pricing: %v", err)
-	}
+	require.NoError(t, err, "insert pricing")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO sessions (
 			id, machine, project, agent, started_at,
@@ -180,9 +226,7 @@ func TestStoreGetTopSessionsByCostDedupesClaudeKeys(t *testing.T) {
 			 '2026-03-12T10:00:00Z'::timestamptz, 1, 1),
 			('usage-top-002', 'test-machine', 'proj-b', 'claude',
 			 '2026-03-12T10:01:00Z'::timestamptz, 1, 1)`)
-	if err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
+	require.NoError(t, err, "insert sessions")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp, content_length,
@@ -194,24 +238,16 @@ func TestStoreGetTopSessionsByCostDedupesClaudeKeys(t *testing.T) {
 			('usage-top-002', 0, 'assistant', 'two',
 			 '2026-03-12T10:01:00Z'::timestamptz, 3,
 			 'test-model-top', '{"input_tokens":1000000}', 'msg-1', 'req-1')`)
-	if err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	require.NoError(t, err, "insert messages")
 
 	top, err := store.GetTopSessionsByCost(ctx, db.UsageFilter{
 		From:     "2026-03-12",
 		To:       "2026-03-12",
 		Timezone: "UTC",
 	}, 20)
-	if err != nil {
-		t.Fatalf("GetTopSessionsByCost: %v", err)
-	}
-	if len(top) != 1 {
-		t.Fatalf("top len = %d, want 1", len(top))
-	}
-	if top[0].SessionID != "usage-top-001" {
-		t.Fatalf("top[0].SessionID = %q, want usage-top-001", top[0].SessionID)
-	}
+	require.NoError(t, err, "GetTopSessionsByCost")
+	require.Len(t, top, 1)
+	assert.Equal(t, "usage-top-001", top[0].SessionID)
 }
 
 func TestStoreGetUsageSessionCountsDedupesClaudeKeys(t *testing.T) {
@@ -227,9 +263,7 @@ func TestStoreGetUsageSessionCountsDedupesClaudeKeys(t *testing.T) {
 			 '2026-03-12T10:00:00Z'::timestamptz, 1, 1),
 			('usage-counts-002', 'test-machine', 'proj-b', 'claude',
 			 '2026-03-12T10:01:00Z'::timestamptz, 1, 1)`)
-	if err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
+	require.NoError(t, err, "insert sessions")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp, content_length,
@@ -241,27 +275,18 @@ func TestStoreGetUsageSessionCountsDedupesClaudeKeys(t *testing.T) {
 			('usage-counts-002', 0, 'assistant', 'two',
 			 '2026-03-12T10:01:00Z'::timestamptz, 3,
 			 'test-model-counts', '{"input_tokens":1}', 'msg-1', 'req-1')`)
-	if err != nil {
-		t.Fatalf("insert messages: %v", err)
-	}
+	require.NoError(t, err, "insert messages")
 
 	counts, err := store.GetUsageSessionCounts(ctx, db.UsageFilter{
 		From:     "2026-03-12",
 		To:       "2026-03-12",
 		Timezone: "UTC",
 	})
-	if err != nil {
-		t.Fatalf("GetUsageSessionCounts: %v", err)
-	}
-	if counts.Total != 1 {
-		t.Fatalf("Total = %d, want 1", counts.Total)
-	}
-	if counts.ByProject["proj-a"] != 1 {
-		t.Fatalf("ByProject[proj-a] = %d, want 1", counts.ByProject["proj-a"])
-	}
-	if _, ok := counts.ByProject["proj-b"]; ok {
-		t.Fatalf("proj-b should have been deduped out: %#v", counts.ByProject)
-	}
+	require.NoError(t, err, "GetUsageSessionCounts")
+	assert.Equal(t, 1, counts.Total)
+	assert.Equal(t, 1, counts.ByProject["proj-a"])
+	_, ok := counts.ByProject["proj-b"]
+	assert.False(t, ok, "proj-b should have been deduped out: %#v", counts.ByProject)
 }
 
 func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
@@ -275,9 +300,7 @@ func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
 		) VALUES
 			('claude-sonnet-4-20250514', 1, 1, 1, 1, 'seed'),
 			('gpt-5.4', 1, 1, 1, 1, 'seed')`)
-	if err != nil {
-		t.Fatalf("insert pricing: %v", err)
-	}
+	require.NoError(t, err, "insert pricing")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO sessions (
 			id, machine, project, agent, started_at,
@@ -289,9 +312,7 @@ func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
 			 '2026-05-14T10:00:00Z'::timestamptz, 1, 1),
 			('hermes-event-2', 'test-machine', 'proj-b', 'hermes',
 			 '2026-05-14T10:10:00Z'::timestamptz, 1, 1)`)
-	if err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
+	require.NoError(t, err, "insert sessions")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp, content_length,
@@ -301,9 +322,7 @@ func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
 			 '2026-05-14T09:05:00Z'::timestamptz, 3,
 			 'claude-sonnet-4-20250514',
 			 '{"input_tokens":100,"output_tokens":40}')`)
-	if err != nil {
-		t.Fatalf("insert message: %v", err)
-	}
+	require.NoError(t, err, "insert message")
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO usage_events (
 			session_id, source, model, input_tokens, output_tokens,
@@ -313,9 +332,7 @@ func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
 			 '2026-05-14T10:05:00Z'::timestamptz, 'shared-key'),
 			('hermes-event-2', 'session', 'gpt-5.4', 50, 5, 0,
 			 '2026-05-14T10:10:00Z'::timestamptz, 'shared-key')`)
-	if err != nil {
-		t.Fatalf("insert usage event: %v", err)
-	}
+	require.NoError(t, err, "insert usage event")
 
 	filter := db.UsageFilter{
 		From:       "2026-05-14",
@@ -324,49 +341,23 @@ func TestPostgresUsageQueriesUnionUsageEvents(t *testing.T) {
 		Breakdowns: true,
 	}
 	result, err := store.GetDailyUsage(ctx, filter)
-	if err != nil {
-		t.Fatalf("GetDailyUsage: %v", err)
-	}
-	if got, want := result.Totals.InputTokens, 450; got != want {
-		t.Fatalf("InputTokens = %d, want %d", got, want)
-	}
-	if got, want := result.Totals.OutputTokens, 115; got != want {
-		t.Fatalf("OutputTokens = %d, want %d", got, want)
-	}
-	if got, want := result.Totals.CacheReadTokens, 20; got != want {
-		t.Fatalf("CacheReadTokens = %d, want %d", got, want)
-	}
-	if got, want := len(result.Daily[0].AgentBreakdowns), 2; got != want {
-		t.Fatalf("AgentBreakdowns len = %d, want %d", got, want)
-	}
+	require.NoError(t, err, "GetDailyUsage")
+	assert.Equal(t, 450, result.Totals.InputTokens)
+	assert.Equal(t, 115, result.Totals.OutputTokens)
+	assert.Equal(t, 20, result.Totals.CacheReadTokens)
+	assert.Len(t, result.Daily[0].AgentBreakdowns, 2)
 
 	top, err := store.GetTopSessionsByCost(ctx, filter, 10)
-	if err != nil {
-		t.Fatalf("GetTopSessionsByCost: %v", err)
-	}
-	if got, want := len(top), 3; got != want {
-		t.Fatalf("top len = %d, want %d", got, want)
-	}
-	if got, want := top[0].SessionID, "hermes-event"; got != want {
-		t.Fatalf("top[0].SessionID = %q, want %q", got, want)
-	}
-	if got, want := top[0].TotalTokens, 390; got != want {
-		t.Fatalf("top[0].TotalTokens = %d, want %d", got, want)
-	}
+	require.NoError(t, err, "GetTopSessionsByCost")
+	require.Len(t, top, 3)
+	assert.Equal(t, "hermes-event", top[0].SessionID)
+	assert.Equal(t, 390, top[0].TotalTokens)
 
 	counts, err := store.GetUsageSessionCounts(ctx, filter)
-	if err != nil {
-		t.Fatalf("GetUsageSessionCounts: %v", err)
-	}
-	if got, want := counts.Total, 3; got != want {
-		t.Fatalf("Total = %d, want %d", got, want)
-	}
-	if got, want := counts.ByAgent["hermes"], 2; got != want {
-		t.Fatalf("ByAgent[hermes] = %d, want %d", got, want)
-	}
-	if got, want := counts.ByProject["proj-b"], 2; got != want {
-		t.Fatalf("ByProject[proj-b] = %d, want %d", got, want)
-	}
+	require.NoError(t, err, "GetUsageSessionCounts")
+	assert.Equal(t, 3, counts.Total)
+	assert.Equal(t, 2, counts.ByAgent["hermes"])
+	assert.Equal(t, 2, counts.ByProject["proj-b"])
 }
 
 func TestPushSyncsModelPricingToPostgres(t *testing.T) {
@@ -375,30 +366,23 @@ func TestPushSyncsModelPricingToPostgres(t *testing.T) {
 	t.Cleanup(func() { cleanPGSchema(t, pgURL) })
 
 	local := testDB(t)
-	if err := local.UpsertModelPricing([]db.ModelPricing{{
+	require.NoError(t, local.UpsertModelPricing([]db.ModelPricing{{
 		ModelPattern:         "test-model-sync",
 		InputPerMTok:         1.5,
 		OutputPerMTok:        2.5,
 		CacheCreationPerMTok: 3.5,
 		CacheReadPerMTok:     0.5,
-	}}); err != nil {
-		t.Fatalf("UpsertModelPricing: %v", err)
-	}
+	}}), "UpsertModelPricing")
 
 	ps, err := New(pgURL, "agentsview", local, "test-machine", true, SyncOptions{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 	defer ps.Close()
 
-	if _, err := ps.Push(context.Background(), false, nil); err != nil {
-		t.Fatalf("Push: %v", err)
-	}
+	_, err = ps.Push(context.Background(), false, nil)
+	require.NoError(t, err, "Push")
 
 	store, err := NewStore(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	rows, err := store.DB().QueryContext(context.Background(), `
@@ -406,32 +390,22 @@ func TestPushSyncsModelPricingToPostgres(t *testing.T) {
 			cache_creation_per_mtok, cache_read_per_mtok
 		FROM model_pricing
 		WHERE model_pattern = 'test-model-sync'`)
-	if err != nil {
-		t.Fatalf("query pricing: %v", err)
-	}
+	require.NoError(t, err, "query pricing")
 	defer rows.Close()
 
-	if !rows.Next() {
-		t.Fatal("expected synced pricing row")
-	}
+	require.True(t, rows.Next(), "expected synced pricing row")
 	var (
 		model                                   string
 		input, output, cacheCreation, cacheRead float64
 	)
-	if err := rows.Scan(
+	require.NoError(t, rows.Scan(
 		&model, &input, &output, &cacheCreation, &cacheRead,
-	); err != nil {
-		t.Fatalf("scan pricing: %v", err)
-	}
-	if model != "test-model-sync" {
-		t.Fatalf("model = %q, want test-model-sync", model)
-	}
-	if input != 1.5 || output != 2.5 || cacheCreation != 3.5 || cacheRead != 0.5 {
-		t.Fatalf(
-			"pricing row = (%v,%v,%v,%v), want (1.5,2.5,3.5,0.5)",
-			input, output, cacheCreation, cacheRead,
-		)
-	}
+	), "scan pricing")
+	assert.Equal(t, "test-model-sync", model)
+	assert.Equal(t, 1.5, input)
+	assert.Equal(t, 2.5, output)
+	assert.Equal(t, 3.5, cacheCreation)
+	assert.Equal(t, 0.5, cacheRead)
 }
 
 func TestPushFallsBackToBuiltinPricingWhenLocalTableEmpty(t *testing.T) {
@@ -441,43 +415,31 @@ func TestPushFallsBackToBuiltinPricingWhenLocalTableEmpty(t *testing.T) {
 
 	local := testDB(t)
 	ps, err := New(pgURL, "agentsview", local, "test-machine", true, SyncOptions{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 	defer ps.Close()
 
-	if _, err := ps.Push(context.Background(), false, nil); err != nil {
-		t.Fatalf("Push: %v", err)
-	}
+	_, err = ps.Push(context.Background(), false, nil)
+	require.NoError(t, err, "Push")
 
 	store, err := NewStore(pgURL, "agentsview", true)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err, "NewStore")
 	defer store.Close()
 
 	rows, err := store.DB().QueryContext(context.Background(), `
 		SELECT model_pattern
 		FROM model_pricing
 		ORDER BY model_pattern`)
-	if err != nil {
-		t.Fatalf("query pricing: %v", err)
-	}
+	require.NoError(t, err, "query pricing")
 	defer rows.Close()
 
 	var models []string
 	for rows.Next() {
 		var model string
-		if err := rows.Scan(&model); err != nil {
-			t.Fatalf("scan model: %v", err)
-		}
+		require.NoError(t, rows.Scan(&model), "scan model")
 		models = append(models, model)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows err: %v", err)
-	}
+	require.NoError(t, rows.Err(), "rows err")
 	joined := strings.Join(models, ",")
-	if !strings.Contains(joined, "claude-sonnet-4-20250514") {
-		t.Fatalf("fallback pricing not synced: %s", joined)
-	}
+	assert.Contains(t, joined, "claude-sonnet-4-20250514",
+		"fallback pricing not synced")
 }

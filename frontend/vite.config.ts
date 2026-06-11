@@ -12,6 +12,44 @@ function gitCommit(): string {
   }
 }
 
+const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
+const apiTargetOrigin = new URL(apiTarget).origin;
+
+function isIPv4LoopbackLiteral(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") return false;
+  return parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false;
+    const value = Number(part);
+    return value >= 0 && value <= 255;
+  });
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  const unbracketed = lower.startsWith("[") && lower.endsWith("]")
+    ? lower.slice(1, -1)
+    : lower;
+  return lower === "localhost" ||
+    isIPv4LoopbackLiteral(unbracketed) ||
+    unbracketed === "::1";
+}
+
+function requestOriginMatchesLoopbackDevServer(
+  origin: string | undefined,
+  host: string | undefined,
+): boolean {
+  if (!origin || !host) return false;
+  try {
+    const originURL = new URL(origin);
+    const hostURL = new URL(`${originURL.protocol}//${host}`);
+    return originURL.host === hostURL.host &&
+      isLoopbackHostname(originURL.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export default defineConfig({
   fmt: {},
   lint: {
@@ -39,8 +77,21 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080",
+        target: apiTarget,
         changeOrigin: true,
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq, req) => {
+            const origin = req.headers.origin;
+            if (
+              requestOriginMatchesLoopbackDevServer(
+                typeof origin === "string" ? origin : undefined,
+                req.headers.host,
+              )
+            ) {
+              proxyReq.setHeader("Origin", apiTargetOrigin);
+            }
+          });
+        },
       },
     },
   },

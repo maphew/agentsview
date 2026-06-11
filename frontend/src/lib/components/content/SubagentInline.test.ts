@@ -15,9 +15,18 @@ const {
   childSessions: new Map<string, Session>(),
 }));
 
-vi.mock("../../api/client.js", () => ({
-  getMessages,
-  getSession,
+vi.mock("../../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+}));
+
+vi.mock("../../api/generated/index", () => ({
+  SessionsService: {
+    getApiV1SessionsIdMessages: vi.fn(({ id, limit }) =>
+      getMessages(id, { limit })
+    ),
+    getApiV1SessionsId: vi.fn(({ id }) => getSession(id)),
+  },
 }));
 
 vi.mock("../../stores/sessions.svelte.js", () => ({

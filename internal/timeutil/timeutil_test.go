@@ -3,6 +3,9 @@ package timeutil
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPtr(t *testing.T) {
@@ -32,18 +35,11 @@ func TestPtr(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Ptr(tt.in)
 			if tt.want == nil {
-				if got != nil {
-					t.Errorf("Ptr() = %v, want nil", *got)
-				}
+				assert.Nil(t, got)
 				return
 			}
-			if got == nil {
-				t.Fatalf("Ptr() returned nil, want %q", *tt.want)
-				return
-			}
-			if *got != *tt.want {
-				t.Errorf("Ptr() = %q, want %q", *got, *tt.want)
-			}
+			require.NotNil(t, got)
+			assert.Equal(t, *tt.want, *got)
 		})
 	}
 }
@@ -60,9 +56,7 @@ func TestFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Format(tt.in); got != tt.want {
-				t.Errorf("Format() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, Format(tt.in))
 		})
 	}
 }
@@ -84,9 +78,7 @@ func TestIsValidDate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsValidDate(tt.in); got != tt.want {
-				t.Errorf("IsValidDate(%q) = %v, want %v", tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, IsValidDate(tt.in))
 		})
 	}
 }
@@ -107,9 +99,7 @@ func TestIsValidTimestamp(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsValidTimestamp(tt.in); got != tt.want {
-				t.Errorf("IsValidTimestamp(%q) = %v, want %v", tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, IsValidTimestamp(tt.in))
 		})
 	}
 }

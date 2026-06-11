@@ -31,7 +31,7 @@
   import { starred } from "./lib/stores/starred.svelte.js";
   import { pins } from "./lib/stores/pins.svelte.js";
   import { settings } from "./lib/stores/settings.svelte.js";
-  import { setAuthToken, getAuthToken, setServerUrl, getBase } from "./lib/api/client.js";
+  import { setAuthToken, getAuthToken, setServerUrl, getBase } from "./lib/api/runtime.js";
   import { setupVisibilityHealthCheck } from "./lib/utils/health.js";
   import { registerShortcuts } from "./lib/utils/keyboard.js";
   import { shouldAutoSwitchTranscriptModeToNormal } from "./lib/utils/transcript-mode.js";
@@ -195,8 +195,7 @@
     const selected = ui.selectedOrdinal;
     if (selected === null) {
       const first = sorted[0]!;
-      ui.selectOrdinal(first.ordinals[0]!);
-      messageListRef?.scrollToOrdinal(first.ordinals[0]!);
+      navigateToMessageOrdinal(first.ordinals[0]!);
       return;
     }
 
@@ -210,8 +209,15 @@
     if (nextIdx === curIdx) return;
 
     const next = sorted[nextIdx]!;
-    ui.selectOrdinal(next.ordinals[0]!);
-    messageListRef?.scrollToOrdinal(next.ordinals[0]!);
+    navigateToMessageOrdinal(next.ordinals[0]!);
+  }
+
+  function navigateToMessageOrdinal(ordinal: number) {
+    if (ui.followLatest) {
+      ui.setFollowLatest(false);
+    }
+    ui.selectOrdinal(ordinal);
+    messageListRef?.scrollToOrdinal(ordinal);
   }
 
   /** True when URL params contain session filter keys (deep-link). */
@@ -343,7 +349,9 @@
     sync.checkForUpdate();
     sync.startPolling();
 
-    const healthCleanup = setupVisibilityHealthCheck(getBase);
+    const healthCleanup = setupVisibilityHealthCheck(getBase, {
+      onBackendDegraded: () => sync.markBackendDegraded(),
+    });
 
     window.addEventListener("show-about", showAbout);
     const cleanup = registerShortcuts({ navigateMessage });

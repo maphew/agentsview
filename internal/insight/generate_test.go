@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseCodexStream(t *testing.T) {
@@ -65,17 +68,12 @@ Second`,
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := parseCodexStream(strings.NewReader(tt.input), nil)
 			if tt.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
-				}
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantError)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if result != tt.want {
-				t.Errorf("got %q, want %q", result, tt.want)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, result)
 		})
 	}
 }
@@ -129,17 +127,12 @@ Part 2`,
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := parseStreamJSON(strings.NewReader(tt.input), nil)
 			if tt.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
-				}
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantError)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if result != tt.want {
-				t.Errorf("got %q, want %q", result, tt.want)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, result)
 		})
 	}
 }
@@ -157,21 +150,11 @@ func TestCollectStreamLines_LargeLine(t *testing.T) {
 	)
 	text := <-done
 
-	if len(got) != 2 {
-		t.Fatalf("got %d log events, want 2", len(got))
-	}
-	if got[0].Stream != "stderr" || len(got[0].Line) != len(longLine) {
-		t.Fatalf(
-			"first event mismatch: stream=%q len=%d",
-			got[0].Stream, len(got[0].Line),
-		)
-	}
-	if got[1].Line != "small-line" {
-		t.Fatalf("second line = %q, want %q", got[1].Line, "small-line")
-	}
-	if !strings.Contains(text, "small-line") {
-		t.Fatalf("joined text missing expected line: %q", text)
-	}
+	require.Len(t, got, 2)
+	assert.Equal(t, "stderr", got[0].Stream)
+	assert.Len(t, got[0].Line, len(longLine))
+	assert.Equal(t, "small-line", got[1].Line)
+	assert.Contains(t, text, "small-line")
 }
 
 func TestAgentEnv(t *testing.T) {
@@ -186,30 +169,18 @@ func TestAgentEnv(t *testing.T) {
 	}
 
 	// Full env is passed through — no filtering.
-	if envMap["ANTHROPIC_API_KEY"] != "sk-secret" {
-		t.Error("ANTHROPIC_API_KEY should be preserved")
-	}
-	if envMap["CUSTOM_VAR"] != "custom-val" {
-		t.Error("CUSTOM_VAR should be preserved")
-	}
-	if v, ok := envMap["CLAUDE_NO_SOUND"]; !ok || v != "1" {
-		t.Errorf(
-			"CLAUDE_NO_SOUND should be 1, got %q", v,
-		)
-	}
+	assert.Equal(t, "sk-secret", envMap["ANTHROPIC_API_KEY"], "ANTHROPIC_API_KEY should be preserved")
+	assert.Equal(t, "custom-val", envMap["CUSTOM_VAR"], "CUSTOM_VAR should be preserved")
+	assert.Equal(t, "1", envMap["CLAUDE_NO_SOUND"])
 }
 
 func TestValidAgents(t *testing.T) {
 	for _, agent := range []string{
 		"claude", "codex", "copilot", "gemini", "kiro",
 	} {
-		if !ValidAgents[agent] {
-			t.Errorf("%s should be valid", agent)
-		}
+		assert.True(t, ValidAgents[agent], "%s should be valid", agent)
 	}
-	if ValidAgents["gpt"] {
-		t.Error("gpt should not be valid")
-	}
+	assert.False(t, ValidAgents["gpt"], "gpt should not be valid")
 }
 
 func createMockBinary(
@@ -218,9 +189,7 @@ func createMockBinary(
 	t.Helper()
 	dir := t.TempDir()
 	dataFile := filepath.Join(dir, "stdout.txt")
-	if err := os.WriteFile(dataFile, []byte(stdout), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(dataFile, []byte(stdout), 0o644))
 
 	if writeArgs {
 		argsFile = filepath.Join(dir, "args.txt")
@@ -234,9 +203,7 @@ func createMockBinary(
 		} else {
 			script = fmt.Sprintf("@type %q\r\n@exit /b %d\r\n", dataFile, exitCode)
 		}
-		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
 		return bin, argsFile
 	}
 
@@ -247,9 +214,7 @@ func createMockBinary(
 	} else {
 		script = fmt.Sprintf("#!/bin/sh\ncat %s\nexit %d\n", shellQuote(dataFile), exitCode)
 	}
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
 	return bin, argsFile
 }
 
@@ -284,12 +249,8 @@ func TestGenerateStreamWithOptions_UsesConfiguredBinary(t *testing.T) {
 			},
 		},
 	)
-	if err != nil {
-		t.Fatalf("GenerateStreamWithOptions: %v", err)
-	}
-	if result.Content != "OK" {
-		t.Fatalf("Content = %q, want OK", result.Content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "OK", result.Content)
 }
 
 func TestGenerateClaude_CLIFlags(t *testing.T) {
@@ -305,17 +266,11 @@ func TestGenerateClaude_CLIFlags(t *testing.T) {
 	result, err := generateClaude(
 		context.Background(), bin, "test prompt", nil,
 	)
-	if err != nil {
-		t.Fatalf("generateClaude: %v", err)
-	}
-	if result.Content != "OK" {
-		t.Errorf("Content = %q, want OK", result.Content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "OK", result.Content)
 
 	argsData, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("reading args: %v", err)
-	}
+	require.NoError(t, err, "reading args")
 	args := strings.Split(
 		strings.TrimSpace(string(argsData)), "\n",
 	)
@@ -329,11 +284,7 @@ func TestGenerateClaude_CLIFlags(t *testing.T) {
 		"--no-session-persistence",
 		"--tools",
 	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf(
-				"args %q missing %q", joined, want,
-			)
-		}
+		assert.Contains(t, joined, want)
 	}
 }
 
@@ -351,17 +302,11 @@ func TestGenerateCodex_CLIFlags(t *testing.T) {
 	result, err := generateCodex(
 		context.Background(), bin, "test prompt", nil,
 	)
-	if err != nil {
-		t.Fatalf("generateCodex: %v", err)
-	}
-	if result.Content != "OK" {
-		t.Errorf("Content = %q, want OK", result.Content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "OK", result.Content)
 
 	argsData, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("reading args: %v", err)
-	}
+	require.NoError(t, err, "reading args")
 	args := strings.Split(
 		strings.TrimSpace(string(argsData)), "\n",
 	)
@@ -373,17 +318,7 @@ func TestGenerateCodex_CLIFlags(t *testing.T) {
 		"--ephemeral",
 		"-",
 	}
-	if len(args) != len(wantArgs) {
-		t.Fatalf("args = %v, want %v", args, wantArgs)
-	}
-	for i, want := range wantArgs {
-		if args[i] != want {
-			t.Errorf(
-				"arg[%d] = %q, want %q",
-				i, args[i], want,
-			)
-		}
-	}
+	assert.Equal(t, wantArgs, args)
 }
 
 func TestGenerateCopilot_CLIFlags(t *testing.T) {
@@ -398,23 +333,12 @@ func TestGenerateCopilot_CLIFlags(t *testing.T) {
 	result, err := generateCopilot(
 		context.Background(), bin, "test prompt", nil,
 	)
-	if err != nil {
-		t.Fatalf("generateCopilot: %v", err)
-	}
-	if result.Content != "Hello from copilot" {
-		t.Errorf(
-			"Content = %q, want %q",
-			result.Content, "Hello from copilot",
-		)
-	}
-	if result.Agent != "copilot" {
-		t.Errorf("Agent = %q, want copilot", result.Agent)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "Hello from copilot", result.Content)
+	assert.Equal(t, "copilot", result.Agent)
 
 	argsData, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("reading args: %v", err)
-	}
+	require.NoError(t, err, "reading args")
 	args := strings.Split(
 		strings.TrimSpace(string(argsData)), "\n",
 	)
@@ -426,17 +350,7 @@ func TestGenerateCopilot_CLIFlags(t *testing.T) {
 		"--no-ask-user",
 		"--disable-builtin-mcps",
 	}
-	if len(args) != len(wantArgs) {
-		t.Fatalf("args = %v, want %v", args, wantArgs)
-	}
-	for i, want := range wantArgs {
-		if args[i] != want {
-			t.Errorf(
-				"arg[%d] = %q, want %q",
-				i, args[i], want,
-			)
-		}
-	}
+	assert.Equal(t, wantArgs, args)
 }
 
 func TestGenerateCopilot_EmptyResult(t *testing.T) {
@@ -451,12 +365,8 @@ func TestGenerateCopilot_EmptyResult(t *testing.T) {
 	_, err := generateCopilot(
 		context.Background(), bin, "test", nil,
 	)
-	if err == nil {
-		t.Fatal("expected error for empty result")
-	}
-	if !strings.Contains(err.Error(), "empty result") {
-		t.Errorf("error = %q, want empty result", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty result")
 }
 
 func TestGenerateCopilot_PreservesBlankLines(t *testing.T) {
@@ -472,14 +382,8 @@ func TestGenerateCopilot_PreservesBlankLines(t *testing.T) {
 	result, err := generateCopilot(
 		context.Background(), bin, "test", nil,
 	)
-	if err != nil {
-		t.Fatalf("generateCopilot: %v", err)
-	}
-	if !strings.Contains(result.Content, "\n\n") {
-		t.Errorf(
-			"blank lines lost: %q", result.Content,
-		)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, result.Content, "\n\n", "blank lines lost")
 }
 
 func TestGenerateClaude_SalvageOnNonZeroExit(t *testing.T) {
@@ -538,26 +442,12 @@ func TestGenerateClaude_SalvageOnNonZeroExit(t *testing.T) {
 			)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if result.Content != tt.wantResult {
-				t.Errorf(
-					"content = %q, want %q",
-					result.Content, tt.wantResult,
-				)
-			}
-			if result.Agent != "claude" {
-				t.Errorf(
-					"agent = %q, want claude",
-					result.Agent,
-				)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantResult, result.Content)
+			assert.Equal(t, "claude", result.Agent)
 		})
 	}
 }
@@ -585,27 +475,15 @@ func TestGenerateGemini_ModelFlag(t *testing.T) {
 	result, err := generateGemini(
 		context.Background(), bin, "test prompt", nil,
 	)
-	if err != nil {
-		t.Fatalf("generateGemini: %v", err)
-	}
+	require.NoError(t, err)
 
-	if result.Content != "# Analysis" {
-		t.Errorf("Content = %q, want %q",
-			result.Content, "# Analysis")
-	}
-	if result.Agent != "gemini" {
-		t.Errorf("Agent = %q, want gemini", result.Agent)
-	}
-	if result.Model != geminiInsightModel {
-		t.Errorf("Model = %q, want %q",
-			result.Model, geminiInsightModel)
-	}
+	assert.Equal(t, "# Analysis", result.Content)
+	assert.Equal(t, "gemini", result.Agent)
+	assert.Equal(t, geminiInsightModel, result.Model)
 
 	// Verify the CLI was invoked with --model flag.
 	argsData, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("reading args: %v", err)
-	}
+	require.NoError(t, err, "reading args")
 	args := strings.Split(
 		strings.TrimSpace(string(argsData)), "\n",
 	)
@@ -615,15 +493,7 @@ func TestGenerateGemini_ModelFlag(t *testing.T) {
 		"--output-format", "stream-json",
 		"--sandbox",
 	}
-	if len(args) != len(wantArgs) {
-		t.Fatalf("args = %v, want %v", args, wantArgs)
-	}
-	for i, want := range wantArgs {
-		if args[i] != want {
-			t.Errorf("arg[%d] = %q, want %q",
-				i, args[i], want)
-		}
-	}
+	assert.Equal(t, wantArgs, args)
 }
 
 func TestGenerateClaude_CancelledContext(t *testing.T) {
@@ -638,12 +508,8 @@ func TestGenerateClaude_CancelledContext(t *testing.T) {
 	cancel()
 
 	_, err := generateClaude(ctx, bin, "test", nil)
-	if err == nil {
-		t.Fatal("expected error for cancelled context")
-	}
-	if !strings.Contains(err.Error(), "cancel") {
-		t.Errorf("error = %q, want cancel", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cancel")
 }
 
 func TestGenerateClaude_SuccessNotDiscarded(t *testing.T) {
@@ -656,12 +522,8 @@ func TestGenerateClaude_SuccessNotDiscarded(t *testing.T) {
 	result, err := generateClaude(
 		context.Background(), bin, "test", nil,
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Content != "OK" {
-		t.Errorf("content = %q, want OK", result.Content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "OK", result.Content)
 }
 
 func TestParseCLIResult(t *testing.T) {
@@ -705,12 +567,8 @@ func TestParseCLIResult(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result, model := parseCLIResult([]byte(tc.input))
-			if result != tc.wantResult {
-				t.Errorf("result: got %q, want %q", result, tc.wantResult)
-			}
-			if model != tc.wantModel {
-				t.Errorf("model: got %q, want %q", model, tc.wantModel)
-			}
+			assert.Equal(t, tc.wantResult, result)
+			assert.Equal(t, tc.wantModel, model)
 		})
 	}
 }
@@ -727,12 +585,8 @@ func TestGenerateClaude_TruncatesLargeStdoutLogEvent(t *testing.T) {
 		"test",
 		func(ev LogEvent) { logs = append(logs, ev) },
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Content != largeResult {
-		t.Fatalf("result content was truncated unexpectedly")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, largeResult, result.Content, "result content was truncated unexpectedly")
 
 	var stdoutLog string
 	for _, ev := range logs {
@@ -741,13 +595,7 @@ func TestGenerateClaude_TruncatesLargeStdoutLogEvent(t *testing.T) {
 			break
 		}
 	}
-	if stdoutLog == "" {
-		t.Fatalf("expected stdout log event")
-	}
-	if !strings.Contains(stdoutLog, "[truncated ") {
-		t.Fatalf("expected truncation marker in stdout log, got %q", stdoutLog)
-	}
-	if len(stdoutLog) >= len(stdout) {
-		t.Fatalf("expected truncated stdout log to be smaller than raw payload")
-	}
+	require.NotEmpty(t, stdoutLog, "expected stdout log event")
+	assert.Contains(t, stdoutLog, "[truncated ", "expected truncation marker in stdout log")
+	assert.Less(t, len(stdoutLog), len(stdout), "expected truncated stdout log to be smaller than raw payload")
 }

@@ -13,8 +13,6 @@ import (
 )
 
 // Ptr returns a pointer to v.
-//
-//go:fix inline
 func Ptr[T any](v T) *T { return new(v) }
 
 // WriteTestFile creates a file at path with the given content,

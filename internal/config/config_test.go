@@ -7,13 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -36,12 +37,8 @@ func skipIfNotUnix(t *testing.T) {
 func writeConfig(t *testing.T, dir string, data any) {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(data); err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, configFileName), buf.Bytes(), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	require.NoError(t, toml.NewEncoder(&buf).Encode(data), "marshal config")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), buf.Bytes(), 0o600), "write config")
 }
 
 func setupTestEnv(t *testing.T) string {
@@ -54,6 +51,9 @@ func setupTestEnv(t *testing.T) string {
 
 func loadConfigFromFlags(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
+	if os.Getenv("AGENTSVIEW_DATA_DIR") == "" {
+		t.Setenv("AGENTSVIEW_DATA_DIR", t.TempDir())
+	}
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	RegisterServeFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -64,6 +64,9 @@ func loadConfigFromFlags(t *testing.T, args ...string) (Config, error) {
 
 func loadConfigFromPFlags(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
+	if os.Getenv("AGENTSVIEW_DATA_DIR") == "" {
+		t.Setenv("AGENTSVIEW_DATA_DIR", t.TempDir())
+	}
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	RegisterServePFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -81,116 +84,65 @@ binary = "/opt/agents/claude"
 [agent.gemini]
 binary = "/usr/local/bin/gemini"
 `)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, data, 0o600), "write config")
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatalf("LoadMinimal: %v", err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Agent["claude"].Binary != "/opt/agents/claude" {
-		t.Fatalf("claude binary = %q", cfg.Agent["claude"].Binary)
-	}
-	if cfg.Agent["gemini"].Binary != "/usr/local/bin/gemini" {
-		t.Fatalf("gemini binary = %q", cfg.Agent["gemini"].Binary)
-	}
+	assert.Equal(t, "/opt/agents/claude", cfg.Agent["claude"].Binary)
+	assert.Equal(t, "/usr/local/bin/gemini", cfg.Agent["gemini"].Binary)
 }
 
 func TestDefault_IncludesCodexArchivedSessionsDir(t *testing.T) {
 	cfg, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	dirs := cfg.ResolveDirs(parser.AgentCodex)
-	if len(dirs) != 2 {
-		t.Fatalf("len(codex dirs) = %d, want 2", len(dirs))
-	}
-	if !strings.HasSuffix(dirs[0], filepath.Join(".codex", "sessions")) {
-		t.Fatalf("dirs[0] = %q", dirs[0])
-	}
-	if !strings.HasSuffix(dirs[1], filepath.Join(".codex", "archived_sessions")) {
-		t.Fatalf("dirs[1] = %q", dirs[1])
-	}
+	require.Len(t, dirs, 2)
+	assert.True(t, strings.HasSuffix(dirs[0], filepath.Join(".codex", "sessions")), "dirs[0] = %q", dirs[0])
+	assert.True(t, strings.HasSuffix(dirs[1], filepath.Join(".codex", "archived_sessions")), "dirs[1] = %q", dirs[1])
 }
 
 func TestLoadEnv_OverridesDataDir(t *testing.T) {
 	custom := setupTestEnv(t)
 
 	cfg, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cfg.loadEnv()
 
-	if cfg.DataDir != custom {
-		t.Errorf(
-			"DataDir = %q, want %q", cfg.DataDir, custom,
-		)
-	}
+	assert.Equal(t, custom, cfg.DataDir)
 }
 
 func TestLoad_AppliesExplicitFlags(t *testing.T) {
 	cfg, err := loadConfigFromFlags(t, "-host", "0.0.0.0", "-port", "9090")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Host != "0.0.0.0" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "0.0.0.0")
-	}
-	if cfg.Port != 9090 {
-		t.Errorf("Port = %d, want %d", cfg.Port, 9090)
-	}
+	assert.Equal(t, "0.0.0.0", cfg.Host)
+	assert.Equal(t, 9090, cfg.Port)
 }
 
 func TestLoad_DefaultsWithoutFlags(t *testing.T) {
 	cfg, err := loadConfigFromFlags(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Host != "127.0.0.1" {
-		t.Errorf(
-			"Host = %q, want default %q",
-			cfg.Host, "127.0.0.1",
-		)
-	}
-	if cfg.Port != 8080 {
-		t.Errorf(
-			"Port = %d, want default %d", cfg.Port, 8080,
-		)
-	}
-	if len(cfg.PublicOrigins) != 0 {
-		t.Errorf("PublicOrigins = %v, want none", cfg.PublicOrigins)
-	}
+	assert.Equal(t, "127.0.0.1", cfg.Host)
+	assert.Equal(t, 8080, cfg.Port)
+	assert.Empty(t, cfg.PublicOrigins)
 }
 
 func TestLoadPFlags_AppliesExplicitFlags(t *testing.T) {
 	cfg, err := loadConfigFromPFlags(t, "--host", "0.0.0.0", "--port", "9090")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Host != "0.0.0.0" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "0.0.0.0")
-	}
-	if cfg.Port != 9090 {
-		t.Errorf("Port = %d, want %d", cfg.Port, 9090)
-	}
+	assert.Equal(t, "0.0.0.0", cfg.Host)
+	assert.Equal(t, 9090, cfg.Port)
 }
 
 func TestLoad_NilFlagSet(t *testing.T) {
 	cfg, err := Load(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Host != "127.0.0.1" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "127.0.0.1")
-	}
+	assert.Equal(t, "127.0.0.1", cfg.Host)
 }
 
 func TestLoad_PublicOriginFlagOverridesConfigFile(t *testing.T) {
@@ -204,15 +156,10 @@ func TestLoad_PublicOriginFlagOverridesConfigFile(t *testing.T) {
 		"-public-origin", "https://viewer.example.test/",
 		"-public-origin", "http://viewer.example.test:8004",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	got := strings.Join(cfg.PublicOrigins, ",")
-	want := "https://viewer.example.test,http://viewer.example.test:8004"
-	if got != want {
-		t.Fatalf("PublicOrigins = %q, want %q", got, want)
-	}
+	assert.Equal(t, "https://viewer.example.test,http://viewer.example.test:8004", got)
 }
 
 func TestLoad_PublicOriginsFromConfigFile(t *testing.T) {
@@ -225,15 +172,10 @@ func TestLoad_PublicOriginsFromConfigFile(t *testing.T) {
 	})
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	got := strings.Join(cfg.PublicOrigins, ",")
-	want := "https://viewer.example.test,http://viewer.example.test:8004"
-	if got != want {
-		t.Fatalf("PublicOrigins = %q, want %q", got, want)
-	}
+	assert.Equal(t, "https://viewer.example.test,http://viewer.example.test:8004", got)
 }
 
 func TestLoad_PublicOriginsRejectInvalid(t *testing.T) {
@@ -243,12 +185,8 @@ func TestLoad_PublicOriginsRejectInvalid(t *testing.T) {
 	})
 
 	_, err := LoadMinimal()
-	if err == nil {
-		t.Fatal("expected invalid public origin error")
-	}
-	if !strings.Contains(err.Error(), "invalid public origins") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected invalid public origin error")
+	assert.Contains(t, err.Error(), "invalid public origins")
 }
 
 func TestLoad_PublicURLMergedIntoOrigins(t *testing.T) {
@@ -258,16 +196,10 @@ func TestLoad_PublicURLMergedIntoOrigins(t *testing.T) {
 	})
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.PublicURL != "https://viewer.example.test" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "https://viewer.example.test")
-	}
-	if got := strings.Join(cfg.PublicOrigins, ","); got != "https://viewer.example.test" {
-		t.Fatalf("PublicOrigins = %q, want %q", got, "https://viewer.example.test")
-	}
+	assert.Equal(t, "https://viewer.example.test", cfg.PublicURL)
+	assert.Equal(t, "https://viewer.example.test", strings.Join(cfg.PublicOrigins, ","))
 }
 
 func TestLoad_ProxyConfigFromFile(t *testing.T) {
@@ -285,28 +217,14 @@ func TestLoad_ProxyConfigFromFile(t *testing.T) {
 	})
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Proxy.Mode != "caddy" {
-		t.Fatalf("Proxy.Mode = %q, want %q", cfg.Proxy.Mode, "caddy")
-	}
-	if cfg.Proxy.Bin != "caddy" {
-		t.Fatalf("Proxy.Bin = %q, want %q", cfg.Proxy.Bin, "caddy")
-	}
-	if cfg.Proxy.BindHost != "10.0.60.2" {
-		t.Fatalf("BindHost = %q, want %q", cfg.Proxy.BindHost, "10.0.60.2")
-	}
-	if cfg.Proxy.PublicPort != 9443 {
-		t.Fatalf("PublicPort = %d, want %d", cfg.Proxy.PublicPort, 9443)
-	}
-	if cfg.PublicURL != "https://viewer.example.test:9443" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "https://viewer.example.test:9443")
-	}
-	if got := strings.Join(cfg.Proxy.AllowedSubnets, ","); got != "10.1.0.0/16,192.168.1.0/24" {
-		t.Fatalf("AllowedSubnets = %q, want %q", got, "10.1.0.0/16,192.168.1.0/24")
-	}
+	assert.Equal(t, "caddy", cfg.Proxy.Mode)
+	assert.Equal(t, "caddy", cfg.Proxy.Bin)
+	assert.Equal(t, "10.0.60.2", cfg.Proxy.BindHost)
+	assert.Equal(t, 9443, cfg.Proxy.PublicPort)
+	assert.Equal(t, "https://viewer.example.test:9443", cfg.PublicURL)
+	assert.Equal(t, "10.1.0.0/16,192.168.1.0/24", strings.Join(cfg.Proxy.AllowedSubnets, ","))
 }
 
 func TestLoad_ProxyFlags(t *testing.T) {
@@ -321,25 +239,13 @@ func TestLoad_ProxyFlags(t *testing.T) {
 		"-allowed-subnet", "10.0/16",
 		"-allowed-subnet", "192.168.0.0/24",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.PublicURL != "https://viewer.example.test:9443" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "https://viewer.example.test:9443")
-	}
-	if cfg.Proxy.Mode != "caddy" {
-		t.Fatalf("Proxy.Mode = %q, want %q", cfg.Proxy.Mode, "caddy")
-	}
-	if cfg.Proxy.BindHost != "0.0.0.0" {
-		t.Fatalf("BindHost = %q, want %q", cfg.Proxy.BindHost, "0.0.0.0")
-	}
-	if cfg.Proxy.PublicPort != 9443 {
-		t.Fatalf("PublicPort = %d, want %d", cfg.Proxy.PublicPort, 9443)
-	}
-	if got := strings.Join(cfg.Proxy.AllowedSubnets, ","); got != "10.0.0.0/16,192.168.0.0/24" {
-		t.Fatalf("AllowedSubnets = %q, want %q", got, "10.0.0.0/16,192.168.0.0/24")
-	}
+	assert.Equal(t, "https://viewer.example.test:9443", cfg.PublicURL)
+	assert.Equal(t, "caddy", cfg.Proxy.Mode)
+	assert.Equal(t, "0.0.0.0", cfg.Proxy.BindHost)
+	assert.Equal(t, 9443, cfg.Proxy.PublicPort)
+	assert.Equal(t, "10.0.0.0/16,192.168.0.0/24", strings.Join(cfg.Proxy.AllowedSubnets, ","))
 }
 
 func TestLoad_ManagedCaddyDefaultsPublicPortAndBindHost(t *testing.T) {
@@ -348,19 +254,11 @@ func TestLoad_ManagedCaddyDefaultsPublicPortAndBindHost(t *testing.T) {
 		"-public-url", "https://viewer.example.test",
 		"-proxy", "caddy",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if cfg.PublicURL != "https://viewer.example.test:8443" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "https://viewer.example.test:8443")
-	}
-	if cfg.Proxy.BindHost != "127.0.0.1" {
-		t.Fatalf("BindHost = %q, want %q", cfg.Proxy.BindHost, "127.0.0.1")
-	}
-	if cfg.Proxy.PublicPort != 0 {
-		t.Fatalf("PublicPort = %d, want %d", cfg.Proxy.PublicPort, 0)
-	}
+	assert.Equal(t, "https://viewer.example.test:8443", cfg.PublicURL)
+	assert.Equal(t, "127.0.0.1", cfg.Proxy.BindHost)
+	assert.Equal(t, 0, cfg.Proxy.PublicPort)
 }
 
 func TestLoad_ManagedCaddyRejectsConflictingPublicPort(t *testing.T) {
@@ -370,12 +268,8 @@ func TestLoad_ManagedCaddyRejectsConflictingPublicPort(t *testing.T) {
 		"-proxy", "caddy",
 		"-public-port", "8443",
 	)
-	if err == nil {
-		t.Fatal("expected public port conflict error")
-	}
-	if !strings.Contains(err.Error(), "conflicts with configured public port") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected public port conflict error")
+	assert.Contains(t, err.Error(), "conflicts with configured public port")
 }
 
 func TestLoad_ManagedCaddyRejectsPublicURLPath(t *testing.T) {
@@ -384,12 +278,8 @@ func TestLoad_ManagedCaddyRejectsPublicURLPath(t *testing.T) {
 		"-public-url", "https://viewer.example.test/path",
 		"-proxy", "caddy",
 	)
-	if err == nil {
-		t.Fatal("expected public URL path error")
-	}
-	if !strings.Contains(err.Error(), "must not include a path") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected public URL path error")
+	assert.Contains(t, err.Error(), "must not include a path")
 }
 
 func TestLoad_ManagedCaddyNormalizesExplicitDefaultPorts(t *testing.T) {
@@ -398,24 +288,16 @@ func TestLoad_ManagedCaddyNormalizesExplicitDefaultPorts(t *testing.T) {
 		"-public-url", "https://viewer.example.test:443",
 		"-proxy", "caddy",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.PublicURL != "https://viewer.example.test" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "https://viewer.example.test")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "https://viewer.example.test", cfg.PublicURL)
 
 	cfg, err = loadConfigFromFlags(
 		t,
 		"-public-url", "http://viewer.example.test:80",
 		"-proxy", "caddy",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.PublicURL != "http://viewer.example.test" {
-		t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, "http://viewer.example.test")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "http://viewer.example.test", cfg.PublicURL)
 }
 
 func TestLoad_AllowedSubnetsRejectInvalid(t *testing.T) {
@@ -428,12 +310,8 @@ func TestLoad_AllowedSubnetsRejectInvalid(t *testing.T) {
 	})
 
 	_, err := LoadMinimal()
-	if err == nil {
-		t.Fatal("expected invalid allowed subnets error")
-	}
-	if !strings.Contains(err.Error(), "invalid allowed subnets") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected invalid allowed subnets error")
+	assert.Contains(t, err.Error(), "invalid allowed subnets")
 }
 
 func TestSaveGithubToken_RejectsCorruptConfig(t *testing.T) {
@@ -442,16 +320,10 @@ func TestSaveGithubToken_RejectsCorruptConfig(t *testing.T) {
 
 	// Write invalid TOML to config file
 	path := filepath.Join(tmp, configFileName)
-	if err := os.WriteFile(
-		path, []byte("[invalid toml = ="), 0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("[invalid toml = ="), 0o600))
 
 	err := cfg.SaveGithubToken("tok")
-	if err == nil {
-		t.Fatal("expected error for corrupt config")
-	}
+	require.Error(t, err, "expected error for corrupt config")
 }
 
 func TestSaveGithubToken_ReturnsErrorOnReadFailure(t *testing.T) {
@@ -462,19 +334,11 @@ func TestSaveGithubToken_ReturnsErrorOnReadFailure(t *testing.T) {
 
 	// Create a config file that is not readable
 	path := filepath.Join(tmp, configFileName)
-	if err := os.WriteFile(
-		path, []byte("k = \"v\"\n"), 0o000,
-	); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("k = \"v\"\n"), 0o000))
 
 	err := cfg.SaveGithubToken("tok")
-	if err == nil {
-		t.Fatal("expected error for unreadable config file")
-	}
-	if !strings.Contains(err.Error(), "reading config file") {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.Error(t, err, "expected error for unreadable config file")
+	assert.Contains(t, err.Error(), "reading config file")
 }
 
 func TestSaveGithubToken_PreservesExistingKeys(t *testing.T) {
@@ -484,30 +348,15 @@ func TestSaveGithubToken_PreservesExistingKeys(t *testing.T) {
 	existing := map[string]any{"custom_key": "value"}
 	writeConfig(t, tmp, existing)
 
-	if err := cfg.SaveGithubToken("new-token"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cfg.SaveGithubToken("new-token"))
 
 	got, err := os.ReadFile(filepath.Join(tmp, configFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var result map[string]any
-	if _, err := toml.Decode(string(got), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result["custom_key"] != "value" {
-		t.Errorf(
-			"custom_key = %v, want %q",
-			result["custom_key"], "value",
-		)
-	}
-	if result["github_token"] != "new-token" {
-		t.Errorf(
-			"github_token = %v, want %q",
-			result["github_token"], "new-token",
-		)
-	}
+	_, err = toml.Decode(string(got), &result)
+	require.NoError(t, err)
+	assert.Equal(t, "value", result["custom_key"])
+	assert.Equal(t, "new-token", result["github_token"])
 }
 
 func TestLoadFile_ReadsDirArrays(t *testing.T) {
@@ -518,25 +367,15 @@ func TestLoadFile_ReadsDirArrays(t *testing.T) {
 	})
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	claudeDirs := cfg.ResolveDirs(parser.AgentClaude)
-	if len(claudeDirs) != 2 {
-		t.Fatalf(
-			"claude dirs len = %d, want 2",
-			len(claudeDirs),
-		)
-	}
-	if claudeDirs[0] != "/path/one" ||
-		claudeDirs[1] != "/path/two" {
-		t.Errorf("claude dirs = %v", claudeDirs)
-	}
+	require.Len(t, claudeDirs, 2)
+	assert.Equal(t, "/path/one", claudeDirs[0])
+	assert.Equal(t, "/path/two", claudeDirs[1])
 	codexDirs := cfg.ResolveDirs(parser.AgentCodex)
-	if len(codexDirs) != 1 || codexDirs[0] != "/codex/a" {
-		t.Errorf("codex dirs = %v", codexDirs)
-	}
+	require.Len(t, codexDirs, 1)
+	assert.Equal(t, "/codex/a", codexDirs[0])
 }
 
 func TestResolveDirs(t *testing.T) {
@@ -587,9 +426,7 @@ func TestResolveDirs(t *testing.T) {
 			}
 
 			cfg, err := LoadMinimal()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
 			dirs := cfg.ResolveDirs(parser.AgentClaude)
 
@@ -599,28 +436,8 @@ func TestResolveDirs(t *testing.T) {
 				want = cfg.AgentDirs[parser.AgentClaude]
 			}
 
-			if len(dirs) != len(want) {
-				t.Fatalf(
-					"got %d dirs, want %d",
-					len(dirs), len(want),
-				)
-			}
-			for i, v := range dirs {
-				if v != want[i] {
-					t.Errorf(
-						"dirs[%d] = %q, want %q",
-						i, v, want[i],
-					)
-				}
-			}
-
-			got := cfg.IsUserConfigured(parser.AgentClaude)
-			if got != tt.wantUserConfig {
-				t.Errorf(
-					"IsUserConfigured = %v, want %v",
-					got, tt.wantUserConfig,
-				)
-			}
+			assert.Equal(t, want, dirs)
+			assert.Equal(t, tt.wantUserConfig, cfg.IsUserConfigured(parser.AgentClaude))
 		})
 	}
 }
@@ -628,23 +445,15 @@ func TestResolveDirs(t *testing.T) {
 func TestResolveDataDir_DefaultAndEnvOverride(t *testing.T) {
 	// Without env override, should return default
 	dir, err := ResolveDataDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir == "" {
-		t.Error("ResolveDataDir returned empty string")
-	}
+	require.NoError(t, err)
+	assert.NotEmpty(t, dir, "ResolveDataDir returned empty string")
 
 	// With env override, should return the override
 	custom := t.TempDir()
 	t.Setenv("AGENTSVIEW_DATA_DIR", custom)
 	dir, err = ResolveDataDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir != custom {
-		t.Errorf("ResolveDataDir = %q, want %q", dir, custom)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, custom, dir)
 }
 
 // TestDataDir_LegacyEnvFallback verifies that the legacy AGENT_VIEWER_DATA_DIR
@@ -655,12 +464,8 @@ func TestDataDir_LegacyEnvFallback(t *testing.T) {
 		legacy := t.TempDir()
 		t.Setenv("AGENT_VIEWER_DATA_DIR", legacy)
 		dir, err := ResolveDataDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if dir != legacy {
-			t.Errorf("ResolveDataDir = %q, want %q", dir, legacy)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, legacy, dir)
 	})
 
 	t.Run("canonical wins over legacy", func(t *testing.T) {
@@ -669,12 +474,8 @@ func TestDataDir_LegacyEnvFallback(t *testing.T) {
 		t.Setenv("AGENT_VIEWER_DATA_DIR", legacy)
 		t.Setenv("AGENTSVIEW_DATA_DIR", canonical)
 		dir, err := ResolveDataDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if dir != canonical {
-			t.Errorf("ResolveDataDir = %q, want %q (canonical should win)", dir, canonical)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, canonical, dir, "canonical should win")
 	})
 }
 
@@ -686,16 +487,10 @@ func TestEnvOverridesConfigFile(t *testing.T) {
 	t.Setenv("CODEX_SESSIONS_DIR", "/from/env")
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	dirs := cfg.ResolveDirs(parser.AgentCodex)
-	if len(dirs) != 1 || dirs[0] != "/from/env" {
-		t.Errorf(
-			"codex dirs = %v, want [/from/env]", dirs,
-		)
-	}
+	assert.Equal(t, []string{"/from/env"}, dirs)
 }
 
 func TestLoadFile_MalformedDirValueLogsWarning(t *testing.T) {
@@ -714,59 +509,26 @@ func TestLoadFile_MalformedDirValueLogsWarning(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(prev) })
 
 	cfg, err := LoadMinimal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// The malformed key should trigger a warning.
 	logged := buf.String()
-	if !strings.Contains(logged, "claude_project_dirs") {
-		t.Errorf(
-			"expected warning mentioning config key, got: %q",
-			logged,
-		)
-	}
-	if !strings.Contains(logged, "expected string array") {
-		t.Errorf(
-			"expected warning about type, got: %q",
-			logged,
-		)
-	}
+	assert.Contains(t, logged, "claude_project_dirs")
+	assert.Contains(t, logged, "expected string array")
 
 	// ResolveDirs should return the default (malformed value
 	// was not applied).
 	dirs := cfg.ResolveDirs(parser.AgentClaude)
 	home, _ := os.UserHomeDir()
 	defaultDir := filepath.Join(home, ".claude", "projects")
-	if len(dirs) != 1 || dirs[0] != defaultDir {
-		t.Errorf(
-			"claude dirs = %v, want default [%s]",
-			dirs, defaultDir,
-		)
-	}
+	assert.Equal(t, []string{defaultDir}, dirs)
 }
 
 func TestDefault_ResultContentBlockedCategories(t *testing.T) {
 	cfg, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	want := []string{"Read", "Glob"}
-	if len(cfg.ResultContentBlockedCategories) != len(want) {
-		t.Fatalf(
-			"ResultContentBlockedCategories len = %d, want %d",
-			len(cfg.ResultContentBlockedCategories), len(want),
-		)
-	}
-	for i, v := range cfg.ResultContentBlockedCategories {
-		if v != want[i] {
-			t.Errorf(
-				"ResultContentBlockedCategories[%d] = %q, want %q",
-				i, v, want[i],
-			)
-		}
-	}
+	assert.Equal(t, []string{"Read", "Glob"}, cfg.ResultContentBlockedCategories)
 }
 
 func TestLoadFile_ResultContentBlockedCategories(t *testing.T) {
@@ -809,24 +571,9 @@ func TestLoadFile_ResultContentBlockedCategories(t *testing.T) {
 			writeConfig(t, dir, tt.config)
 
 			cfg, err := LoadMinimal()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if len(cfg.ResultContentBlockedCategories) != len(tt.want) {
-				t.Fatalf(
-					"ResultContentBlockedCategories len = %d, want %d",
-					len(cfg.ResultContentBlockedCategories), len(tt.want),
-				)
-			}
-			for i, v := range cfg.ResultContentBlockedCategories {
-				if v != tt.want[i] {
-					t.Errorf(
-						"ResultContentBlockedCategories[%d] = %q, want %q",
-						i, v, tt.want[i],
-					)
-				}
-			}
+			assert.Equal(t, tt.want, cfg.ResultContentBlockedCategories)
 		})
 	}
 }
@@ -864,15 +611,8 @@ func TestLoadFile_EventsCoalesceInterval(t *testing.T) {
 			writeConfig(t, dir, tt.config)
 
 			cfg, err := LoadMinimal()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.EventsCoalesceInterval != tt.want {
-				t.Errorf(
-					"EventsCoalesceInterval = %v, want %v",
-					cfg.EventsCoalesceInterval, tt.want,
-				)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.EventsCoalesceInterval)
 		})
 	}
 }
@@ -941,24 +681,10 @@ func TestLoadFile_PGConfig(t *testing.T) {
 			}
 
 			cfg, err := LoadMinimal()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if cfg.PG.URL != tt.want.URL {
-				t.Errorf(
-					"URL = %q, want %q",
-					cfg.PG.URL,
-					tt.want.URL,
-				)
-			}
-			if cfg.PG.MachineName != tt.want.MachineName {
-				t.Errorf(
-					"MachineName = %q, want %q",
-					cfg.PG.MachineName,
-					tt.want.MachineName,
-				)
-			}
+			assert.Equal(t, tt.want.URL, cfg.PG.URL)
+			assert.Equal(t, tt.want.MachineName, cfg.PG.MachineName)
 		})
 	}
 }
@@ -973,20 +699,13 @@ projects = ["alpha", "beta"]
 `), 0o644)
 
 	cfg, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cfg.DataDir = dir
-	if err := cfg.loadFile(); err != nil {
-		t.Fatalf("loadFile: %v", err)
-	}
+	require.NoError(t, cfg.loadFile(), "loadFile")
 
-	if len(cfg.PG.Projects) != 2 {
-		t.Fatalf("Projects = %v, want [alpha beta]", cfg.PG.Projects)
-	}
-	if cfg.PG.Projects[0] != "alpha" || cfg.PG.Projects[1] != "beta" {
-		t.Errorf("Projects = %v, want [alpha beta]", cfg.PG.Projects)
-	}
+	require.Len(t, cfg.PG.Projects, 2)
+	assert.Equal(t, "alpha", cfg.PG.Projects[0])
+	assert.Equal(t, "beta", cfg.PG.Projects[1])
 }
 
 func TestPGConfig_ExcludeProjectFilter(t *testing.T) {
@@ -999,20 +718,12 @@ exclude_projects = ["gamma"]
 `), 0o644)
 
 	cfg, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cfg.DataDir = dir
-	if err := cfg.loadFile(); err != nil {
-		t.Fatalf("loadFile: %v", err)
-	}
+	require.NoError(t, cfg.loadFile(), "loadFile")
 
-	if len(cfg.PG.ExcludeProjects) != 1 {
-		t.Fatalf("ExcludeProjects = %v, want [gamma]", cfg.PG.ExcludeProjects)
-	}
-	if cfg.PG.ExcludeProjects[0] != "gamma" {
-		t.Errorf("ExcludeProjects = %v, want [gamma]", cfg.PG.ExcludeProjects)
-	}
+	require.Len(t, cfg.PG.ExcludeProjects, 1)
+	assert.Equal(t, "gamma", cfg.PG.ExcludeProjects[0])
 }
 
 func TestResolvePG_Defaults(t *testing.T) {
@@ -1022,16 +733,10 @@ func TestResolvePG_Defaults(t *testing.T) {
 		},
 	}
 	resolved, err := cfg.ResolvePG()
-	if err != nil {
-		t.Fatalf("ResolvePG: %v", err)
-	}
+	require.NoError(t, err, "ResolvePG")
 
-	if resolved.Schema != "agentsview" {
-		t.Errorf("Schema = %q, want agentsview", resolved.Schema)
-	}
-	if resolved.MachineName == "" {
-		t.Error("MachineName should default to hostname")
-	}
+	assert.Equal(t, "agentsview", resolved.Schema)
+	assert.NotEmpty(t, resolved.MachineName, "MachineName should default to hostname")
 }
 
 func TestResolvePG_ExpandsEnvVars(t *testing.T) {
@@ -1045,14 +750,9 @@ func TestResolvePG_ExpandsEnvVars(t *testing.T) {
 	}
 
 	resolved, err := cfg.ResolvePG()
-	if err != nil {
-		t.Fatalf("ResolvePG: %v", err)
-	}
+	require.NoError(t, err, "ResolvePG")
 
-	want := "postgres://localhost/test?password=env-secret"
-	if resolved.URL != want {
-		t.Fatalf("URL = %q, want %q", resolved.URL, want)
-	}
+	assert.Equal(t, "postgres://localhost/test?password=env-secret", resolved.URL)
 }
 
 func TestResolvePG_ExpandsBareEnvOnlyForWholeValue(t *testing.T) {
@@ -1065,14 +765,9 @@ func TestResolvePG_ExpandsBareEnvOnlyForWholeValue(t *testing.T) {
 	}
 
 	resolved, err := cfg.ResolvePG()
-	if err != nil {
-		t.Fatalf("ResolvePG: %v", err)
-	}
+	require.NoError(t, err, "ResolvePG")
 
-	want := "postgres://localhost/test"
-	if resolved.URL != want {
-		t.Fatalf("URL = %q, want %q", resolved.URL, want)
-	}
+	assert.Equal(t, "postgres://localhost/test", resolved.URL)
 }
 
 func TestResolvePG_PreservesLiteralDollarSequencesInURL(t *testing.T) {
@@ -1085,14 +780,9 @@ func TestResolvePG_PreservesLiteralDollarSequencesInURL(t *testing.T) {
 	}
 
 	resolved, err := cfg.ResolvePG()
-	if err != nil {
-		t.Fatalf("ResolvePG: %v", err)
-	}
+	require.NoError(t, err, "ResolvePG")
 
-	want := "postgres://user:pa$word@localhost/db?application_name=$client&password=env-secret"
-	if resolved.URL != want {
-		t.Fatalf("URL = %q, want %q", resolved.URL, want)
-	}
+	assert.Equal(t, "postgres://user:pa$word@localhost/db?application_name=$client&password=env-secret", resolved.URL)
 }
 
 func TestResolvePG_ErrorsOnMissingEnvVar(t *testing.T) {
@@ -1103,12 +793,8 @@ func TestResolvePG_ErrorsOnMissingEnvVar(t *testing.T) {
 	}
 
 	_, err := cfg.ResolvePG()
-	if err == nil {
-		t.Fatal("expected error for unset env var")
-	}
-	if !strings.Contains(err.Error(), "NONEXISTENT_PG_VAR") {
-		t.Errorf("error = %v, want mention of NONEXISTENT_PG_VAR", err)
-	}
+	require.Error(t, err, "expected error for unset env var")
+	assert.Contains(t, err.Error(), "NONEXISTENT_PG_VAR")
 }
 
 func TestResolvePG_ErrorsOnMissingBareEnvVar(t *testing.T) {
@@ -1119,11 +805,32 @@ func TestResolvePG_ErrorsOnMissingBareEnvVar(t *testing.T) {
 	}
 
 	_, err := cfg.ResolvePG()
-	if err == nil {
-		t.Fatal("expected error for unset bare env var")
+	require.Error(t, err, "expected error for unset bare env var")
+	assert.Contains(t, err.Error(), "NONEXISTENT_PG_BARE_VAR")
+}
+
+// TestIsEnvDependentURL locks the helper to the same expansion semantics
+// as expandBracedEnv: any ${VAR}, or a whole-string bare $VAR, is
+// env-dependent; an embedded bare $VAR or literal dollar sequence is not.
+func TestIsEnvDependentURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"braced var", "${PGURL}", true},
+		{"braced var embedded", "postgres://h/db?password=${PGPASS}", true},
+		{"whole-string bare var", "$PGURL", true},
+		{"whole-string bare var with surrounding space", "  $PGURL  ", true},
+		{"embedded bare var not expanded", "postgres://$USER@host/db", false},
+		{"literal dollar sequence", "postgres://user:pa$word@host/db", false},
+		{"plain literal", "postgres://user:pass@localhost/db?sslmode=disable", false},
+		{"empty", "", false},
 	}
-	if !strings.Contains(err.Error(), "NONEXISTENT_PG_BARE_VAR") {
-		t.Errorf("error = %v, want mention of NONEXISTENT_PG_BARE_VAR", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, IsEnvDependentURL(c.in))
+		})
 	}
 }
 
@@ -1140,12 +847,81 @@ func TestResolvePG_AllowsBothFilterLists(t *testing.T) {
 		},
 	}
 	_, err := cfg.ResolvePG()
-	if err != nil {
-		t.Fatalf(
-			"ResolvePG should not reject filter conflicts: %v",
-			err,
-		)
+	require.NoError(t, err, "ResolvePG should not reject filter conflicts")
+}
+
+func TestDuckDBConfig_LoadsFileAndEnv(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"duckdb": map[string]any{
+			"path":             "/from/config/sessions.duckdb",
+			"url":              "quack:config-host",
+			"token":            "config-token",
+			"machine_name":     "config-machine",
+			"allow_insecure":   true,
+			"projects":         []string{"alpha", "beta"},
+			"exclude_projects": []string{"gamma"},
+		},
+	})
+	t.Setenv("AGENTSVIEW_DUCKDB_PATH", "/from/env/sessions.duckdb")
+	t.Setenv("AGENTSVIEW_DUCKDB_URL", "quack:env-host")
+	t.Setenv("AGENTSVIEW_DUCKDB_TOKEN", "env-token")
+	t.Setenv("AGENTSVIEW_DUCKDB_MACHINE", "env-machine")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	assert.Equal(t, "/from/env/sessions.duckdb", cfg.DuckDB.Path)
+	assert.Equal(t, "quack:env-host", cfg.DuckDB.URL)
+	assert.Equal(t, "env-token", cfg.DuckDB.Token)
+	assert.Equal(t, "env-machine", cfg.DuckDB.MachineName)
+	assert.True(t, cfg.DuckDB.AllowInsecure)
+	assert.Equal(t, []string{"alpha", "beta"}, cfg.DuckDB.Projects)
+	assert.Equal(t, []string{"gamma"}, cfg.DuckDB.ExcludeProjects)
+}
+
+func TestResolveDuckDB_Defaults(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{DataDir: dir}
+
+	resolved, err := cfg.ResolveDuckDB()
+	require.NoError(t, err, "ResolveDuckDB")
+
+	assert.Equal(t, filepath.Join(dir, "sessions.duckdb"), resolved.Path)
+	assert.NotEmpty(t, resolved.MachineName, "MachineName should default to hostname")
+}
+
+func TestResolveDuckDB_ExpandsEnvVars(t *testing.T) {
+	t.Setenv("DUCKDB_URL", "quack:localhost")
+	t.Setenv("DUCKDB_TOKEN", "secret-token")
+	t.Setenv("DUCKDB_PATH", filepath.Join(t.TempDir(), "remote.duckdb"))
+
+	cfg := Config{
+		DuckDB: DuckDBConfig{
+			Path:  "$DUCKDB_PATH",
+			URL:   "${DUCKDB_URL}",
+			Token: "${DUCKDB_TOKEN}",
+		},
 	}
+
+	resolved, err := cfg.ResolveDuckDB()
+	require.NoError(t, err, "ResolveDuckDB")
+
+	assert.Equal(t, os.Getenv("DUCKDB_PATH"), resolved.Path)
+	assert.Equal(t, "quack:localhost", resolved.URL)
+	assert.Equal(t, "secret-token", resolved.Token)
+}
+
+func TestResolveDuckDB_ErrorsOnMissingEnvVar(t *testing.T) {
+	cfg := Config{
+		DuckDB: DuckDBConfig{
+			URL: "${MISSING_DUCKDB_URL}",
+		},
+	}
+
+	_, err := cfg.ResolveDuckDB()
+	require.Error(t, err, "expected error for unset env var")
+	assert.Contains(t, err.Error(), "MISSING_DUCKDB_URL")
 }
 
 func TestAutomatedPrefixesRoundTrip(t *testing.T) {
@@ -1161,19 +937,14 @@ func TestAutomatedPrefixesRoundTrip(t *testing.T) {
 		},
 	})
 	cfg, err := loadConfigFromPFlags(t)
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-	got := cfg.Automated.Prefixes
+	require.NoError(t, err, "loading config")
 	want := []string{
 		"You are analyzing an essay",
 		"You are grading quotes",
 		"  ",
 		"You are analyzing an essay",
 	}
-	if !slices.Equal(got, want) {
-		t.Errorf("prefixes = %q, want %q", got, want)
-	}
+	assert.Equal(t, want, cfg.Automated.Prefixes)
 }
 
 func TestAutomatedPrefixesAbsentIsNil(t *testing.T) {
@@ -1182,12 +953,8 @@ func TestAutomatedPrefixesAbsentIsNil(t *testing.T) {
 		"public_url": "http://example.com",
 	})
 	cfg, err := loadConfigFromPFlags(t)
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-	if cfg.Automated.Prefixes != nil {
-		t.Errorf("expected nil, got %v", cfg.Automated.Prefixes)
-	}
+	require.NoError(t, err, "loading config")
+	assert.Nil(t, cfg.Automated.Prefixes)
 }
 
 func TestLoadFile_CustomModelPricing(t *testing.T) {
@@ -1233,29 +1000,82 @@ func TestLoadFile_CustomModelPricing(t *testing.T) {
 			writeConfig(t, dir, tt.data)
 
 			cfg, err := LoadMinimal()
-			if err != nil {
-				t.Fatalf("LoadMinimal: %v", err)
-			}
+			require.NoError(t, err, "LoadMinimal")
 
 			if len(tt.want) == 0 {
-				if len(cfg.CustomModelPricing) != 0 {
-					t.Fatalf("expected nil/empty, got %v", cfg.CustomModelPricing)
-				}
+				assert.Empty(t, cfg.CustomModelPricing)
 				return
 			}
 
-			if len(cfg.CustomModelPricing) != len(tt.want) {
-				t.Fatalf("got %d entries, want %d", len(cfg.CustomModelPricing), len(tt.want))
-			}
+			require.Len(t, cfg.CustomModelPricing, len(tt.want))
 			for model, wantRate := range tt.want {
 				got, ok := cfg.CustomModelPricing[model]
 				if !ok {
 					t.Errorf("missing model %q", model)
 					continue
 				}
-				if got != wantRate {
-					t.Errorf("model %q = %+v, want %+v", model, got, wantRate)
-				}
+				assert.Equal(t, wantRate, got, "model %q", model)
+			}
+		})
+	}
+}
+
+func TestLoadFile_RemoteHosts(t *testing.T) {
+	dir := setupTestEnv(t)
+	path := filepath.Join(dir, configFileName)
+	data := []byte(`[[remote_hosts]]
+host = "devbox1"
+user = "jesse"
+port = 22
+
+[[remote_hosts]]
+host = "  laptop2  "
+`)
+	require.NoError(t, os.WriteFile(path, data, 0o600), "write config")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	require.Len(t, cfg.RemoteHosts, 2)
+	assert.Equal(t, RemoteHost{Host: "devbox1", User: "jesse", Port: 22}, cfg.RemoteHosts[0])
+	// host is trimmed at load so validation and SSH see the same value
+	assert.Equal(t, RemoteHost{Host: "laptop2"}, cfg.RemoteHosts[1])
+}
+
+func TestLoadFile_RemoteHostsAbsentIsNil(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{"public_url": "http://example.com"})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.RemoteHosts)
+}
+
+func TestValidateRemoteHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		hosts   []RemoteHost
+		wantErr []string // substrings expected in error; empty => no error
+	}{
+		{"valid", []RemoteHost{{Host: "a"}, {Host: "b", Port: 22}, {Host: "c", Port: 0}}, nil},
+		{"empty host", []RemoteHost{{Host: ""}}, []string{"host is required"}},
+		{"negative port", []RemoteHost{{Host: "a", Port: -1}}, []string{"invalid port"}},
+		{"port too large", []RemoteHost{{Host: "a", Port: 70000}}, []string{"invalid port"}},
+		{"aggregates both", []RemoteHost{{Host: ""}, {Host: "b", Port: 99999}}, []string{"host is required", "invalid port"}},
+		{"duplicate host", []RemoteHost{{Host: "a"}, {Host: "a"}}, []string{"duplicate host"}},
+		{"duplicate host different user or port", []RemoteHost{{Host: "box", User: "alice"}, {Host: "box", User: "bob", Port: 2222}}, []string{"duplicate host"}},
+		{"none configured", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{RemoteHosts: tt.hosts}.ValidateRemoteHosts()
+			if len(tt.wantErr) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			for _, want := range tt.wantErr {
+				assert.Contains(t, err.Error(), want)
 			}
 		})
 	}

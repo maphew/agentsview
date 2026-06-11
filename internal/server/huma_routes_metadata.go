@@ -1,0 +1,115 @@
+package server
+
+import (
+	"context"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/update"
+)
+
+func (s *Server) registerMetadataRoutes() {
+	group := newRouteGroup(s.api, "/api/v1", "Metadata")
+
+	get(s, group, "/projects", "List projects", s.humaListProjects)
+	get(s, group, "/machines", "List machines", s.humaListMachines)
+	get(s, group, "/agents", "List agents", s.humaListAgents)
+	get(s, group, "/stats", "Get stats", s.humaGetStats)
+	get(s, group, "/version", "Get server version", s.humaGetVersion)
+	get(s, group, "/update/check", "Check for updates", s.humaCheckUpdate)
+}
+
+type statsInput struct {
+	BoolIncludeInput
+}
+
+type projectsResponse struct {
+	Projects []db.ProjectInfo `json:"projects"`
+}
+
+type machinesResponse struct {
+	Machines []string `json:"machines"`
+}
+
+type agentsResponse struct {
+	Agents []db.AgentInfo `json:"agents"`
+}
+
+func (s *Server) humaGetStats(
+	ctx context.Context,
+	in *statsInput,
+) (*jsonOutput[db.Stats], error) {
+	stats, err := s.db.GetStats(ctx, !in.IncludeOneShot, !in.IncludeAutomated)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	return &jsonOutput[db.Stats]{Body: stats}, nil
+}
+
+func (s *Server) humaListProjects(
+	ctx context.Context,
+	in *statsInput,
+) (*jsonOutput[projectsResponse], error) {
+	projects, err := s.db.GetProjects(ctx, !in.IncludeOneShot, !in.IncludeAutomated)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	return &jsonOutput[projectsResponse]{Body: projectsResponse{Projects: projects}}, nil
+}
+
+func (s *Server) humaListMachines(
+	ctx context.Context,
+	in *statsInput,
+) (*jsonOutput[machinesResponse], error) {
+	machines, err := s.db.GetMachines(ctx, !in.IncludeOneShot, !in.IncludeAutomated)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	return &jsonOutput[machinesResponse]{Body: machinesResponse{Machines: machines}}, nil
+}
+
+func (s *Server) humaListAgents(
+	ctx context.Context,
+	in *statsInput,
+) (*jsonOutput[agentsResponse], error) {
+	agents, err := s.db.GetAgents(ctx, !in.IncludeOneShot, !in.IncludeAutomated)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	return &jsonOutput[agentsResponse]{Body: agentsResponse{Agents: agents}}, nil
+}
+
+func (s *Server) humaGetVersion(
+	_ context.Context,
+	_ *emptyInput,
+) (*jsonOutput[VersionInfo], error) {
+	return &jsonOutput[VersionInfo]{Body: s.version}, nil
+}
+
+func (s *Server) humaCheckUpdate(
+	_ context.Context,
+	_ *emptyInput,
+) (*jsonOutput[updateCheckResponse], error) {
+	if s.cfg.DisableUpdateCheck {
+		return &jsonOutput[updateCheckResponse]{
+			Body: updateCheckResponse{CurrentVersion: s.version.Version},
+		}, nil
+	}
+	checkFn := s.updateCheckFn
+	if checkFn == nil {
+		checkFn = update.CheckForUpdate
+	}
+	info, err := checkFn(s.version.Version, false, s.dataDir)
+	if err != nil || info == nil {
+		return &jsonOutput[updateCheckResponse]{
+			Body: updateCheckResponse{CurrentVersion: s.version.Version},
+		}, nil
+	}
+	return &jsonOutput[updateCheckResponse]{
+		Body: updateCheckResponse{
+			UpdateAvailable: !info.IsDevBuild,
+			CurrentVersion:  info.CurrentVersion,
+			LatestVersion:   info.LatestVersion,
+			IsDevBuild:      info.IsDevBuild,
+		},
+	}, nil
+}

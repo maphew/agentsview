@@ -23,6 +23,9 @@ type Store struct {
 	cursorMu     sync.RWMutex
 	cursorSecret []byte
 
+	pricingMu     sync.Mutex
+	pricingLoadMu sync.Mutex
+	pricingLoad   *pricingLoad
 	customPricing map[string]config.CustomModelRate
 }
 
@@ -48,6 +51,7 @@ const pgSessionCols = `id, project, machine, agent,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
+	secret_leak_count, secrets_rules_version,
 	deleted_at, termination_status`
 
 // paramBuilder generates numbered PostgreSQL placeholders.
@@ -155,6 +159,7 @@ func scanPGSession(
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
 		&s.ParserMalformedLines, &s.IsTruncated,
+		&s.SecretLeakCount, &s.SecretsRulesVersion,
 		&deletedAt, &s.TerminationStatus,
 	)
 	if err != nil {
@@ -206,177 +211,7 @@ const pgRootSessionFilter = `message_count > 0
 func buildPGSessionFilter(
 	f db.SessionFilter,
 ) (string, []any) {
-	pb := &paramBuilder{}
-	basePreds := []string{
-		"message_count > 0",
-		"deleted_at IS NULL",
-	}
-	if !f.IncludeChildren {
-		basePreds = append(basePreds,
-			"relationship_type NOT IN ('subagent', 'fork')")
-	}
-
-	var filterPreds []string
-
-	if f.Project != "" {
-		filterPreds = append(filterPreds,
-			"project = "+pb.add(f.Project))
-	}
-	if f.ExcludeProject != "" {
-		filterPreds = append(filterPreds,
-			"project != "+pb.add(f.ExcludeProject))
-	}
-	if f.Machine != "" {
-		machines := strings.Split(f.Machine, ",")
-		if len(machines) == 1 {
-			filterPreds = append(filterPreds,
-				"machine = "+pb.add(machines[0]))
-		} else {
-			placeholders := make([]string, len(machines))
-			for i, m := range machines {
-				placeholders[i] = pb.add(m)
-			}
-			filterPreds = append(filterPreds,
-				"machine IN ("+
-					strings.Join(placeholders, ",")+
-					")",
-			)
-		}
-	}
-	if f.Agent != "" {
-		agents := strings.Split(f.Agent, ",")
-		if len(agents) == 1 {
-			filterPreds = append(filterPreds,
-				"agent = "+pb.add(agents[0]))
-		} else {
-			placeholders := make([]string, len(agents))
-			for i, a := range agents {
-				placeholders[i] = pb.add(a)
-			}
-			filterPreds = append(filterPreds,
-				"agent IN ("+
-					strings.Join(placeholders, ",")+
-					")",
-			)
-		}
-	}
-	if f.Date != "" {
-		filterPreds = append(filterPreds,
-			"DATE(COALESCE(started_at, created_at) AT TIME ZONE 'UTC') = "+
-				pb.add(f.Date)+"::date")
-	}
-	if f.DateFrom != "" {
-		filterPreds = append(filterPreds,
-			"DATE(COALESCE(started_at, created_at) AT TIME ZONE 'UTC') >= "+
-				pb.add(f.DateFrom)+"::date")
-	}
-	if f.DateTo != "" {
-		filterPreds = append(filterPreds,
-			"DATE(COALESCE(started_at, created_at) AT TIME ZONE 'UTC') <= "+
-				pb.add(f.DateTo)+"::date")
-	}
-	if f.ActiveSince != "" {
-		filterPreds = append(filterPreds,
-			"COALESCE(ended_at, started_at, created_at) >= "+
-				pb.add(f.ActiveSince)+"::timestamptz")
-	}
-	if f.MinMessages > 0 {
-		filterPreds = append(filterPreds,
-			"message_count >= "+pb.add(f.MinMessages))
-	}
-	if f.MaxMessages > 0 {
-		filterPreds = append(filterPreds,
-			"message_count <= "+pb.add(f.MaxMessages))
-	}
-	if f.MinUserMessages > 0 {
-		filterPreds = append(filterPreds,
-			"user_message_count >= "+
-				pb.add(f.MinUserMessages))
-	}
-	if pred := pgTerminationPred(f.Termination, pb); pred != "" {
-		filterPreds = append(filterPreds, pred)
-	}
-	// "" and "all" add no predicate.
-
-	oneShotPred := ""
-	if f.ExcludeOneShot {
-		pred := "user_message_count > 1"
-		if !f.ExcludeAutomated {
-			pred = "(user_message_count > 1 OR is_automated = TRUE)"
-		}
-		if f.IncludeChildren {
-			oneShotPred = pred
-		} else {
-			filterPreds = append(filterPreds, pred)
-		}
-	}
-
-	if f.ExcludeAutomated {
-		filterPreds = append(filterPreds,
-			"is_automated = FALSE")
-	}
-
-	if len(f.Outcome) > 0 {
-		phs := make([]string, len(f.Outcome))
-		for i, v := range f.Outcome {
-			phs[i] = pb.add(v)
-		}
-		filterPreds = append(filterPreds,
-			"outcome IN ("+strings.Join(phs, ",")+")")
-	}
-	if len(f.HealthGrade) > 0 {
-		phs := make([]string, len(f.HealthGrade))
-		for i, v := range f.HealthGrade {
-			phs[i] = pb.add(v)
-		}
-		filterPreds = append(filterPreds,
-			"health_grade IN ("+
-				strings.Join(phs, ",")+
-				")")
-	}
-	if f.MinToolFailures != nil {
-		filterPreds = append(filterPreds,
-			"tool_failure_signal_count >= "+
-				pb.add(*f.MinToolFailures))
-	}
-
-	if !f.IncludeChildren {
-		allPreds := append(basePreds, filterPreds...)
-		if oneShotPred != "" {
-			allPreds = append(allPreds, oneShotPred)
-		}
-		return strings.Join(allPreds, " AND "), pb.args
-	}
-
-	// Mirrors SQLite buildSessionFilter. The CTE computes the
-	// transitive closure of rows reachable from qualifying
-	// roots, so children only surface when their full parent
-	// chain terminates at a rootMatch-passing root — a plain
-	// single-level parent subquery would let a subagent that
-	// incidentally matches user filters drag its descendants
-	// through as fake roots.
-	baseWhere := strings.Join(basePreds, " AND ")
-
-	rootMatchParts := append([]string{}, filterPreds...)
-	if oneShotPred != "" {
-		rootMatchParts = append(rootMatchParts, oneShotPred)
-	}
-	rootMatchParts = append(rootMatchParts,
-		"relationship_type NOT IN ('subagent', 'fork')")
-	rootMatch := strings.Join(rootMatchParts, " AND ")
-
-	cte := "WITH RECURSIVE tree(id) AS (" +
-		"SELECT id FROM sessions" +
-		" WHERE message_count > 0 AND deleted_at IS NULL AND " +
-		rootMatch +
-		" UNION " +
-		"SELECT s.id FROM sessions s" +
-		" JOIN tree t ON s.parent_session_id = t.id" +
-		" WHERE s.message_count > 0 AND s.deleted_at IS NULL" +
-		") SELECT id FROM tree"
-
-	where := baseWhere + " AND id IN (" + cte + ")"
-	return where, pb.args
+	return db.BuildSessionFilterSQL(f, db.PostgresQueryDialect())
 }
 
 // EncodeCursor returns a base64-encoded, HMAC-signed cursor.
@@ -505,31 +340,26 @@ func (s *Store) ListSessions(
 		}
 	}
 
-	cursorPB := &paramBuilder{
-		n:    len(args),
-		args: append([]any{}, args...),
-	}
+	cursorArgs := append([]any{}, args...)
+	pageBuilder := db.NewQueryBuilder(
+		db.PostgresQueryDialect(), len(args),
+	)
 	cursorWhere := where
 	if f.Cursor != "" {
-		eaParam := cursorPB.add(cur.EndedAt)
-		idParam := cursorPB.add(cur.ID)
-		cursorWhere += ` AND (
-			COALESCE(ended_at, started_at, created_at),
-			id
-		) < (` + eaParam + `::timestamptz, ` +
-			idParam + `)`
+		cursorWhere += " AND " +
+			pageBuilder.CursorBeforePredicate(cur)
 	}
 
-	limitParam := cursorPB.add(f.Limit + 1)
 	query := "SELECT " + pgSessionCols +
 		" FROM sessions WHERE " + cursorWhere + `
 		ORDER BY COALESCE(
 			ended_at, started_at, created_at
 		) DESC, id DESC
-		LIMIT ` + limitParam
+		` + pageBuilder.Limit(f.Limit+1)
+	cursorArgs = append(cursorArgs, pageBuilder.Args()...)
 
 	rows, err := s.pg.QueryContext(
-		ctx, query, cursorPB.args...,
+		ctx, query, cursorArgs...,
 	)
 	if err != nil {
 		return db.SessionPage{},
@@ -559,6 +389,97 @@ func (s *Store) ListSessions(
 	}
 
 	return page, nil
+}
+
+// GetSidebarSessionIndex returns the skinny session rows needed by
+// the sidebar grouper. It intentionally has no cursor or limit.
+func (s *Store) GetSidebarSessionIndex(
+	ctx context.Context, f db.SessionFilter,
+) (db.SidebarSessionIndex, error) {
+	f.IncludeChildren = true
+	f.Cursor = ""
+	f.Limit = 0
+
+	where, args := buildPGSessionFilter(f)
+	query := `
+		SELECT
+			id,
+			parent_session_id,
+			relationship_type,
+			project,
+			machine,
+			agent,
+			display_name,
+			started_at,
+			ended_at,
+			created_at,
+			termination_status,
+			message_count,
+			user_message_count,
+			is_automated,
+			position('<teammate-message' in COALESCE(first_message, '')) > 0
+		FROM sessions
+		WHERE ` + where + `
+		ORDER BY COALESCE(
+			ended_at, started_at, created_at
+		) DESC, id DESC`
+
+	rows, err := s.pg.QueryContext(ctx, query, args...)
+	if err != nil {
+		return db.SidebarSessionIndex{},
+			fmt.Errorf("querying sidebar session index: %w", err)
+	}
+	defer rows.Close()
+
+	index := db.SidebarSessionIndex{
+		Sessions: []db.SidebarSessionIndexRow{},
+	}
+	for rows.Next() {
+		var row db.SidebarSessionIndexRow
+		var startedAt, endedAt, createdAt *time.Time
+		if err := rows.Scan(
+			&row.ID,
+			&row.ParentSessionID,
+			&row.RelationshipType,
+			&row.Project,
+			&row.Machine,
+			&row.Agent,
+			&row.DisplayName,
+			&startedAt,
+			&endedAt,
+			&createdAt,
+			&row.TerminationStatus,
+			&row.MessageCount,
+			&row.UserMessageCount,
+			&row.IsAutomated,
+			&row.IsTeammate,
+		); err != nil {
+			return db.SidebarSessionIndex{},
+				fmt.Errorf(
+					"scanning sidebar session index: %w",
+					err,
+				)
+		}
+		if startedAt != nil {
+			str := FormatISO8601(*startedAt)
+			row.StartedAt = &str
+		}
+		if endedAt != nil {
+			str := FormatISO8601(*endedAt)
+			row.EndedAt = &str
+		}
+		if createdAt != nil {
+			row.CreatedAt = FormatISO8601(*createdAt)
+		}
+		index.Sessions = append(index.Sessions, row)
+	}
+	if err := rows.Err(); err != nil {
+		return db.SidebarSessionIndex{},
+			fmt.Errorf("iterating sidebar session index: %w", err)
+	}
+	index.Total = len(index.Sessions)
+
+	return index, nil
 }
 
 // GetSession returns a single session by ID, excluding

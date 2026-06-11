@@ -15,6 +15,7 @@ type SessionBatchWrite struct {
 	Messages        []Message
 	UsageEvents     []UsageEvent
 	Signals         SessionSignalUpdate
+	Findings        []SecretFinding
 	DataVersion     int
 	ReplaceMessages bool
 }
@@ -271,48 +272,12 @@ func writeOneSessionBatchTx(
 		}
 	}
 
-	if _, err := tx.Exec(`
-		UPDATE sessions SET
-			tool_failure_signal_count = ?,
-			tool_retry_count = ?,
-			edit_churn_count = ?,
-			consecutive_failure_max = ?,
-			outcome = ?,
-			outcome_confidence = ?,
-			ended_with_role = ?,
-			final_failure_streak = ?,
-			signals_pending_since = ?,
-			compaction_count = ?,
-			mid_task_compaction_count = ?,
-			context_pressure_max = ?,
-			health_score = ?,
-			health_grade = ?,
-			has_tool_calls = ?,
-			has_context_data = ?,
-			local_modified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-		WHERE id = ?`,
-		write.Signals.ToolFailureSignalCount,
-		write.Signals.ToolRetryCount,
-		write.Signals.EditChurnCount,
-		write.Signals.ConsecutiveFailureMax,
-		write.Signals.Outcome,
-		write.Signals.OutcomeConfidence,
-		write.Signals.EndedWithRole,
-		write.Signals.FinalFailureStreak,
-		write.Signals.SignalsPendingSince,
-		write.Signals.CompactionCount,
-		write.Signals.MidTaskCompactionCount,
-		write.Signals.ContextPressureMax,
-		write.Signals.HealthScore,
-		write.Signals.HealthGrade,
-		write.Signals.HasToolCalls,
-		write.Signals.HasContextData,
-		write.Session.ID,
-	); err != nil {
-		return 0, fmt.Errorf(
-			"updating session signals for %s: %w",
-			write.Session.ID, err,
-		)
+	if err := updateSessionSignalsTx(tx, write.Session.ID, write.Signals); err != nil {
+		return 0, err
+	}
+	if err := replaceSecretFindingsTx(tx, write.Session.ID, write.Findings,
+		write.Signals.SecretLeakCount, write.Signals.SecretsRulesVersion); err != nil {
+		return 0, err
 	}
 
 	return len(msgs), nil

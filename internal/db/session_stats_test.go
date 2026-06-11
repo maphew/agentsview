@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // itoa is a thin alias for strconv.Itoa kept short so seedModelMessages'
@@ -68,22 +71,14 @@ func Test_insertSessionFixture_isAutomated_patch(t *testing.T) {
 	})
 
 	var autoFlag, humanFlag int
-	if err := d.getReader().QueryRow(
+	require.NoError(t, d.getReader().QueryRow(
 		"SELECT is_automated FROM sessions WHERE id = ?", "auto-1",
-	).Scan(&autoFlag); err != nil {
-		t.Fatalf("read auto-1: %v", err)
-	}
-	if err := d.getReader().QueryRow(
+	).Scan(&autoFlag), "read auto-1")
+	require.NoError(t, d.getReader().QueryRow(
 		"SELECT is_automated FROM sessions WHERE id = ?", "human-1",
-	).Scan(&humanFlag); err != nil {
-		t.Fatalf("read human-1: %v", err)
-	}
-	if autoFlag != 1 {
-		t.Fatalf("auto-1 is_automated = %d, want 1", autoFlag)
-	}
-	if humanFlag != 0 {
-		t.Fatalf("human-1 is_automated = %d, want 0", humanFlag)
-	}
+	).Scan(&humanFlag), "read human-1")
+	require.Equal(t, 1, autoFlag, "auto-1 is_automated")
+	require.Equal(t, 0, humanFlag, "human-1 is_automated")
 }
 
 func Test_loadSessionsInWindow_isAutomated(t *testing.T) {
@@ -101,19 +96,13 @@ func Test_loadSessionsInWindow_isAutomated(t *testing.T) {
 	from := time.Now().Add(-24 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
 	rows, err := d.loadSessionsInWindow(ctx, StatsFilter{}, from, to)
-	if err != nil {
-		t.Fatalf("loadSessionsInWindow: %v", err)
-	}
+	require.NoError(t, err, "loadSessionsInWindow")
 	byID := map[string]bool{}
 	for _, r := range rows {
 		byID[r.id] = r.isAutomated
 	}
-	if got, want := byID["auto"], true; got != want {
-		t.Fatalf("auto.isAutomated = %v, want %v", got, want)
-	}
-	if got, want := byID["human"], false; got != want {
-		t.Fatalf("human.isAutomated = %v, want %v", got, want)
-	}
+	require.Equal(t, true, byID["auto"], "auto.isAutomated")
+	require.Equal(t, false, byID["human"], "human.isAutomated")
 }
 
 // insertSessionFixture inserts a sessionFixture via the standard
@@ -142,12 +131,9 @@ func insertSessionFixture(t *testing.T, d *DB, f sessionFixture) {
 	endedAt := f.endedAt
 	if endedAt == "" && f.durationMin > 0 && f.startedAt != "" {
 		start, err := time.Parse(time.RFC3339, f.startedAt)
-		if err != nil {
-			t.Fatalf(
-				"insertSessionFixture %s: parsing startedAt %q: %v",
-				f.id, f.startedAt, err,
-			)
-		}
+		require.NoError(t, err,
+			"insertSessionFixture %s: parsing startedAt %q",
+			f.id, f.startedAt)
 		dur := time.Duration(f.durationMin * float64(time.Minute))
 		endedAt = start.Add(dur).UTC().Format(time.RFC3339Nano)
 	}
@@ -186,13 +172,12 @@ func insertSessionFixture(t *testing.T, d *DB, f sessionFixture) {
 	if f.isAutomated {
 		want = 1
 	}
-	if _, err := d.getWriter().Exec(
+	_, err := d.getWriter().Exec(
 		"UPDATE sessions SET is_automated = ? WHERE id = ?",
 		want, f.id,
-	); err != nil {
-		t.Fatalf("insertSessionFixture %s: patch is_automated: %v",
-			f.id, err)
-	}
+	)
+	require.NoError(t, err,
+		"insertSessionFixture %s: patch is_automated", f.id)
 }
 
 // seedAssistantActivity inserts `turns` assistant messages and
@@ -216,10 +201,8 @@ func seedAssistantActivity(
 	for i := range n {
 		msgs = append(msgs, asstMsg(sessionID, i+1, "reply"))
 	}
-	if err := d.InsertMessages(msgs); err != nil {
-		t.Fatalf("seedAssistantActivity %s: InsertMessages: %v",
-			sessionID, err)
-	}
+	require.NoError(t, d.InsertMessages(msgs),
+		"seedAssistantActivity %s: InsertMessages", sessionID)
 	if toolCalls == 0 {
 		return
 	}
@@ -228,28 +211,17 @@ func seedAssistantActivity(
 	// INSERT ... SELECT ordinal to find the message_id.
 	for i := range toolCalls {
 		ord := (i % n) + 1
-		if _, err := d.getWriter().Exec(`
+		_, err := d.getWriter().Exec(`
 			INSERT INTO tool_calls
 				(message_id, session_id, tool_name, category)
 			SELECT id, session_id, 'Read', 'file'
 			FROM messages
 			WHERE session_id = ? AND ordinal = ?`,
 			sessionID, ord,
-		); err != nil {
-			t.Fatalf("seedAssistantActivity %s: tool_call: %v",
-				sessionID, err)
-		}
+		)
+		require.NoError(t, err,
+			"seedAssistantActivity %s: tool_call", sessionID)
 	}
-}
-
-// floatsClose reports whether a and b are within eps of each other.
-// Used by stats tests that compare arithmetic means.
-func floatsClose(a, b, eps float64) bool {
-	d := a - b
-	if d < 0 {
-		d = -d
-	}
-	return d <= eps
 }
 
 // seedToolCallsByCategory inserts one assistant message per entry in
@@ -267,23 +239,20 @@ func seedToolCallsByCategory(
 	for i, cat := range categories {
 		msgs = append(msgs, asstMsg(sessionID, i+1, "reply-"+cat))
 	}
-	if err := d.InsertMessages(msgs); err != nil {
-		t.Fatalf("seedToolCallsByCategory %s: InsertMessages: %v",
-			sessionID, err)
-	}
+	require.NoError(t, d.InsertMessages(msgs),
+		"seedToolCallsByCategory %s: InsertMessages", sessionID)
 	for i, cat := range categories {
 		ord := i + 1
-		if _, err := d.getWriter().Exec(`
+		_, err := d.getWriter().Exec(`
 			INSERT INTO tool_calls
 				(message_id, session_id, tool_name, category)
 			SELECT id, session_id, ?, ?
 			FROM messages
 			WHERE session_id = ? AND ordinal = ?`,
 			cat, cat, sessionID, ord,
-		); err != nil {
-			t.Fatalf("seedToolCallsByCategory %s: %q: %v",
-				sessionID, cat, err)
-		}
+		)
+		require.NoError(t, err,
+			"seedToolCallsByCategory %s: %q", sessionID, cat)
 	}
 }
 
@@ -317,10 +286,8 @@ func seedModelMessages(
 		)
 		msgs = append(msgs, m)
 	}
-	if err := d.InsertMessages(msgs); err != nil {
-		t.Fatalf("seedModelMessages %s: InsertMessages: %v",
-			sessionID, err)
-	}
+	require.NoError(t, d.InsertMessages(msgs),
+		"seedModelMessages %s: InsertMessages", sessionID)
 }
 
 func TestSessionShapeLabel(t *testing.T) {
@@ -344,12 +311,8 @@ func TestSessionShapeLabel(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := sessionShapeLabel(c.userMsgs)
-		if got != c.want {
-			t.Errorf(
-				"sessionShapeLabel(%d): got %q, want %q",
-				c.userMsgs, got, c.want,
-			)
-		}
+		assert.Equal(t, c.want, got,
+			"sessionShapeLabel(%d)", c.userMsgs)
 	}
 }
 
@@ -359,23 +322,21 @@ func TestPickMaxLabel_TiesBreakByPriority(t *testing.T) {
 	priority := []string{
 		"automation", "marathon", "deep", "standard", "quick",
 	}
-	if got := pickMaxLabel(counts, priority); got != "automation" {
-		t.Errorf("tie break: got %q want automation", got)
-	}
+	assert.Equal(t, "automation", pickMaxLabel(counts, priority),
+		"tie break")
 	// PrimaryHuman excludes automation; marathon should win a 1/1/1
 	// tie over deep/standard/quick.
 	humanCounts := map[string]int{
 		"quick": 1, "standard": 1, "deep": 1, "marathon": 1,
 	}
 	humanPriority := []string{"marathon", "deep", "standard", "quick"}
-	if got := pickMaxLabel(humanCounts, humanPriority); got != "marathon" {
-		t.Errorf("human tie break: got %q want marathon", got)
-	}
+	assert.Equal(t, "marathon",
+		pickMaxLabel(humanCounts, humanPriority),
+		"human tie break")
 	// Strictly greater wins regardless of priority.
 	c2 := map[string]int{"quick": 5, "deep": 2}
-	if got := pickMaxLabel(c2, priority); got != "quick" {
-		t.Errorf("strict max: got %q want quick", got)
-	}
+	assert.Equal(t, "quick", pickMaxLabel(c2, priority),
+		"strict max")
 }
 
 func TestGetSessionStats_TotalsAndArchetypes(t *testing.T) {
@@ -400,100 +361,57 @@ func TestGetSessionStats_TotalsAndArchetypes(t *testing.T) {
 	}
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
-	if stats.SchemaVersion != 1 {
-		t.Errorf("schema_version: got %d want 1", stats.SchemaVersion)
-	}
-	if stats.Totals.SessionsAll != 5 {
-		t.Errorf("sessions_all: got %d want 5",
-			stats.Totals.SessionsAll)
-	}
-	if stats.Totals.SessionsAutomation != 2 {
-		t.Errorf("sessions_automation: got %d want 2",
-			stats.Totals.SessionsAutomation)
-	}
-	if stats.Totals.SessionsHuman != 3 {
-		t.Errorf("sessions_human: got %d want 3",
-			stats.Totals.SessionsHuman)
-	}
+	assert.Equal(t, 1, stats.SchemaVersion, "schema_version: got")
+	assert.Equal(t, 5, stats.Totals.SessionsAll, "sessions_all")
+	assert.Equal(t, 2, stats.Totals.SessionsAutomation,
+		"sessions_automation")
+	assert.Equal(t, 3, stats.Totals.SessionsHuman, "sessions_human")
 	// Invariant: human + automation must equal all.
-	if stats.Totals.SessionsHuman+stats.Totals.SessionsAutomation !=
-		stats.Totals.SessionsAll {
-		t.Errorf(
-			"invariant: human (%d) + automation (%d) != all (%d)",
-			stats.Totals.SessionsHuman,
-			stats.Totals.SessionsAutomation,
-			stats.Totals.SessionsAll,
-		)
-	}
-	if got := stats.Totals.UserMessagesTotal; got != 0+1+20+40+100 {
-		t.Errorf("user_messages_total: got %d want 161", got)
-	}
+	assert.Equal(t, stats.Totals.SessionsAll,
+		stats.Totals.SessionsHuman+stats.Totals.SessionsAutomation,
+		"invariant: human (%d) + automation (%d) != all (%d)",
+		stats.Totals.SessionsHuman,
+		stats.Totals.SessionsAutomation,
+		stats.Totals.SessionsAll)
+	assert.Equal(t, 161, stats.Totals.UserMessagesTotal,
+		"user_messages_total")
 
-	if stats.Archetypes.Automation != 2 {
-		t.Errorf("archetypes.automation: got %d want 2",
-			stats.Archetypes.Automation)
-	}
-	if stats.Archetypes.Quick != 0 {
-		t.Errorf("archetypes.quick: got %d want 0",
-			stats.Archetypes.Quick)
-	}
-	if stats.Archetypes.Standard != 0 {
-		t.Errorf("archetypes.standard: got %d want 0",
-			stats.Archetypes.Standard)
-	}
-	if stats.Archetypes.Deep != 2 {
-		t.Errorf("archetypes.deep: got %d want 2",
-			stats.Archetypes.Deep)
-	}
-	if stats.Archetypes.Marathon != 1 {
-		t.Errorf("archetypes.marathon: got %d want 1",
-			stats.Archetypes.Marathon)
-	}
+	assert.Equal(t, 2, stats.Archetypes.Automation,
+		"archetypes.automation")
+	assert.Equal(t, 0, stats.Archetypes.Quick, "archetypes.quick")
+	assert.Equal(t, 0, stats.Archetypes.Standard,
+		"archetypes.standard")
+	assert.Equal(t, 2, stats.Archetypes.Deep, "archetypes.deep")
+	assert.Equal(t, 1, stats.Archetypes.Marathon,
+		"archetypes.marathon")
 	// 2 automation, 2 deep — tie broken by priority: automation first.
-	if stats.Archetypes.Primary != "automation" {
-		t.Errorf("archetypes.primary: got %q want automation",
-			stats.Archetypes.Primary)
-	}
+	assert.Equal(t, "automation", stats.Archetypes.Primary,
+		"archetypes.primary")
 	// Human subset: 2 deep, 1 marathon. Deep wins.
-	if stats.Archetypes.PrimaryHuman != "deep" {
-		t.Errorf("archetypes.primary_human: got %q want deep",
-			stats.Archetypes.PrimaryHuman)
-	}
+	assert.Equal(t, "deep", stats.Archetypes.PrimaryHuman,
+		"archetypes.primary_human")
 
 	// Window bookkeeping: Since = now-28d, Until = now, days = 28.
-	if stats.Window.Days != 28 {
-		t.Errorf("window.days: got %d want 28", stats.Window.Days)
-	}
-	if stats.Window.Since == "" || stats.Window.Until == "" {
-		t.Errorf("window bounds empty: since=%q until=%q",
-			stats.Window.Since, stats.Window.Until)
-	}
-	if _, err := time.Parse(time.RFC3339, stats.Window.Since); err != nil {
-		t.Errorf("window.since not RFC3339: %v", err)
-	}
-	if _, err := time.Parse(time.RFC3339, stats.Window.Until); err != nil {
-		t.Errorf("window.until not RFC3339: %v", err)
-	}
+	assert.Equal(t, 28, stats.Window.Days, "window.days: got")
+	assert.NotEmpty(t, stats.Window.Since,
+		"window.since (until=%q)", stats.Window.Until)
+	assert.NotEmpty(t, stats.Window.Until,
+		"window.until (since=%q)", stats.Window.Since)
+	_, errSince := time.Parse(time.RFC3339, stats.Window.Since)
+	assert.NoError(t, errSince, "window.since not RFC3339")
+	_, errUntil := time.Parse(time.RFC3339, stats.Window.Until)
+	assert.NoError(t, errUntil, "window.until not RFC3339")
 
 	// Filters echo the inputs and default Agent to "all".
-	if stats.Filters.Agent != "all" {
-		t.Errorf("filters.agent: got %q want all", stats.Filters.Agent)
-	}
-	if stats.Filters.Timezone != "UTC" {
-		t.Errorf("filters.timezone: got %q want UTC",
-			stats.Filters.Timezone)
-	}
-	if stats.Filters.ProjectsExcluded == nil {
-		t.Errorf("filters.projects_excluded must be non-nil slice")
-	}
+	assert.Equal(t, "all", stats.Filters.Agent, "filters.agent")
+	assert.Equal(t, "UTC", stats.Filters.Timezone,
+		"filters.timezone")
+	assert.NotNil(t, stats.Filters.ProjectsExcluded,
+		"filters.projects_excluded must be non-nil slice")
 
-	if stats.GeneratedAt == "" {
-		t.Errorf("generated_at empty")
-	}
+	assert.NotEmpty(t, stats.GeneratedAt, "generated_at")
 }
 
 func Test_computeTotalsAndArchetypes_flagAuthority(t *testing.T) {
@@ -515,23 +433,11 @@ func Test_computeTotalsAndArchetypes_flagAuthority(t *testing.T) {
 	})
 
 	got, err := d.GetSessionStats(t.Context(), StatsFilter{Since: "1d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if got.Totals.SessionsHuman != 1 {
-		t.Fatalf("SessionsHuman = %d, want 1", got.Totals.SessionsHuman)
-	}
-	if got.Totals.SessionsAutomation != 1 {
-		t.Fatalf("SessionsAutomation = %d, want 1",
-			got.Totals.SessionsAutomation)
-	}
-	if got.Archetypes.Quick != 1 {
-		t.Fatalf("Archetypes.Quick = %d, want 1 (short non-automated)",
-			got.Archetypes.Quick)
-	}
-	if got.Archetypes.Automation != 1 {
-		t.Fatalf("Archetypes.Automation = %d, want 1", got.Archetypes.Automation)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	require.Equal(t, 1, got.Totals.SessionsHuman, "SessionsHuman")
+	require.Equal(t, 1, got.Totals.SessionsAutomation, "SessionsAutomation")
+	require.Equal(t, 1, got.Archetypes.Quick, "Archetypes.Quick")
+	require.Equal(t, 1, got.Archetypes.Automation, "Archetypes.Automation")
 }
 
 func TestGetSessionStats_FilterByAgent(t *testing.T) {
@@ -548,28 +454,16 @@ func TestGetSessionStats_FilterByAgent(t *testing.T) {
 	})
 
 	all, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats all: %v", err)
-	}
-	if all.Totals.SessionsAll != 2 {
-		t.Errorf("all agents: got %d want 2",
-			all.Totals.SessionsAll)
-	}
+	require.NoError(t, err, "GetSessionStats all")
+	assert.Equal(t, 2, all.Totals.SessionsAll, "all agents")
 
 	onlyClaude, err := d.GetSessionStats(
 		ctx, StatsFilter{Since: "28d", Agent: "claude"},
 	)
-	if err != nil {
-		t.Fatalf("GetSessionStats claude: %v", err)
-	}
-	if onlyClaude.Totals.SessionsAll != 1 {
-		t.Errorf("agent=claude: got %d want 1",
-			onlyClaude.Totals.SessionsAll)
-	}
-	if onlyClaude.Filters.Agent != "claude" {
-		t.Errorf("agent filter echoed: got %q want claude",
-			onlyClaude.Filters.Agent)
-	}
+	require.NoError(t, err, "GetSessionStats claude")
+	assert.Equal(t, 1, onlyClaude.Totals.SessionsAll, "agent=claude")
+	assert.Equal(t, "claude", onlyClaude.Filters.Agent,
+		"agent filter echoed")
 }
 
 func TestGetSessionStats_FilterByProject(t *testing.T) {
@@ -589,25 +483,17 @@ func TestGetSessionStats_FilterByProject(t *testing.T) {
 		Since:           "28d",
 		IncludeProjects: []string{"alpha"},
 	})
-	if err != nil {
-		t.Fatalf("include alpha: %v", err)
-	}
-	if includeAlpha.Totals.SessionsAll != 2 {
-		t.Errorf("include=alpha: got %d want 2",
-			includeAlpha.Totals.SessionsAll)
-	}
+	require.NoError(t, err, "include alpha")
+	assert.Equal(t, 2, includeAlpha.Totals.SessionsAll,
+		"include=alpha")
 
 	excludeAlpha, err := d.GetSessionStats(ctx, StatsFilter{
 		Since:           "28d",
 		ExcludeProjects: []string{"alpha"},
 	})
-	if err != nil {
-		t.Fatalf("exclude alpha: %v", err)
-	}
-	if excludeAlpha.Totals.SessionsAll != 2 {
-		t.Errorf("exclude=alpha: got %d want 2 (beta + gamma)",
-			excludeAlpha.Totals.SessionsAll)
-	}
+	require.NoError(t, err, "exclude alpha")
+	assert.Equal(t, 2, excludeAlpha.Totals.SessionsAll,
+		"exclude=alpha want 2 (beta + gamma)")
 }
 
 func TestWindowBounds(t *testing.T) {
@@ -616,63 +502,49 @@ func TestWindowBounds(t *testing.T) {
 
 	t.Run("default 28d", func(t *testing.T) {
 		from, to, days, err := windowBounds(StatsFilter{}, now)
-		if err != nil {
-			t.Fatalf("windowBounds: %v", err)
-		}
-		if days != 28 {
-			t.Errorf("days: got %d want 28", days)
-		}
-		if !to.Equal(now) {
-			t.Errorf("until: got %v want %v", to, now)
-		}
+		require.NoError(t, err, "windowBounds")
+		assert.Equal(t, 28, days, "days: got")
+		assert.True(t, to.Equal(now),
+			"until: got %v want %v", to, now)
 		wantFrom := now.Add(-28 * 24 * time.Hour)
-		if !from.Equal(wantFrom) {
-			t.Errorf("since: got %v want %v", from, wantFrom)
-		}
+		assert.True(t, from.Equal(wantFrom),
+			"since: got %v want %v", from, wantFrom)
 	})
 
 	t.Run("Nd duration", func(t *testing.T) {
 		_, _, days, err := windowBounds(
 			StatsFilter{Since: "7d"}, now,
 		)
-		if err != nil {
-			t.Fatalf("windowBounds: %v", err)
-		}
-		if days != 7 {
-			t.Errorf("days: got %d want 7", days)
-		}
+		require.NoError(t, err, "windowBounds")
+		assert.Equal(t, 7, days, "days: got")
 	})
 
 	t.Run("Nh duration", func(t *testing.T) {
 		from, to, _, err := windowBounds(
 			StatsFilter{Since: "48h"}, now,
 		)
-		if err != nil {
-			t.Fatalf("windowBounds: %v", err)
-		}
-		if got := to.Sub(from); got != 48*time.Hour {
-			t.Errorf("span: got %v want 48h", got)
-		}
+		require.NoError(t, err, "windowBounds")
+		assert.Equal(t, 48*time.Hour, to.Sub(from), "span")
 	})
 
 	t.Run("bare date", func(t *testing.T) {
 		from, _, _, err := windowBounds(
 			StatsFilter{Since: "2026-04-01"}, now,
 		)
-		if err != nil {
-			t.Fatalf("windowBounds: %v", err)
-		}
-		if from.Year() != 2026 || from.Month() != 4 || from.Day() != 1 {
-			t.Errorf("since parsed: got %v want 2026-04-01", from)
-		}
+		require.NoError(t, err, "windowBounds")
+		assert.Equal(t, 2026, from.Year(),
+			"since parsed: got %v want 2026-04-01", from)
+		assert.Equal(t, time.April, from.Month(),
+			"since parsed: got %v want 2026-04-01", from)
+		assert.Equal(t, 1, from.Day(),
+			"since parsed: got %v want 2026-04-01", from)
 	})
 
 	t.Run("invalid since", func(t *testing.T) {
-		if _, _, _, err := windowBounds(
+		_, _, _, err := windowBounds(
 			StatsFilter{Since: "bogus"}, now,
-		); err == nil {
-			t.Error("expected error for invalid Since")
-		}
+		)
+		assert.Error(t, err, "expected error for invalid Since")
 	})
 }
 
@@ -714,118 +586,91 @@ func TestGetSessionStats_Distributions(t *testing.T) {
 	}
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	// duration scope_all: 0.5→bucket0, 0.9→bucket0, 10→bucket2,
 	// 25→bucket3, 120→bucket5 (top).
 	gotAll := stats.Distributions.DurationMinutes.ScopeAll.Buckets
 	wantCountsAll := []int{2, 0, 1, 1, 0, 1}
-	if len(gotAll) != len(wantCountsAll) {
-		t.Fatalf("duration scope_all: got %d buckets, want %d",
-			len(gotAll), len(wantCountsAll))
-	}
+	require.Len(t, gotAll, len(wantCountsAll),
+		"duration scope_all buckets")
 	for i, w := range wantCountsAll {
-		if gotAll[i].Count != w {
-			t.Errorf("duration scope_all bucket %d: got %d want %d",
-				i, gotAll[i].Count, w)
-		}
+		assert.Equal(t, w, gotAll[i].Count,
+			"duration scope_all bucket %d", i)
 	}
 	// duration scope_human (c,d,e): bucket2=1, bucket3=1, bucket5=1.
 	gotHuman := stats.Distributions.DurationMinutes.ScopeHuman.Buckets
 	wantCountsHuman := []int{0, 0, 1, 1, 0, 1}
-	if len(gotHuman) != len(wantCountsHuman) {
-		t.Fatalf("duration scope_human: got %d buckets, want %d",
-			len(gotHuman), len(wantCountsHuman))
-	}
+	require.Len(t, gotHuman, len(wantCountsHuman),
+		"duration scope_human buckets")
 	for i, w := range wantCountsHuman {
-		if gotHuman[i].Count != w {
-			t.Errorf("duration scope_human bucket %d: got %d want %d",
-				i, gotHuman[i].Count, w)
-		}
+		assert.Equal(t, w, gotHuman[i].Count,
+			"duration scope_human bucket %d", i)
 	}
 
 	// Means (arithmetic over included sessions).
 	wantAllMean := (0.5 + 0.9 + 10 + 25 + 120) / 5.0
 	gotAllMean := stats.Distributions.DurationMinutes.ScopeAll.Mean
-	if !floatsClose(gotAllMean, wantAllMean, 0.01) {
-		t.Errorf("duration scope_all mean: got %v want %v",
-			gotAllMean, wantAllMean)
-	}
+	assert.InDelta(t, wantAllMean, gotAllMean, 0.01,
+		"duration scope_all mean")
 	wantHumanMean := (10.0 + 25.0 + 120.0) / 3.0
 	gotHumanMean := stats.Distributions.DurationMinutes.ScopeHuman.Mean
-	if !floatsClose(gotHumanMean, wantHumanMean, 0.01) {
-		t.Errorf("duration scope_human mean: got %v want %v",
-			gotHumanMean, wantHumanMean)
-	}
+	assert.InDelta(t, wantHumanMean, gotHumanMean, 0.01,
+		"duration scope_human mean")
 
 	// user_messages scope_all uses userMessagesEdgesAll
 	// ([0,2),[2,6),[6,16),[16,31),[31,51),[51,inf)):
 	// 0→0, 1→0, 3→1, 10→2, 30→3.
 	gotUM := stats.Distributions.UserMessages.ScopeAll.Buckets
 	wantUM := []int{2, 1, 1, 1, 0, 0}
-	if len(gotUM) != len(wantUM) {
-		t.Fatalf("user_messages scope_all: got %d buckets, want %d",
-			len(gotUM), len(wantUM))
-	}
+	require.Len(t, gotUM, len(wantUM),
+		"user_messages scope_all buckets")
 	for i, w := range wantUM {
-		if gotUM[i].Count != w {
-			t.Errorf("user_messages scope_all bucket %d: got %d want %d",
-				i, gotUM[i].Count, w)
-		}
+		assert.Equal(t, w, gotUM[i].Count,
+			"user_messages scope_all bucket %d", i)
 	}
 	// user_messages scope_human uses userMessagesEdgesHuman (5 buckets,
 	// dropping the automation band): 3→0, 10→1, 30→2.
 	gotUMH := stats.Distributions.UserMessages.ScopeHuman.Buckets
 	wantUMH := []int{1, 1, 1, 0, 0}
-	if len(gotUMH) != len(wantUMH) {
-		t.Fatalf("user_messages scope_human: got %d buckets, want %d",
-			len(gotUMH), len(wantUMH))
-	}
+	require.Len(t, gotUMH, len(wantUMH),
+		"user_messages scope_human buckets")
 	for i, w := range wantUMH {
-		if gotUMH[i].Count != w {
-			t.Errorf("user_messages scope_human bucket %d: got %d want %d",
-				i, gotUMH[i].Count, w)
-		}
+		assert.Equal(t, w, gotUMH[i].Count,
+			"user_messages scope_human bucket %d", i)
 	}
 
 	// peak_context scope_all: 2k→0, 8k→0, 25k→1, 60k→2, 150k→4.
 	gotPCAll := stats.Distributions.PeakContextTokens.ScopeAll.Buckets
 	wantPCAll := []int{2, 1, 1, 0, 1, 0}
 	for i, w := range wantPCAll {
-		if gotPCAll[i].Count != w {
-			t.Errorf("peak_context scope_all bucket %d: got %d want %d",
-				i, gotPCAll[i].Count, w)
-		}
+		assert.Equal(t, w, gotPCAll[i].Count,
+			"peak_context scope_all bucket %d", i)
 	}
 	// peak_context scope_human (c,d,e): 25k→1, 60k→2, 150k→4.
 	gotPC := stats.Distributions.PeakContextTokens.ScopeHuman.Buckets
-	if gotPC[1].Count != 1 || gotPC[2].Count != 1 || gotPC[4].Count != 1 {
-		t.Errorf("peak_context scope_human: %+v", gotPC)
-	}
-	if !stats.Distributions.PeakContextTokens.ClaudeOnly {
-		t.Errorf("peak_context.claude_only: got false want true")
-	}
-	if stats.Distributions.PeakContextTokens.NullCount != 0 {
-		t.Errorf("peak_context.null_count: got %d want 0",
-			stats.Distributions.PeakContextTokens.NullCount)
-	}
+	assert.Equal(t, 1, gotPC[1].Count,
+		"peak_context scope_human: %+v", gotPC)
+	assert.Equal(t, 1, gotPC[2].Count,
+		"peak_context scope_human: %+v", gotPC)
+	assert.Equal(t, 1, gotPC[4].Count,
+		"peak_context scope_human: %+v", gotPC)
+	assert.True(t, stats.Distributions.PeakContextTokens.ClaudeOnly,
+		"peak_context.claude_only")
+	assert.Equal(t, 0,
+		stats.Distributions.PeakContextTokens.NullCount,
+		"peak_context.null_count")
 
 	// tools_per_turn: a skipped (assistantTurns==0),
 	// b=1/1=1, c=6/3=2, d=15/10=1.5, e=30/30=1.
 	// toolsPerTurnEdges = [0,1,2,4,7,11,+Inf].
 	gotTPT := stats.Distributions.ToolsPerTurn.ScopeAll.Buckets
 	wantTPT := []int{0, 3, 1, 0, 0, 0}
-	if len(gotTPT) != len(wantTPT) {
-		t.Fatalf("tools_per_turn scope_all: got %d buckets, want %d",
-			len(gotTPT), len(wantTPT))
-	}
+	require.Len(t, gotTPT, len(wantTPT),
+		"tools_per_turn scope_all buckets")
 	for i, w := range wantTPT {
-		if gotTPT[i].Count != w {
-			t.Errorf("tools_per_turn scope_all bucket %d: got %d want %d",
-				i, gotTPT[i].Count, w)
-		}
+		assert.Equal(t, w, gotTPT[i].Count,
+			"tools_per_turn scope_all bucket %d", i)
 	}
 }
 
@@ -843,34 +688,24 @@ func Test_computeDistributions_scopeHuman_flag(t *testing.T) {
 	})
 
 	got, err := d.GetSessionStats(t.Context(), StatsFilter{Since: "1d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	// scope_all has both rows — mean ~= 16.5.
 	allMean := got.Distributions.DurationMinutes.ScopeAll.Mean
-	if allMean < 15 || allMean > 18 {
-		t.Fatalf("scope_all duration mean = %.2f, want ~16.5", allMean)
-	}
+	require.InDelta(t, 16.5, allMean, 1.5,
+		"scope_all duration mean")
 	// scope_human has only the non-automated short session — mean ~= 3.
 	humanMean := got.Distributions.DurationMinutes.ScopeHuman.Mean
-	if humanMean < 2 || humanMean > 4 {
-		t.Fatalf("scope_human duration mean = %.2f, want ~3 (short-human only)",
-			humanMean)
-	}
+	require.InDelta(t, 3.0, humanMean, 1.0,
+		"scope_human duration mean (short-human only)")
 
 	humanUserMessages := got.Distributions.UserMessages.ScopeHuman
-	if humanUserMessages.Mean != 0 {
-		t.Fatalf("scope_human user_messages mean = %.2f, want 0 (<2 filtered)",
-			humanUserMessages.Mean)
-	}
+	require.Equal(t, 0.0, humanUserMessages.Mean,
+		"scope_human user_messages mean want 0 (<2 filtered)")
 	bucketedHumanMessages := 0
 	for _, bucket := range humanUserMessages.Buckets {
 		bucketedHumanMessages += bucket.Count
 	}
-	if bucketedHumanMessages != 0 {
-		t.Fatalf("scope_human user_messages bucket total = %d, want 0 (<2 filtered)",
-			bucketedHumanMessages)
-	}
+	require.Equal(t, 0, bucketedHumanMessages, "scope_human user_messages bucket total")
 }
 
 func TestGetSessionStats_Distributions_NullPeakContext(t *testing.T) {
@@ -904,23 +739,18 @@ func TestGetSessionStats_Distributions_NullPeakContext(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	pc := stats.Distributions.PeakContextTokens
-	if pc.NullCount != 1 {
-		t.Errorf("null_count: got %d want 1 "+
-			"(only np1; codex cx1 must not count)", pc.NullCount)
-	}
+	assert.Equal(t, 1, pc.NullCount,
+		"null_count want 1 (only np1; codex cx1 must not count)")
 	total := 0
 	for _, b := range pc.ScopeAll.Buckets {
 		total += b.Count
 	}
-	if total != 1 {
-		t.Errorf("scope_all bucket total: got %d want 1 "+
-			"(the one Claude session with hasPeakContext=true)", total)
-	}
+	assert.Equal(t, 1, total,
+		"scope_all bucket total want 1 "+
+			"(the one Claude session with hasPeakContext=true)")
 }
 
 // seedVelocityMessages inserts len(offsetsSec) messages for sessionID,
@@ -934,10 +764,9 @@ func seedVelocityMessages(
 ) {
 	t.Helper()
 	start, err := time.Parse(time.RFC3339, startedAt)
-	if err != nil {
-		t.Fatalf("seedVelocityMessages %s: parse startedAt %q: %v",
-			sessionID, startedAt, err)
-	}
+	require.NoError(t, err,
+		"seedVelocityMessages %s: parse startedAt %q",
+		sessionID, startedAt)
 	msgs := make([]Message, 0, len(offsetsSec))
 	for i, off := range offsetsSec {
 		role := "user"
@@ -955,10 +784,8 @@ func seedVelocityMessages(
 			Timestamp:     ts,
 		})
 	}
-	if err := d.InsertMessages(msgs); err != nil {
-		t.Fatalf("seedVelocityMessages %s: InsertMessages: %v",
-			sessionID, err)
-	}
+	require.NoError(t, d.InsertMessages(msgs),
+		"seedVelocityMessages %s: InsertMessages", sessionID)
 }
 
 func TestGetSessionStats_Velocity(t *testing.T) {
@@ -997,46 +824,32 @@ func TestGetSessionStats_Velocity(t *testing.T) {
 		[]int{0, 30, 60, 80})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	// Turn cycle seconds, sorted = [5,10,15,20,30].
 	// percentileFloat: P50 idx=int(5*0.5)=2 → 15, P90 idx=4 → 30.
 	// Mean = (5+10+15+20+30)/5 = 16.
 	tc := stats.Velocity.TurnCycleSeconds
-	if tc.P50 != 15.0 {
-		t.Errorf("TurnCycleSeconds.P50: got %v want 15", tc.P50)
-	}
-	if tc.P90 != 30.0 {
-		t.Errorf("TurnCycleSeconds.P90: got %v want 30", tc.P90)
-	}
-	if !floatsClose(tc.Mean, 16.0, 0.001) {
-		t.Errorf("TurnCycleSeconds.Mean: got %v want 16", tc.Mean)
-	}
+	assert.Equal(t, 15.0, tc.P50, "TurnCycleSeconds.P50")
+	assert.Equal(t, 30.0, tc.P90, "TurnCycleSeconds.P90")
+	assert.InDelta(t, 16.0, tc.Mean, 0.001,
+		"TurnCycleSeconds.Mean")
 
 	// First response seconds, sorted = [10,30].
 	// percentileFloat: P50 idx=int(2*0.5)=1 → 30, P90 idx=1 → 30.
 	// Mean = (10+30)/2 = 20.
 	fr := stats.Velocity.FirstResponseSeconds
-	if fr.P50 != 30.0 {
-		t.Errorf("FirstResponseSeconds.P50: got %v want 30", fr.P50)
-	}
-	if fr.P90 != 30.0 {
-		t.Errorf("FirstResponseSeconds.P90: got %v want 30", fr.P90)
-	}
-	if !floatsClose(fr.Mean, 20.0, 0.001) {
-		t.Errorf("FirstResponseSeconds.Mean: got %v want 20", fr.Mean)
-	}
+	assert.Equal(t, 30.0, fr.P50, "FirstResponseSeconds.P50")
+	assert.Equal(t, 30.0, fr.P90, "FirstResponseSeconds.P90")
+	assert.InDelta(t, 20.0, fr.Mean, 0.001,
+		"FirstResponseSeconds.Mean")
 
 	// MessagesPerActiveHour: active seconds=130, messages=10.
 	// activeMinutes = 130/60, per-hour = 10 / (activeMinutes/60)
 	//               = 10 * 60 / (130/60) = 36000/130 ≈ 276.923.
 	want := 36000.0 / 130.0
-	if !floatsClose(stats.Velocity.MessagesPerActiveHour, want, 0.01) {
-		t.Errorf("MessagesPerActiveHour: got %v want %v",
-			stats.Velocity.MessagesPerActiveHour, want)
-	}
+	assert.InDelta(t, want, stats.Velocity.MessagesPerActiveHour,
+		0.01, "MessagesPerActiveHour")
 }
 
 // Empty case: no sessions at all. The velocity accumulator stays zeroed
@@ -1046,22 +859,18 @@ func TestGetSessionStats_Velocity_Empty(t *testing.T) {
 	ctx := context.Background()
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	tc := stats.Velocity.TurnCycleSeconds
-	if tc.P50 != 0 || tc.P90 != 0 || tc.Mean != 0 {
-		t.Errorf("TurnCycleSeconds: got %+v want all zero", tc)
-	}
+	assert.Equal(t, 0.0, tc.P50, "TurnCycleSeconds.P50 want zero: %+v", tc)
+	assert.Equal(t, 0.0, tc.P90, "TurnCycleSeconds.P90 want zero: %+v", tc)
+	assert.Equal(t, 0.0, tc.Mean, "TurnCycleSeconds.Mean want zero: %+v", tc)
 	fr := stats.Velocity.FirstResponseSeconds
-	if fr.P50 != 0 || fr.P90 != 0 || fr.Mean != 0 {
-		t.Errorf("FirstResponseSeconds: got %+v want all zero", fr)
-	}
-	if stats.Velocity.MessagesPerActiveHour != 0 {
-		t.Errorf("MessagesPerActiveHour: got %v want 0",
-			stats.Velocity.MessagesPerActiveHour)
-	}
+	assert.Equal(t, 0.0, fr.P50, "FirstResponseSeconds.P50 want zero: %+v", fr)
+	assert.Equal(t, 0.0, fr.P90, "FirstResponseSeconds.P90 want zero: %+v", fr)
+	assert.Equal(t, 0.0, fr.Mean, "FirstResponseSeconds.Mean want zero: %+v", fr)
+	assert.Equal(t, 0.0, stats.Velocity.MessagesPerActiveHour,
+		"MessagesPerActiveHour")
 }
 
 // Single session with one user→assistant turn. One sample point feeds
@@ -1083,37 +892,23 @@ func TestGetSessionStats_Velocity_SingleTurn(t *testing.T) {
 	seedVelocityMessages(t, d, "s1", start, []int{0, 60})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	tc := stats.Velocity.TurnCycleSeconds
-	if tc.P50 != 60.0 || tc.P90 != 60.0 {
-		t.Errorf("TurnCycleSeconds: got p50=%v p90=%v want both 60",
-			tc.P50, tc.P90)
-	}
-	if !floatsClose(tc.Mean, 60.0, 0.001) {
-		t.Errorf("TurnCycleSeconds.Mean: got %v want 60", tc.Mean)
-	}
+	assert.Equal(t, 60.0, tc.P50, "TurnCycleSeconds.P50")
+	assert.Equal(t, 60.0, tc.P90, "TurnCycleSeconds.P90")
+	assert.InDelta(t, 60.0, tc.Mean, 0.001,
+		"TurnCycleSeconds.Mean")
 	fr := stats.Velocity.FirstResponseSeconds
-	if fr.P50 != 60.0 || fr.P90 != 60.0 {
-		t.Errorf("FirstResponseSeconds: got p50=%v p90=%v want both 60",
-			fr.P50, fr.P90)
-	}
-	if !floatsClose(fr.Mean, 60.0, 0.001) {
-		t.Errorf("FirstResponseSeconds.Mean: got %v want 60", fr.Mean)
-	}
-	if stats.Velocity.MessagesPerActiveHour <= 0 {
-		t.Errorf("MessagesPerActiveHour: got %v want > 0",
-			stats.Velocity.MessagesPerActiveHour)
-	}
+	assert.Equal(t, 60.0, fr.P50, "FirstResponseSeconds.P50")
+	assert.Equal(t, 60.0, fr.P90, "FirstResponseSeconds.P90")
+	assert.InDelta(t, 60.0, fr.Mean, 0.001,
+		"FirstResponseSeconds.Mean")
+	assert.Greater(t, stats.Velocity.MessagesPerActiveHour, 0.0,
+		"MessagesPerActiveHour want > 0")
 	want := 120.0
-	if !floatsClose(
-		stats.Velocity.MessagesPerActiveHour, want, 0.001,
-	) {
-		t.Errorf("MessagesPerActiveHour: got %v want %v",
-			stats.Velocity.MessagesPerActiveHour, want)
-	}
+	assert.InDelta(t, want, stats.Velocity.MessagesPerActiveHour,
+		0.001, "MessagesPerActiveHour")
 }
 
 // Zero-active-minutes boundary: two messages share a timestamp so the
@@ -1133,14 +928,10 @@ func TestGetSessionStats_Velocity_ZeroActive(t *testing.T) {
 	seedVelocityMessages(t, d, "z1", start, []int{0, 0})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
-	if stats.Velocity.MessagesPerActiveHour != 0 {
-		t.Errorf("MessagesPerActiveHour: got %v want 0",
-			stats.Velocity.MessagesPerActiveHour)
-	}
+	assert.Equal(t, 0.0, stats.Velocity.MessagesPerActiveHour,
+		"MessagesPerActiveHour")
 }
 
 func TestGetSessionStats_ToolMixAndModelMix(t *testing.T) {
@@ -1189,9 +980,7 @@ func TestGetSessionStats_ToolMixAndModelMix(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	wantCats := map[string]int{
 		"Bash": 3,
@@ -1200,35 +989,24 @@ func TestGetSessionStats_ToolMixAndModelMix(t *testing.T) {
 		"Grep": 1,
 	}
 	gotCats := stats.ToolMix.ByCategory
-	if len(gotCats) != len(wantCats) {
-		t.Errorf("ToolMix.ByCategory len: got %d want %d (got=%v)",
-			len(gotCats), len(wantCats), gotCats)
-	}
+	assert.Len(t, gotCats, len(wantCats),
+		"ToolMix.ByCategory len (got=%v)", gotCats)
 	for cat, want := range wantCats {
-		if gotCats[cat] != want {
-			t.Errorf("ToolMix.ByCategory[%q]: got %d want %d",
-				cat, gotCats[cat], want)
-		}
+		assert.Equal(t, want, gotCats[cat],
+			"ToolMix.ByCategory[%q]", cat)
 	}
-	if stats.ToolMix.TotalCalls != 6 {
-		t.Errorf("ToolMix.TotalCalls: got %d want 6",
-			stats.ToolMix.TotalCalls)
-	}
+	assert.Equal(t, 6, stats.ToolMix.TotalCalls, "ToolMix.TotalCalls")
 
 	wantTokens := map[string]int64{
 		"claude-opus-4-7":   3000,
 		"claude-sonnet-4-6": 500,
 	}
 	gotTokens := stats.ModelMix.ByTokens
-	if len(gotTokens) != len(wantTokens) {
-		t.Errorf("ModelMix.ByTokens len: got %d want %d (got=%v)",
-			len(gotTokens), len(wantTokens), gotTokens)
-	}
+	assert.Len(t, gotTokens, len(wantTokens),
+		"ModelMix.ByTokens len (got=%v)", gotTokens)
 	for model, want := range wantTokens {
-		if gotTokens[model] != want {
-			t.Errorf("ModelMix.ByTokens[%q]: got %d want %d",
-				model, gotTokens[model], want)
-		}
+		assert.Equal(t, want, gotTokens[model],
+			"ModelMix.ByTokens[%q]", model)
 	}
 }
 
@@ -1285,38 +1063,27 @@ func TestGetSessionStats_ToolMixAndModelMix_Filters(t *testing.T) {
 	stats, err := d.GetSessionStats(ctx, StatsFilter{
 		Since: "28d", Agent: "claude",
 	})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	// Only in1's 2 tool_calls survive.
-	if stats.ToolMix.TotalCalls != 2 {
-		t.Errorf("ToolMix.TotalCalls: got %d want 2",
-			stats.ToolMix.TotalCalls)
-	}
-	if stats.ToolMix.ByCategory["Bash"] != 1 ||
-		stats.ToolMix.ByCategory["Read"] != 1 {
-		t.Errorf("ToolMix.ByCategory: got %v want Bash=1 Read=1",
-			stats.ToolMix.ByCategory)
-	}
-	if stats.ToolMix.ByCategory["Edit"] != 0 {
-		t.Errorf("out-of-window Edit leaked: got %d",
-			stats.ToolMix.ByCategory["Edit"])
-	}
-	if stats.ToolMix.ByCategory["Grep"] != 0 {
-		t.Errorf("wrong-agent Grep leaked: got %d",
-			stats.ToolMix.ByCategory["Grep"])
-	}
+	assert.Equal(t, 2, stats.ToolMix.TotalCalls, "ToolMix.TotalCalls")
+	assert.Equal(t, 1, stats.ToolMix.ByCategory["Bash"],
+		"ToolMix.ByCategory: want Bash=1 Read=1, got %v",
+		stats.ToolMix.ByCategory)
+	assert.Equal(t, 1, stats.ToolMix.ByCategory["Read"],
+		"ToolMix.ByCategory: want Bash=1 Read=1, got %v",
+		stats.ToolMix.ByCategory)
+	assert.Equal(t, 0, stats.ToolMix.ByCategory["Edit"],
+		"out-of-window Edit leaked")
+	assert.Equal(t, 0, stats.ToolMix.ByCategory["Grep"],
+		"wrong-agent Grep leaked")
 
 	// Only in1's 800 tokens survive.
-	if got := stats.ModelMix.ByTokens["claude-opus-4-7"]; got != 800 {
-		t.Errorf("ModelMix.ByTokens[claude-opus-4-7]: got %d want 800",
-			got)
-	}
-	if _, ok := stats.ModelMix.ByTokens["codex-gpt-5"]; ok {
-		t.Errorf("wrong-agent model leaked: %v",
-			stats.ModelMix.ByTokens)
-	}
+	assert.Equal(t, int64(800),
+		stats.ModelMix.ByTokens["claude-opus-4-7"],
+		"ModelMix.ByTokens[claude-opus-4-7]")
+	assert.NotContains(t, stats.ModelMix.ByTokens, "codex-gpt-5",
+		"wrong-agent model leaked")
 }
 
 // Empty-window case: no sessions → both mixes must serialize as empty
@@ -1326,19 +1093,13 @@ func TestGetSessionStats_ToolMixAndModelMix_Empty(t *testing.T) {
 	ctx := context.Background()
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.ToolMix.ByCategory == nil {
-		t.Errorf("ToolMix.ByCategory: got nil want non-nil map")
-	}
-	if stats.ToolMix.TotalCalls != 0 {
-		t.Errorf("ToolMix.TotalCalls: got %d want 0",
-			stats.ToolMix.TotalCalls)
-	}
-	if stats.ModelMix.ByTokens == nil {
-		t.Errorf("ModelMix.ByTokens: got nil want non-nil map")
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.NotNil(t, stats.ToolMix.ByCategory,
+		"ToolMix.ByCategory: want non-nil map")
+	assert.Equal(t, 0, stats.ToolMix.TotalCalls,
+		"ToolMix.TotalCalls")
+	assert.NotNil(t, stats.ModelMix.ByTokens,
+		"ModelMix.ByTokens: want non-nil map")
 }
 
 // AgentPortfolio aggregates session, message, and output-token counts
@@ -1392,42 +1153,30 @@ func TestGetSessionStats_AgentPortfolio(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	ap := stats.AgentPortfolio
 	wantSessions := map[string]int{"claude": 3, "codex": 2, "cursor": 1}
-	if len(ap.BySessions) != len(wantSessions) {
-		t.Errorf("BySessions len: got %d want %d (got=%v)",
-			len(ap.BySessions), len(wantSessions), ap.BySessions)
-	}
+	assert.Len(t, ap.BySessions, len(wantSessions),
+		"BySessions len (got=%v)", ap.BySessions)
 	for k, v := range wantSessions {
-		if ap.BySessions[k] != v {
-			t.Errorf("BySessions[%q]: got %d want %d",
-				k, ap.BySessions[k], v)
-		}
+		assert.Equal(t, v, ap.BySessions[k],
+			"BySessions[%q]", k)
 	}
 
 	wantMessages := map[string]int{"claude": 22, "codex": 9, "cursor": 4}
 	for k, v := range wantMessages {
-		if ap.ByMessages[k] != v {
-			t.Errorf("ByMessages[%q]: got %d want %d",
-				k, ap.ByMessages[k], v)
-		}
+		assert.Equal(t, v, ap.ByMessages[k],
+			"ByMessages[%q]", k)
 	}
 
 	wantTokens := map[string]int64{"claude": 600, "codex": 150, "cursor": 80}
 	for k, v := range wantTokens {
-		if ap.ByTokens[k] != v {
-			t.Errorf("ByTokens[%q]: got %d want %d",
-				k, ap.ByTokens[k], v)
-		}
+		assert.Equal(t, v, ap.ByTokens[k],
+			"ByTokens[%q]", k)
 	}
 
-	if ap.Primary != "claude" {
-		t.Errorf("Primary: got %q want claude", ap.Primary)
-	}
+	assert.Equal(t, "claude", ap.Primary, "Primary")
 }
 
 // Tie-break: two agents at equal session counts must resolve to the
@@ -1458,19 +1207,15 @@ func TestGetSessionStats_AgentPortfolio_TieBreak(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.AgentPortfolio.BySessions["claude"] != 2 ||
-		stats.AgentPortfolio.BySessions["codex"] != 2 {
-		t.Fatalf("precondition: claude/codex must tie at 2 (got %v)",
-			stats.AgentPortfolio.BySessions)
-	}
-	if stats.AgentPortfolio.Primary != "claude" {
-		t.Errorf("Primary under tie: got %q want claude "+
-			"(alphabetical tie-break)",
-			stats.AgentPortfolio.Primary)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	require.Equal(t, 2, stats.AgentPortfolio.BySessions["claude"],
+		"precondition: claude/codex must tie at 2 (got %v)",
+		stats.AgentPortfolio.BySessions)
+	require.Equal(t, 2, stats.AgentPortfolio.BySessions["codex"],
+		"precondition: claude/codex must tie at 2 (got %v)",
+		stats.AgentPortfolio.BySessions)
+	assert.Equal(t, "claude", stats.AgentPortfolio.Primary,
+		"Primary under tie want claude (alphabetical tie-break)")
 }
 
 // Empty-window case: AgentPortfolio maps must be non-nil (JSON encodes
@@ -1480,42 +1225,34 @@ func TestGetSessionStats_AgentPortfolio_Empty(t *testing.T) {
 	ctx := context.Background()
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	ap := stats.AgentPortfolio
-	if ap.BySessions == nil {
-		t.Errorf("BySessions: got nil want non-nil map")
-	}
-	if ap.ByMessages == nil {
-		t.Errorf("ByMessages: got nil want non-nil map")
-	}
-	if ap.ByTokens == nil {
-		t.Errorf("ByTokens: got nil want non-nil map")
-	}
-	if ap.BySessionsHuman == nil {
-		t.Errorf("BySessionsHuman: got nil want non-nil map")
-	}
-	if ap.ByMessagesHuman == nil {
-		t.Errorf("ByMessagesHuman: got nil want non-nil map")
-	}
-	if ap.ByTokensHuman == nil {
-		t.Errorf("ByTokensHuman: got nil want non-nil map")
-	}
-	if len(ap.BySessions) != 0 || len(ap.ByMessages) != 0 ||
-		len(ap.ByTokens) != 0 {
-		t.Errorf("empty window: got non-empty maps %+v", ap)
-	}
-	if len(ap.BySessionsHuman) != 0 || len(ap.ByMessagesHuman) != 0 ||
-		len(ap.ByTokensHuman) != 0 {
-		t.Errorf("empty window: got non-empty human maps %+v", ap)
-	}
-	if ap.Primary != "" {
-		t.Errorf("Primary: got %q want empty", ap.Primary)
-	}
-	if ap.PrimaryHuman != "" {
-		t.Errorf("PrimaryHuman: got %q want empty", ap.PrimaryHuman)
-	}
+	assert.NotNil(t, ap.BySessions,
+		"BySessions: want non-nil map")
+	assert.NotNil(t, ap.ByMessages,
+		"ByMessages: want non-nil map")
+	assert.NotNil(t, ap.ByTokens,
+		"ByTokens: want non-nil map")
+	assert.NotNil(t, ap.BySessionsHuman,
+		"BySessionsHuman: want non-nil map")
+	assert.NotNil(t, ap.ByMessagesHuman,
+		"ByMessagesHuman: want non-nil map")
+	assert.NotNil(t, ap.ByTokensHuman,
+		"ByTokensHuman: want non-nil map")
+	assert.Empty(t, ap.BySessions,
+		"empty window: got non-empty maps %+v", ap)
+	assert.Empty(t, ap.ByMessages,
+		"empty window: got non-empty maps %+v", ap)
+	assert.Empty(t, ap.ByTokens,
+		"empty window: got non-empty maps %+v", ap)
+	assert.Empty(t, ap.BySessionsHuman,
+		"empty window: got non-empty human maps %+v", ap)
+	assert.Empty(t, ap.ByMessagesHuman,
+		"empty window: got non-empty human maps %+v", ap)
+	assert.Empty(t, ap.ByTokensHuman,
+		"empty window: got non-empty human maps %+v", ap)
+	assert.Empty(t, ap.Primary, "Primary")
+	assert.Empty(t, ap.PrimaryHuman, "PrimaryHuman")
 }
 
 func Test_computeAgentPortfolio_humanScoped(t *testing.T) {
@@ -1537,42 +1274,29 @@ func Test_computeAgentPortfolio_humanScoped(t *testing.T) {
 	})
 
 	got, err := d.GetSessionStats(t.Context(), StatsFilter{Since: "1d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	ap := got.AgentPortfolio
 
 	// All-sessions view: every agent present.
-	if ap.BySessions["claude"] != 1 || ap.BySessions["codex"] != 1 ||
-		ap.BySessions["gemini"] != 1 {
-		t.Fatalf("BySessions = %v, want claude=1,codex=1,gemini=1",
-			ap.BySessions)
-	}
+	require.Equal(t, 1, ap.BySessions["claude"],
+		"BySessions = %v, want claude=1,codex=1,gemini=1", ap.BySessions)
+	require.Equal(t, 1, ap.BySessions["codex"],
+		"BySessions = %v, want claude=1,codex=1,gemini=1", ap.BySessions)
+	require.Equal(t, 1, ap.BySessions["gemini"],
+		"BySessions = %v, want claude=1,codex=1,gemini=1", ap.BySessions)
 	// primary ties on count; lexicographic min wins → claude.
-	if ap.Primary != "claude" {
-		t.Fatalf("Primary = %q, want claude", ap.Primary)
-	}
+	require.Equal(t, "claude", ap.Primary, "Primary")
 
 	// Human-scoped view: only claude.
-	if _, ok := ap.BySessionsHuman["codex"]; ok {
-		t.Fatalf("BySessionsHuman must exclude codex: %v",
-			ap.BySessionsHuman)
-	}
-	if _, ok := ap.BySessionsHuman["gemini"]; ok {
-		t.Fatalf("BySessionsHuman must exclude gemini: %v",
-			ap.BySessionsHuman)
-	}
-	if ap.BySessionsHuman["claude"] != 1 {
-		t.Fatalf("BySessionsHuman[claude] = %d, want 1",
-			ap.BySessionsHuman["claude"])
-	}
-	if ap.ByTokensHuman["claude"] != 100 {
-		t.Fatalf("ByTokensHuman[claude] = %d, want 100",
-			ap.ByTokensHuman["claude"])
-	}
-	if ap.PrimaryHuman != "claude" {
-		t.Fatalf("PrimaryHuman = %q, want claude", ap.PrimaryHuman)
-	}
+	require.NotContains(t, ap.BySessionsHuman, "codex",
+		"BySessionsHuman must exclude codex: %v",
+		ap.BySessionsHuman)
+	require.NotContains(t, ap.BySessionsHuman, "gemini",
+		"BySessionsHuman must exclude gemini: %v",
+		ap.BySessionsHuman)
+	require.Equal(t, 1, ap.BySessionsHuman["claude"], "BySessionsHuman[claude]")
+	require.Equal(t, int64(100), ap.ByTokensHuman["claude"], "ByTokensHuman[claude]")
+	require.Equal(t, "claude", ap.PrimaryHuman, "PrimaryHuman")
 }
 
 // cacheTokenBreakdown names the four token dimensions the cache
@@ -1605,10 +1329,8 @@ func seedCacheEconomicsMessage(
 	m.OutputTokens = b.output
 	m.HasOutputTokens = true
 	m.TokenUsage = json.RawMessage(payload)
-	if err := d.InsertMessages([]Message{m}); err != nil {
-		t.Fatalf("seedCacheEconomicsMessage %s ord=%d: %v",
-			sessionID, ordinal, err)
-	}
+	require.NoError(t, d.InsertMessages([]Message{m}),
+		"seedCacheEconomicsMessage %s ord=%d", sessionID, ordinal)
 }
 
 // TestGetSessionStats_CacheEconomics exercises the cache-economics
@@ -1621,7 +1343,7 @@ func TestGetSessionStats_CacheEconomics(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
 
-	if err := d.UpsertModelPricing([]ModelPricing{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{
 		{
 			ModelPattern:         "claude-opus-4-7",
 			InputPerMTok:         15.0,
@@ -1636,9 +1358,7 @@ func TestGetSessionStats_CacheEconomics(t *testing.T) {
 			CacheCreationPerMTok: 3.75,
 			CacheReadPerMTok:     0.3,
 		},
-	}); err != nil {
-		t.Fatalf("UpsertModelPricing: %v", err)
-	}
+	}), "UpsertModelPricing")
 
 	// ce1 (opus): ratio = 9000 / (1000+9000+100) = 9000/10100 ≈ 0.8911
 	// → cacheHitRatioEdges bucket 3 ([0.75, 0.95)).
@@ -1689,37 +1409,25 @@ func TestGetSessionStats_CacheEconomics(t *testing.T) {
 		})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 
 	ce := stats.CacheEconomics
-	if ce == nil {
-		t.Fatalf("CacheEconomics: got nil, want populated")
-	}
-	if !ce.ClaudeOnly {
-		t.Errorf("ClaudeOnly: got false, want true")
-	}
+	require.NotNil(t, ce, "CacheEconomics: want populated")
+	assert.True(t, ce.ClaudeOnly, "ClaudeOnly")
 
 	// Overall = sum(cache_read) / sum(denominator) (weighted mean).
 	// = (9000 + 3000 + 100) / (10100 + 3550 + 200)
 	// = 12100 / 13850 ≈ 0.873646.
 	wantOverall := 12100.0 / 13850.0
-	if !floatsClose(ce.CacheHitRatio.Overall, wantOverall, 1e-6) {
-		t.Errorf("CacheHitRatio.Overall: got %v want %v",
-			ce.CacheHitRatio.Overall, wantOverall)
-	}
+	assert.InDelta(t, wantOverall, ce.CacheHitRatio.Overall, 1e-6,
+		"CacheHitRatio.Overall")
 
 	wantBuckets := []int{0, 0, 1, 2, 0}
-	if len(ce.CacheHitRatio.Buckets) != len(wantBuckets) {
-		t.Fatalf("CacheHitRatio.Buckets: got %d buckets want %d",
-			len(ce.CacheHitRatio.Buckets), len(wantBuckets))
-	}
+	require.Len(t, ce.CacheHitRatio.Buckets, len(wantBuckets),
+		"CacheHitRatio.Buckets")
 	for i, w := range wantBuckets {
-		if ce.CacheHitRatio.Buckets[i].Count != w {
-			t.Errorf("CacheHitRatio.Buckets[%d]: got %d want %d",
-				i, ce.CacheHitRatio.Buckets[i].Count, w)
-		}
+		assert.Equal(t, w, ce.CacheHitRatio.Buckets[i].Count,
+			"CacheHitRatio.Buckets[%d]", i)
 	}
 
 	// Per-message cost (rates in $/MTok, so divide by 1e6):
@@ -1730,10 +1438,7 @@ func TestGetSessionStats_CacheEconomics(t *testing.T) {
 	//   ce3 opus = (100*15 + 50*75 + 0 + 100*1.5)/1e6
 	//           = (1500 + 3750 + 150)/1e6 = 0.0054
 	wantSpent := 0.067875 + 0.0055875 + 0.0054
-	if !floatsClose(ce.DollarsSpent, wantSpent, 1e-9) {
-		t.Errorf("DollarsSpent: got %v want %v",
-			ce.DollarsSpent, wantSpent)
-	}
+	assert.InDelta(t, wantSpent, ce.DollarsSpent, 1e-9, "DollarsSpent")
 
 	// cost_without_cache reprices input + cache_creation + cache_read
 	// at the input rate, keeping output unchanged. cache_creation
@@ -1748,10 +1453,8 @@ func TestGetSessionStats_CacheEconomics(t *testing.T) {
 	//           = (3000 + 3750)/1e6 = 0.00675
 	wantWithoutCache := 0.189 + 0.01365 + 0.00675
 	wantSavings := wantWithoutCache - wantSpent
-	if !floatsClose(ce.DollarsSavedVsUncached, wantSavings, 1e-9) {
-		t.Errorf("DollarsSavedVsUncached: got %v want %v",
-			ce.DollarsSavedVsUncached, wantSavings)
-	}
+	assert.InDelta(t, wantSavings, ce.DollarsSavedVsUncached, 1e-9,
+		"DollarsSavedVsUncached")
 }
 
 // TestGetSessionStats_CacheEconomics_NoClaude verifies that the
@@ -1765,13 +1468,11 @@ func TestGetSessionStats_CacheEconomics_NoClaude(t *testing.T) {
 
 	// Pricing is present so the nil result isn't an artifact of a
 	// missing pricing map.
-	if err := d.UpsertModelPricing([]ModelPricing{{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
 		ModelPattern: "claude-sonnet-4-6",
 		InputPerMTok: 3.0, OutputPerMTok: 15.0,
 		CacheCreationPerMTok: 3.75, CacheReadPerMTok: 0.3,
-	}}); err != nil {
-		t.Fatalf("UpsertModelPricing: %v", err)
-	}
+	}}), "UpsertModelPricing")
 
 	insertSessionFixture(t, d, sessionFixture{
 		id: "cx1", agent: "codex", userMsgs: 3,
@@ -1781,13 +1482,8 @@ func TestGetSessionStats_CacheEconomics_NoClaude(t *testing.T) {
 		cacheTokenBreakdown{input: 1000, output: 500})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.CacheEconomics != nil {
-		t.Errorf("CacheEconomics: got %+v want nil",
-			stats.CacheEconomics)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Nil(t, stats.CacheEconomics, "CacheEconomics")
 }
 
 // TestGetSessionStats_CacheEconomics_ZeroDenominatorSkipped seeds one
@@ -1799,13 +1495,11 @@ func TestGetSessionStats_CacheEconomics_ZeroDenominatorSkipped(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
 
-	if err := d.UpsertModelPricing([]ModelPricing{{
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
 		ModelPattern: "claude-opus-4-7",
 		InputPerMTok: 15.0, OutputPerMTok: 75.0,
 		CacheCreationPerMTok: 18.75, CacheReadPerMTok: 1.5,
-	}}); err != nil {
-		t.Fatalf("UpsertModelPricing: %v", err)
-	}
+	}}), "UpsertModelPricing")
 
 	// Session with a contributing denominator.
 	insertSessionFixture(t, d, sessionFixture{
@@ -1827,31 +1521,21 @@ func TestGetSessionStats_CacheEconomics_ZeroDenominatorSkipped(t *testing.T) {
 		cacheTokenBreakdown{input: 0, output: 10, cacheRead: 0})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	ce := stats.CacheEconomics
-	if ce == nil {
-		t.Fatalf("CacheEconomics: got nil want populated")
-	}
+	require.NotNil(t, ce, "CacheEconomics: want populated")
 	// Only "ok" contributes: ratio = 300 / (100+300) = 0.75 → bucket 3.
 	total := 0
 	for _, b := range ce.CacheHitRatio.Buckets {
 		total += b.Count
 	}
-	if total != 1 {
-		t.Errorf("histogram total: got %d want 1 (zero-denom skipped)",
-			total)
-	}
-	if ce.CacheHitRatio.Buckets[3].Count != 1 {
-		t.Errorf("bucket 3 [0.75,0.95): got %d want 1",
-			ce.CacheHitRatio.Buckets[3].Count)
-	}
+	assert.Equal(t, 1, total,
+		"histogram total want 1 (zero-denom skipped)")
+	assert.Equal(t, 1, ce.CacheHitRatio.Buckets[3].Count,
+		"bucket 3 [0.75,0.95)")
 	// Overall = 300/400 = 0.75 exactly (zero-denom session excluded
 	// from both numerator and denominator).
-	if !floatsClose(ce.CacheHitRatio.Overall, 0.75, 1e-9) {
-		t.Errorf("Overall: got %v want 0.75", ce.CacheHitRatio.Overall)
-	}
+	assert.InDelta(t, 0.75, ce.CacheHitRatio.Overall, 1e-9, "Overall")
 }
 
 func TestPickPrimaryAgent(t *testing.T) {
@@ -1895,10 +1579,8 @@ func TestPickPrimaryAgent(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := pickPrimaryAgent(c.input); got != c.want {
-				t.Errorf("pickPrimaryAgent(%v): got %q want %q",
-					c.input, got, c.want)
-			}
+			assert.Equal(t, c.want, pickPrimaryAgent(c.input),
+				"pickPrimaryAgent(%v)", c.input)
 		})
 	}
 }
@@ -1966,58 +1648,34 @@ func TestGetSessionStats_Temporal_HourlyGrouping(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	hours := stats.Temporal.HourlyUTC
-	if len(hours) != 3 {
-		t.Fatalf("hourly_utc: got %d entries want 3 (%+v)",
-			len(hours), hours)
-	}
+	require.Len(t, hours, 3,
+		"hourly_utc want 3 entries: %+v", hours)
 
 	// Entries must be sorted by TS ascending.
 	for i := 1; i < len(hours); i++ {
-		if hours[i-1].TS >= hours[i].TS {
-			t.Errorf("hourly_utc not ascending: %q >= %q",
-				hours[i-1].TS, hours[i].TS)
-		}
+		assert.Less(t, hours[i-1].TS, hours[i].TS,
+			"hourly_utc not ascending")
 	}
 
 	// H-5: 2 user messages, 1 distinct session.
-	if e := findHourlyUTC(hours, utcHourBoundary(5)); e == nil {
-		t.Errorf("missing hour entry %q", utcHourBoundary(5))
-	} else {
-		if e.UserMessages != 2 {
-			t.Errorf("H-5 user_messages: got %d want 2",
-				e.UserMessages)
-		}
-		if e.Sessions != 1 {
-			t.Errorf("H-5 sessions: got %d want 1", e.Sessions)
-		}
+	if e := findHourlyUTC(hours, utcHourBoundary(5)); assert.NotNilf(t, e,
+		"missing hour entry %q", utcHourBoundary(5)) {
+		assert.Equal(t, 2, e.UserMessages, "H-5 user_messages")
+		assert.Equal(t, 1, e.Sessions, "H-5 sessions: got")
 	}
 	// H-4: 1 user message, 1 session.
-	if e := findHourlyUTC(hours, utcHourBoundary(4)); e == nil {
-		t.Errorf("missing hour entry %q", utcHourBoundary(4))
-	} else {
-		if e.UserMessages != 1 {
-			t.Errorf("H-4 user_messages: got %d want 1",
-				e.UserMessages)
-		}
-		if e.Sessions != 1 {
-			t.Errorf("H-4 sessions: got %d want 1", e.Sessions)
-		}
+	if e := findHourlyUTC(hours, utcHourBoundary(4)); assert.NotNilf(t, e,
+		"missing hour entry %q", utcHourBoundary(4)) {
+		assert.Equal(t, 1, e.UserMessages, "H-4 user_messages")
+		assert.Equal(t, 1, e.Sessions, "H-4 sessions: got")
 	}
 	// H-3: 2 user messages from 2 distinct sessions.
-	if e := findHourlyUTC(hours, utcHourBoundary(3)); e == nil {
-		t.Errorf("missing hour entry %q", utcHourBoundary(3))
-	} else {
-		if e.UserMessages != 2 {
-			t.Errorf("H-3 user_messages: got %d want 2",
-				e.UserMessages)
-		}
-		if e.Sessions != 2 {
-			t.Errorf("H-3 sessions: got %d want 2", e.Sessions)
-		}
+	if e := findHourlyUTC(hours, utcHourBoundary(3)); assert.NotNilf(t, e,
+		"missing hour entry %q", utcHourBoundary(3)) {
+		assert.Equal(t, 2, e.UserMessages, "H-3 user_messages")
+		assert.Equal(t, 2, e.Sessions, "H-3 sessions: got")
 	}
 }
 
@@ -2043,28 +1701,23 @@ func TestGetSessionStats_Temporal_MidnightBoundary(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	beforeTS := before.Truncate(time.Hour).
 		Format("2006-01-02T15:00:00Z")
 	afterTS := after.Truncate(time.Hour).
 		Format("2006-01-02T15:00:00Z")
-	if beforeTS == afterTS {
-		t.Fatalf("test setup: before %q and after %q collapsed to "+
+	require.NotEqual(t, afterTS, beforeTS,
+		"test setup: before %q and after %q collapsed to "+
 			"the same hour", beforeTS, afterTS)
+	if e := findHourlyUTC(stats.Temporal.HourlyUTC, beforeTS); assert.NotNilf(t, e,
+		"missing before-midnight hour %q", beforeTS) {
+		assert.Equal(t, 1, e.UserMessages,
+			"before-midnight user_messages")
 	}
-	if e := findHourlyUTC(stats.Temporal.HourlyUTC, beforeTS); e == nil {
-		t.Errorf("missing before-midnight hour %q", beforeTS)
-	} else if e.UserMessages != 1 {
-		t.Errorf("before-midnight user_messages: got %d want 1",
-			e.UserMessages)
-	}
-	if e := findHourlyUTC(stats.Temporal.HourlyUTC, afterTS); e == nil {
-		t.Errorf("missing after-midnight hour %q", afterTS)
-	} else if e.UserMessages != 1 {
-		t.Errorf("after-midnight user_messages: got %d want 1",
-			e.UserMessages)
+	if e := findHourlyUTC(stats.Temporal.HourlyUTC, afterTS); assert.NotNilf(t, e,
+		"missing after-midnight hour %q", afterTS) {
+		assert.Equal(t, 1, e.UserMessages,
+			"after-midnight user_messages")
 	}
 }
 
@@ -2092,22 +1745,13 @@ func TestGetSessionStats_Temporal_OutOfWindowExcluded(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "2d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	// Exactly one hour bucket, with a single user message (from "in").
-	if len(stats.Temporal.HourlyUTC) != 1 {
-		t.Fatalf("hourly_utc: got %d entries want 1 (%+v)",
-			len(stats.Temporal.HourlyUTC), stats.Temporal.HourlyUTC)
-	}
+	require.Len(t, stats.Temporal.HourlyUTC, 1,
+		"hourly_utc want 1 entry: %+v", stats.Temporal.HourlyUTC)
 	got := stats.Temporal.HourlyUTC[0]
-	if got.UserMessages != 1 {
-		t.Errorf("in-window user_messages: got %d want 1",
-			got.UserMessages)
-	}
-	if got.Sessions != 1 {
-		t.Errorf("in-window sessions: got %d want 1", got.Sessions)
-	}
+	assert.Equal(t, 1, got.UserMessages, "in-window user_messages")
+	assert.Equal(t, 1, got.Sessions, "in-window sessions: got")
 }
 
 func TestGetSessionStats_Temporal_SessionsDistinctPerHour(t *testing.T) {
@@ -2128,37 +1772,19 @@ func TestGetSessionStats_Temporal_SessionsDistinctPerHour(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	if e := findHourlyUTC(
 		stats.Temporal.HourlyUTC, utcHourBoundary(6),
-	); e == nil {
-		t.Fatalf("missing H-6 entry")
-	} else {
-		if e.UserMessages != 3 {
-			t.Errorf("H-6 user_messages: got %d want 3",
-				e.UserMessages)
-		}
-		if e.Sessions != 1 {
-			t.Errorf(
-				"H-6 sessions (same session 3 msgs): got %d want 1",
-				e.Sessions,
-			)
-		}
+	); assert.NotNil(t, e, "missing H-6 entry") {
+		assert.Equal(t, 3, e.UserMessages, "H-6 user_messages")
+		assert.Equal(t, 1, e.Sessions,
+			"H-6 sessions (same session 3 msgs)")
 	}
 	if e := findHourlyUTC(
 		stats.Temporal.HourlyUTC, utcHourBoundary(5),
-	); e == nil {
-		t.Fatalf("missing H-5 entry")
-	} else {
-		if e.UserMessages != 1 {
-			t.Errorf("H-5 user_messages: got %d want 1",
-				e.UserMessages)
-		}
-		if e.Sessions != 1 {
-			t.Errorf("H-5 sessions: got %d want 1", e.Sessions)
-		}
+	); assert.NotNil(t, e, "missing H-5 entry") {
+		assert.Equal(t, 1, e.UserMessages, "H-5 user_messages")
+		assert.Equal(t, 1, e.Sessions, "H-5 sessions: got")
 	}
 }
 
@@ -2167,31 +1793,18 @@ func TestGetSessionStats_Temporal_EmptyWindowEmptySlice(t *testing.T) {
 	ctx := context.Background()
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.Temporal.HourlyUTC == nil {
-		t.Errorf(
-			"hourly_utc must be a non-nil empty slice, got nil",
-		)
-	}
-	if len(stats.Temporal.HourlyUTC) != 0 {
-		t.Errorf("hourly_utc: got len %d want 0",
-			len(stats.Temporal.HourlyUTC))
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.NotNil(t, stats.Temporal.HourlyUTC,
+		"hourly_utc must be a non-nil empty slice, got nil")
+	assert.Len(t, stats.Temporal.HourlyUTC, 0, "hourly_utc: got len")
 	// Reporter timezone should still be populated (claim in the spec).
-	if stats.Temporal.ReporterTimezone == "" {
-		t.Errorf("reporter_timezone must be populated even when " +
+	assert.NotEmpty(t, stats.Temporal.ReporterTimezone,
+		"reporter_timezone must be populated even when "+
 			"hourly_utc is empty")
-	}
 	// JSON encoding must emit [] not null.
 	raw, err := json.Marshal(stats.Temporal.HourlyUTC)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	if string(raw) != "[]" {
-		t.Errorf("hourly_utc JSON: got %s want []", string(raw))
-	}
+	require.NoError(t, err, "json.Marshal")
+	assert.Equal(t, "[]", string(raw), "hourly_utc JSON")
 }
 
 func TestGetSessionStats_Temporal_ReporterTimezone_FilterWins(t *testing.T) {
@@ -2202,13 +1815,9 @@ func TestGetSessionStats_Temporal_ReporterTimezone_FilterWins(t *testing.T) {
 		Since:    "28d",
 		Timezone: "America/New_York",
 	})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if got := stats.Temporal.ReporterTimezone; got != "America/New_York" {
-		t.Errorf("reporter_timezone: got %q want America/New_York",
-			got)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Equal(t, "America/New_York", stats.Temporal.ReporterTimezone,
+		"reporter_timezone")
 }
 
 func TestReporterTimezone_Precedence(t *testing.T) {
@@ -2222,32 +1831,22 @@ func TestReporterTimezone_Precedence(t *testing.T) {
 	})
 
 	// Filter wins over env.
-	if err := os.Setenv("TZ", "Europe/Berlin"); err != nil {
-		t.Fatalf("set TZ: %v", err)
-	}
-	if got := reporterTimezone(
-		StatsFilter{Timezone: "Asia/Tokyo"},
-	); got != "Asia/Tokyo" {
-		t.Errorf("filter wins: got %q want Asia/Tokyo", got)
-	}
+	err := os.Setenv("TZ", "Europe/Berlin")
+	require.NoError(t, err, "set TZ")
+	assert.Equal(t, "Asia/Tokyo",
+		reporterTimezone(StatsFilter{Timezone: "Asia/Tokyo"}),
+		"filter wins")
 
 	// No filter → env wins.
-	if got := reporterTimezone(StatsFilter{}); got != "Europe/Berlin" {
-		t.Errorf("env wins: got %q want Europe/Berlin", got)
-	}
+	assert.Equal(t, "Europe/Berlin",
+		reporterTimezone(StatsFilter{}), "env wins")
 
 	// No filter, no env → time.Local fallback.
-	if err := os.Unsetenv("TZ"); err != nil {
-		t.Fatalf("unset TZ: %v", err)
-	}
+	err = os.Unsetenv("TZ")
+	require.NoError(t, err, "unset TZ")
 	got := reporterTimezone(StatsFilter{})
-	if got == "" {
-		t.Errorf("time.Local fallback: got empty string")
-	}
-	if got != time.Local.String() {
-		t.Errorf("time.Local fallback: got %q want %q",
-			got, time.Local.String())
-	}
+	assert.NotEmpty(t, got, "time.Local fallback: got empty string")
+	assert.Equal(t, time.Local.String(), got, "time.Local fallback")
 }
 
 func TestGetSessionStats_Temporal_FilterByAgentFlowsThrough(t *testing.T) {
@@ -2272,24 +1871,13 @@ func TestGetSessionStats_Temporal_FilterByAgentFlowsThrough(t *testing.T) {
 	stats, err := d.GetSessionStats(ctx, StatsFilter{
 		Since: "28d", Agent: "claude",
 	})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	if e := findHourlyUTC(
 		stats.Temporal.HourlyUTC, utcHourBoundary(3),
-	); e == nil {
-		t.Fatalf("missing H-3 entry")
-	} else {
-		if e.UserMessages != 1 {
-			t.Errorf(
-				"filter=claude user_messages: got %d want 1",
-				e.UserMessages,
-			)
-		}
-		if e.Sessions != 1 {
-			t.Errorf("filter=claude sessions: got %d want 1",
-				e.Sessions)
-		}
+	); assert.NotNil(t, e, "missing H-3 entry") {
+		assert.Equal(t, 1, e.UserMessages,
+			"filter=claude user_messages")
+		assert.Equal(t, 1, e.Sessions, "filter=claude sessions")
 	}
 }
 
@@ -2308,16 +1896,9 @@ func TestGetSessionStats_Temporal_IgnoresAssistantMessages(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if len(stats.Temporal.HourlyUTC) != 0 {
-		t.Errorf(
-			"hourly_utc should be empty when only assistant msgs, "+
-				"got %+v",
-			stats.Temporal.HourlyUTC,
-		)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Empty(t, stats.Temporal.HourlyUTC,
+		"hourly_utc should be empty when only assistant msgs")
 }
 
 func TestGetSessionStats_Temporal_SkipsEmptyTimestamps(t *testing.T) {
@@ -2336,19 +1917,11 @@ func TestGetSessionStats_Temporal_SkipsEmptyTimestamps(t *testing.T) {
 	)
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if len(stats.Temporal.HourlyUTC) != 1 {
-		t.Fatalf(
-			"hourly_utc: got %d entries want 1 (%+v)",
-			len(stats.Temporal.HourlyUTC), stats.Temporal.HourlyUTC,
-		)
-	}
-	if got := stats.Temporal.HourlyUTC[0]; got.UserMessages != 1 {
-		t.Errorf("user_messages: got %d want 1 (blank skipped)",
-			got.UserMessages)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	require.Len(t, stats.Temporal.HourlyUTC, 1,
+		"hourly_utc want 1 entry: %+v", stats.Temporal.HourlyUTC)
+	assert.Equal(t, 1, stats.Temporal.HourlyUTC[0].UserMessages,
+		"user_messages want 1 (blank skipped)")
 }
 
 // TestGetSessionStats_Outcomes_Happy seeds five Claude sessions spanning
@@ -2430,60 +2003,36 @@ func TestGetSessionStats_Outcomes_Happy(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	out := stats.Outcomes
-	if out == nil {
-		t.Fatalf("Outcomes: got nil want populated")
-	}
-	if !out.ClaudeOnly {
-		t.Errorf("ClaudeOnly: got false want true")
-	}
+	require.NotNil(t, out, "Outcomes: want populated")
+	assert.True(t, out.ClaudeOnly, "ClaudeOnly")
 	// Two "completed" -> Success.
-	if out.Success != 2 {
-		t.Errorf("Success: got %d want 2", out.Success)
-	}
+	assert.Equal(t, 2, out.Success, "Success: got")
 	// One "abandoned" + one "errored" -> Failure.
-	if out.Failure != 2 {
-		t.Errorf("Failure: got %d want 2", out.Failure)
-	}
+	assert.Equal(t, 2, out.Failure, "Failure: got")
 	// One explicit "unknown" -> Unknown.
-	if out.Unknown != 1 {
-		t.Errorf("Unknown: got %d want 1", out.Unknown)
-	}
-	if out.GradeDistribution == nil {
-		t.Fatalf("GradeDistribution: got nil want non-nil")
-	}
+	assert.Equal(t, 1, out.Unknown, "Unknown: got")
+	require.NotNil(t, out.GradeDistribution,
+		"GradeDistribution: want non-nil")
 	wantGrades := map[string]int{"A": 1, "B": 1, "C": 1, "D": 1}
-	if len(out.GradeDistribution) != len(wantGrades) {
-		t.Errorf("GradeDistribution size: got %d want %d (%+v)",
-			len(out.GradeDistribution), len(wantGrades),
-			out.GradeDistribution)
-	}
+	assert.Len(t, out.GradeDistribution, len(wantGrades),
+		"GradeDistribution size (%+v)", out.GradeDistribution)
 	for grade, want := range wantGrades {
-		if got := out.GradeDistribution[grade]; got != want {
-			t.Errorf("GradeDistribution[%q]: got %d want %d",
-				grade, got, want)
-		}
+		assert.Equal(t, want, out.GradeDistribution[grade],
+			"GradeDistribution[%q]", grade)
 	}
-	if _, hasEmpty := out.GradeDistribution[""]; hasEmpty {
-		t.Errorf("GradeDistribution: empty-string key present (%+v)",
-			out.GradeDistribution)
-	}
+	assert.NotContains(t, out.GradeDistribution, "",
+		"GradeDistribution: empty-string key present (%+v)",
+		out.GradeDistribution)
 	// ToolRetryRate = (1+0+3+2+1) / (2+4+6+8+5) = 7/25 = 0.28
-	if !floatsClose(out.ToolRetryRate, 0.28, 1e-9) {
-		t.Errorf("ToolRetryRate: got %v want 0.28", out.ToolRetryRate)
-	}
+	assert.InDelta(t, 0.28, out.ToolRetryRate, 1e-9,
+		"ToolRetryRate")
 	// CompactionsPerSession = (3+1+0+2+4) / 5 = 10/5 = 2.0
-	if !floatsClose(out.CompactionsPerSession, 2.0, 1e-9) {
-		t.Errorf("CompactionsPerSession: got %v want 2.0",
-			out.CompactionsPerSession)
-	}
+	assert.InDelta(t, 2.0, out.CompactionsPerSession, 1e-9,
+		"CompactionsPerSession")
 	// AvgEditChurn = (5+0+4+6+0) / 5 = 15/5 = 3.0
-	if !floatsClose(out.AvgEditChurn, 3.0, 1e-9) {
-		t.Errorf("AvgEditChurn: got %v want 3.0", out.AvgEditChurn)
-	}
+	assert.InDelta(t, 3.0, out.AvgEditChurn, 1e-9, "AvgEditChurn")
 }
 
 // TestGetSessionStats_Outcomes_NoClaude verifies that Outcomes stays
@@ -2504,12 +2053,8 @@ func TestGetSessionStats_Outcomes_NoClaude(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.Outcomes != nil {
-		t.Errorf("Outcomes: got %+v want nil", stats.Outcomes)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Nil(t, stats.Outcomes, "Outcomes")
 }
 
 // TestGetSessionStats_Outcomes_NoGrade verifies that a Claude session
@@ -2529,27 +2074,15 @@ func TestGetSessionStats_Outcomes_NoGrade(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	out := stats.Outcomes
-	if out == nil {
-		t.Fatalf("Outcomes: got nil want populated")
-	}
-	if out.GradeDistribution == nil {
-		t.Errorf("GradeDistribution: got nil want empty map")
-	}
-	if len(out.GradeDistribution) != 0 {
-		t.Errorf("GradeDistribution: got %+v want empty",
-			out.GradeDistribution)
-	}
-	if out.ToolRetryRate != 0 {
-		t.Errorf("ToolRetryRate: got %v want 0 (no tools)",
-			out.ToolRetryRate)
-	}
-	if out.Success != 1 {
-		t.Errorf("Success: got %d want 1", out.Success)
-	}
+	require.NotNil(t, out, "Outcomes: want populated")
+	assert.NotNil(t, out.GradeDistribution,
+		"GradeDistribution: want empty map")
+	assert.Empty(t, out.GradeDistribution, "GradeDistribution")
+	assert.Equal(t, 0.0, out.ToolRetryRate,
+		"ToolRetryRate want 0 (no tools)")
+	assert.Equal(t, 1, out.Success, "Success: got")
 }
 
 // seedToolCallsByName inserts one assistant message per entry in calls and
@@ -2567,27 +2100,24 @@ func seedToolCallsByName(
 	for i, c := range calls {
 		msgs = append(msgs, asstMsg(sessionID, i+1, "reply-"+c.toolName))
 	}
-	if err := d.InsertMessages(msgs); err != nil {
-		t.Fatalf("seedToolCallsByName %s: InsertMessages: %v",
-			sessionID, err)
-	}
+	require.NoError(t, d.InsertMessages(msgs),
+		"seedToolCallsByName %s: InsertMessages", sessionID)
 	for i, c := range calls {
 		ord := i + 1
 		var skill any
 		if c.skillName != "" {
 			skill = c.skillName
 		}
-		if _, err := d.getWriter().Exec(`
+		_, err := d.getWriter().Exec(`
 			INSERT INTO tool_calls
 				(message_id, session_id, tool_name, category, skill_name)
 			SELECT id, session_id, ?, ?, ?
 			FROM messages
 			WHERE session_id = ? AND ordinal = ?`,
 			c.toolName, c.toolName, skill, sessionID, ord,
-		); err != nil {
-			t.Fatalf("seedToolCallsByName %s: %q: %v",
-				sessionID, c.toolName, err)
-		}
+		)
+		require.NoError(t, err,
+			"seedToolCallsByName %s: %q", sessionID, c.toolName)
 	}
 }
 
@@ -2667,32 +2197,21 @@ func TestGetSessionStats_Adoption_Happy(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	ad := stats.Adoption
-	if ad == nil {
-		t.Fatalf("Adoption: got nil want populated")
-	}
-	if !ad.ClaudeOnly {
-		t.Errorf("ClaudeOnly: got false want true")
-	}
+	require.NotNil(t, ad, "Adoption: want populated")
+	assert.True(t, ad.ClaudeOnly, "ClaudeOnly")
 	// 2 of 4 Claude sessions have ExitPlanMode -> 0.5.
-	if !floatsClose(ad.PlanModeRate, 0.5, 1e-9) {
-		t.Errorf("PlanModeRate: got %v want 0.5", ad.PlanModeRate)
-	}
-	if ad.PlanModeRate < 0 || ad.PlanModeRate > 1 {
-		t.Errorf("PlanModeRate out of [0,1]: got %v", ad.PlanModeRate)
-	}
+	assert.InDelta(t, 0.5, ad.PlanModeRate, 1e-9, "PlanModeRate")
+	assert.GreaterOrEqual(t, ad.PlanModeRate, 0.0,
+		"PlanModeRate out of [0,1]")
+	assert.LessOrEqual(t, ad.PlanModeRate, 1.0,
+		"PlanModeRate out of [0,1]")
 	// 3 Task calls across 4 Claude sessions -> 0.75.
-	if !floatsClose(ad.SubagentsPerSession, 0.75, 1e-9) {
-		t.Errorf("SubagentsPerSession: got %v want 0.75",
-			ad.SubagentsPerSession)
-	}
+	assert.InDelta(t, 0.75, ad.SubagentsPerSession, 1e-9,
+		"SubagentsPerSession")
 	// {"brainstorm","writing-plans","brainstorm"} -> 2 distinct.
-	if ad.DistinctSkills != 2 {
-		t.Errorf("DistinctSkills: got %d want 2", ad.DistinctSkills)
-	}
+	assert.Equal(t, 2, ad.DistinctSkills, "DistinctSkills: got")
 }
 
 // TestGetSessionStats_Adoption_NoClaude verifies that Adoption stays
@@ -2714,12 +2233,8 @@ func TestGetSessionStats_Adoption_NoClaude(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.Adoption != nil {
-		t.Errorf("Adoption: got %+v want nil", stats.Adoption)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Nil(t, stats.Adoption, "Adoption")
 }
 
 // skipIfNoGit lets CI environments without git on PATH pass cleanly
@@ -2743,10 +2258,8 @@ func statsRunGit(t *testing.T, repo string, env []string, args ...string) {
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s",
-			strings.Join(args, " "), err, out)
-	}
+	require.NoError(t, err, "git %s\n%s",
+		strings.Join(args, " "), out)
 }
 
 // statsInitRepo creates a fresh git repo under t.TempDir() with a
@@ -2771,12 +2284,10 @@ func statsCommitFile(
 ) {
 	t.Helper()
 	p := filepath.Join(repo, relpath)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(p), err)
-	}
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", p, err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755),
+		"mkdir %s", filepath.Dir(p))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644),
+		"write %s", p)
 	env := []string{
 		"GIT_AUTHOR_NAME=Test User",
 		"GIT_AUTHOR_EMAIL=test@example.com",
@@ -2803,12 +2314,8 @@ func TestGetSessionStats_OutcomeStats_DefaultDisabled(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.OutcomeStats != nil {
-		t.Fatalf("OutcomeStats: got %+v want nil", stats.OutcomeStats)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	require.Nil(t, stats.OutcomeStats, "OutcomeStats")
 }
 
 // TestGetSessionStats_OutcomeStats_Happy seeds sessions whose cwd
@@ -2835,9 +2342,8 @@ func TestGetSessionStats_OutcomeStats_Happy(t *testing.T) {
 	// one in a subdirectory. Both should collapse to the same repo and
 	// counted once in ReposActive.
 	sub := filepath.Join(repo, "subdir")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatalf("mkdir sub: %v", err)
-	}
+	err := os.MkdirAll(sub, 0o755)
+	require.NoError(t, err, "mkdir sub")
 	insertSessionFixture(t, d, sessionFixture{
 		id: "os1", agent: "claude", userMsgs: 5,
 		startedAt: hoursAgo(5), cwd: repo,
@@ -2850,37 +2356,17 @@ func TestGetSessionStats_OutcomeStats_Happy(t *testing.T) {
 	stats, err := d.GetSessionStats(ctx, StatsFilter{
 		Since: "28d", IncludeGitOutcomes: true,
 	})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
+	require.NoError(t, err, "GetSessionStats")
 	out := stats.OutcomeStats
-	if out == nil {
-		t.Fatalf("OutcomeStats: got nil want populated")
-	}
-	if out.ReposActive != 1 {
-		t.Errorf("ReposActive: got %d want 1", out.ReposActive)
-	}
-	if out.Commits != 3 {
-		t.Errorf("Commits: got %d want 3", out.Commits)
-	}
-	if out.LOCAdded != 9 {
-		t.Errorf("LOCAdded: got %d want 9", out.LOCAdded)
-	}
-	if out.LOCRemoved != 0 {
-		t.Errorf("LOCRemoved: got %d want 0", out.LOCRemoved)
-	}
+	require.NotNil(t, out, "OutcomeStats: want populated")
+	assert.Equal(t, 1, out.ReposActive, "ReposActive: got")
+	assert.Equal(t, 3, out.Commits, "Commits: got")
+	assert.Equal(t, 9, out.LOCAdded, "LOCAdded: got")
+	assert.Equal(t, 0, out.LOCRemoved, "LOCRemoved: got")
 	// Each commit touches one file: c1 a.txt, c2 a.txt, c3 b.txt -> 3.
-	if out.FilesChanged != 3 {
-		t.Errorf("FilesChanged: got %d want 3", out.FilesChanged)
-	}
-	if out.PRsOpened != nil {
-		t.Errorf("PRsOpened: got %v want nil (no GHToken)",
-			*out.PRsOpened)
-	}
-	if out.PRsMerged != nil {
-		t.Errorf("PRsMerged: got %v want nil (no GHToken)",
-			*out.PRsMerged)
-	}
+	assert.Equal(t, 3, out.FilesChanged, "FilesChanged: got")
+	assert.Nil(t, out.PRsOpened, "PRsOpened want nil (no GHToken)")
+	assert.Nil(t, out.PRsMerged, "PRsMerged want nil (no GHToken)")
 }
 
 // TestGetSessionStats_OutcomeStats_NoCwd verifies that sessions without
@@ -2899,13 +2385,8 @@ func TestGetSessionStats_OutcomeStats_NoCwd(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.OutcomeStats != nil {
-		t.Errorf("OutcomeStats: got %+v want nil",
-			stats.OutcomeStats)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Nil(t, stats.OutcomeStats, "OutcomeStats")
 }
 
 // TestGetSessionStats_OutcomeStats_CwdOutsideRepo verifies that a cwd
@@ -2926,11 +2407,6 @@ func TestGetSessionStats_OutcomeStats_CwdOutsideRepo(t *testing.T) {
 	})
 
 	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
-	if err != nil {
-		t.Fatalf("GetSessionStats: %v", err)
-	}
-	if stats.OutcomeStats != nil {
-		t.Errorf("OutcomeStats: got %+v want nil",
-			stats.OutcomeStats)
-	}
+	require.NoError(t, err, "GetSessionStats")
+	assert.Nil(t, stats.OutcomeStats, "OutcomeStats")
 }

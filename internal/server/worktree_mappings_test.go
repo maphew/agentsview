@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -22,15 +25,9 @@ func TestWorktreeMappingsAPIUsesCurrentMachine(t *testing.T) {
 		"project":     "canonical-app",
 		"machine":     "other-machine",
 	})
-	if created.Machine != "test" {
-		t.Fatalf("machine = %q, want test", created.Machine)
-	}
-	if created.Project != "canonical_app" {
-		t.Fatalf("project = %q, want canonical_app", created.Project)
-	}
-	if !created.Enabled {
-		t.Fatal("created mapping should default enabled")
-	}
+	require.Equal(t, "test", created.Machine)
+	require.Equal(t, "canonical_app", created.Project)
+	require.True(t, created.Enabled, "created mapping should default enabled")
 
 	var list struct {
 		Machine  string                      `json:"machine"`
@@ -39,21 +36,16 @@ func TestWorktreeMappingsAPIUsesCurrentMachine(t *testing.T) {
 	w := te.get(t, "/api/v1/settings/worktree-mappings")
 	assertStatus(t, w, http.StatusOK)
 	decodeInto(t, w, &list)
-	if list.Machine != "test" || len(list.Mappings) != 1 {
-		t.Fatalf("list = %+v, want one test-machine mapping", list)
-	}
+	require.Equal(t, "test", list.Machine)
+	require.Len(t, list.Mappings, 1)
 
 	updated := putWorktreeMapping(t, te, created.ID, map[string]any{
 		"path_prefix": prefix,
 		"project":     "disabled-app",
 		"enabled":     false,
 	})
-	if updated.Enabled {
-		t.Fatal("updated mapping should be disabled")
-	}
-	if updated.Project != "disabled_app" {
-		t.Fatalf("updated project = %q, want disabled_app", updated.Project)
-	}
+	assert.False(t, updated.Enabled, "updated mapping should be disabled")
+	assert.Equal(t, "disabled_app", updated.Project)
 
 	req := httptest.NewRequest(
 		http.MethodDelete,
@@ -69,9 +61,7 @@ func TestWorktreeMappingsAPIUsesCurrentMachine(t *testing.T) {
 	w = te.get(t, "/api/v1/settings/worktree-mappings")
 	assertStatus(t, w, http.StatusOK)
 	decodeInto(t, w, &list)
-	if len(list.Mappings) != 0 {
-		t.Fatalf("mappings after delete = %+v, want none", list.Mappings)
-	}
+	assert.Empty(t, list.Mappings, "mappings after delete should be empty")
 }
 
 func TestWorktreeMappingsAPIApply(t *testing.T) {
@@ -81,15 +71,13 @@ func TestWorktreeMappingsAPIApply(t *testing.T) {
 		"path_prefix": prefix,
 		"project":     "canonical-app",
 	})
-	if err := te.db.UpsertSession(db.Session{
+	require.NoError(t, te.db.UpsertSession(db.Session{
 		ID:      "s1",
 		Machine: "test",
 		Agent:   "claude",
 		Project: "feature_login",
 		Cwd:     filepath.Join(prefix, "feature-login"),
-	}); err != nil {
-		t.Fatalf("UpsertSession: %v", err)
-	}
+	}))
 
 	w := te.post(t, "/api/v1/settings/worktree-mappings/apply", `{}`)
 	assertStatus(t, w, http.StatusOK)
@@ -99,18 +87,12 @@ func TestWorktreeMappingsAPIApply(t *testing.T) {
 		UpdatedSessions int    `json:"updated_sessions"`
 	}
 	decodeInto(t, w, &resp)
-	if resp.Machine != "test" ||
-		resp.MatchedSessions != 1 ||
-		resp.UpdatedSessions != 1 {
-		t.Fatalf("apply response = %+v, want test matched=1 updated=1", resp)
-	}
+	assert.Equal(t, "test", resp.Machine)
+	assert.Equal(t, 1, resp.MatchedSessions)
+	assert.Equal(t, 1, resp.UpdatedSessions)
 	sess, err := te.db.GetSession(context.Background(), "s1")
-	if err != nil {
-		t.Fatalf("GetSession: %v", err)
-	}
-	if sess.Project != "canonical_app" {
-		t.Fatalf("session project = %q, want canonical_app", sess.Project)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "canonical_app", sess.Project)
 }
 
 func TestWorktreeMappingsAPIRejectsRemoteMode(t *testing.T) {
@@ -149,9 +131,7 @@ func postWorktreeMapping(
 ) db.WorktreeProjectMapping {
 	t.Helper()
 	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	require.NoError(t, err)
 	w := te.post(
 		t,
 		"/api/v1/settings/worktree-mappings",
@@ -169,9 +149,7 @@ func putWorktreeMapping(
 ) db.WorktreeProjectMapping {
 	t.Helper()
 	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	require.NoError(t, err)
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/api/v1/settings/worktree-mappings/"+
@@ -192,7 +170,6 @@ func decodeInto(
 	target any,
 ) {
 	t.Helper()
-	if err := json.Unmarshal(w.Body.Bytes(), target); err != nil {
-		t.Fatalf("decoding JSON: %v\nbody: %s", err, w.Body.String())
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), target),
+		"decoding JSON; body: %s", w.Body.String())
 }

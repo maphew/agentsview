@@ -411,10 +411,22 @@ func (s *Sync) pushBatch(
 			return batchResult{}, nil
 		}
 
-		// Bump updated_at when messages were rewritten
-		// but pushSession was a metadata no-op (its
-		// WHERE clause skips unchanged rows).
-		if msgCount > 0 {
+		findingsChanged, err := s.pushSecretFindings(ctx, tx, sess.ID)
+		if err != nil {
+			log.Printf(
+				"pgsync: secret findings %s: %v",
+				sess.ID, err,
+			)
+			_ = tx.Rollback()
+			*pushed = (*pushed)[:len(*pushed)-n]
+			return batchResult{}, nil
+		}
+
+		// Bump updated_at when messages or secret findings were
+		// rewritten but pushSession was a metadata no-op (its
+		// WHERE clause skips unchanged rows). PG read-mode session
+		// watchers rely on updated_at to surface secret-only changes.
+		if msgCount > 0 || findingsChanged {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE sessions
 				SET updated_at = NOW()
@@ -639,6 +651,7 @@ func sessionPushFingerprint(
 		stringValue(sess.DeletedAt),
 		fmt.Sprintf("%d", sess.MessageCount),
 		fmt.Sprintf("%d", sess.UserMessageCount),
+		fmt.Sprintf("%t", sess.IsAutomated),
 		fmt.Sprintf("%d", sess.TotalOutputTokens),
 		fmt.Sprintf("%d", sess.PeakContextTokens),
 		fmt.Sprintf("%t", sess.HasTotalOutputTokens),
@@ -673,6 +686,8 @@ func sessionPushFingerprint(
 		fmt.Sprintf("%d", sess.ParserMalformedLines),
 		fmt.Sprintf("%t", sess.IsTruncated),
 		stringValue(sess.TerminationStatus),
+		fmt.Sprintf("%d", sess.SecretLeakCount),
+		sess.SecretsRulesVersion,
 		usageEventFingerprint,
 	}
 	var b strings.Builder
@@ -769,6 +784,7 @@ func (s *Sync) pushSession(
 			context_pressure_max,
 			health_score, health_grade,
 			has_tool_calls, has_context_data,
+			secret_leak_count, secrets_rules_version,
 			updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
@@ -783,6 +799,7 @@ func (s *Sync) pushSession(
 			$37, $38,
 			$39,
 			$40, $41, $42, $43,
+			$44, $45,
 			NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -828,6 +845,8 @@ func (s *Sync) pushSession(
 			health_grade = EXCLUDED.health_grade,
 			has_tool_calls = EXCLUDED.has_tool_calls,
 			has_context_data = EXCLUDED.has_context_data,
+			secret_leak_count = EXCLUDED.secret_leak_count,
+			secrets_rules_version = EXCLUDED.secrets_rules_version,
 			updated_at = NOW()
 		WHERE sessions.machine IS DISTINCT FROM EXCLUDED.machine
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
@@ -870,7 +889,9 @@ func (s *Sync) pushSession(
 			OR sessions.health_score IS DISTINCT FROM EXCLUDED.health_score
 			OR sessions.health_grade IS DISTINCT FROM EXCLUDED.health_grade
 			OR sessions.has_tool_calls IS DISTINCT FROM EXCLUDED.has_tool_calls
-			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data`,
+			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data
+			OR sessions.secret_leak_count IS DISTINCT FROM EXCLUDED.secret_leak_count
+			OR sessions.secrets_rules_version IS DISTINCT FROM EXCLUDED.secrets_rules_version`,
 		sess.ID, s.machine,
 		sanitizePG(sess.Project),
 		sess.Agent,
@@ -898,6 +919,7 @@ func (s *Sync) pushSession(
 		sess.ContextPressureMax,
 		sess.HealthScore, nilStr(sess.HealthGrade),
 		sess.HasToolCalls, sess.HasContextData,
+		sess.SecretLeakCount, sess.SecretsRulesVersion,
 	)
 	return err
 }
@@ -942,6 +964,19 @@ func (s *Sync) pushMessages(
 			return 0, fmt.Errorf(
 				"deleting stale pg messages: %w", err,
 			)
+		}
+		// Usage events are independent of transcript messages: a
+		// session can carry token/cost accounting (e.g. a hermes
+		// state.db-only session) with zero messages. Sync them here
+		// too so their cost reaches PG instead of being dropped with
+		// the rest of the message-replace path below.
+		if err := s.replaceUsageEvents(ctx, tx, sessionID); err != nil {
+			return 0, err
+		}
+		if err := reconcilePinnedMessages(
+			ctx, tx, sessionID,
+		); err != nil {
+			return 0, err
 		}
 		return 0, nil
 	}
@@ -1072,20 +1107,7 @@ func (s *Sync) pushMessages(
 			"deleting pg messages: %w", err,
 		)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM usage_events
-		WHERE session_id = $1
-	`, sessionID); err != nil {
-		return 0, fmt.Errorf(
-			"deleting pg usage_events: %w", err,
-		)
-	}
-
-	usageEvents, err := s.local.GetUsageEvents(ctx, sessionID)
-	if err != nil {
-		return 0, fmt.Errorf("reading local usage events: %w", err)
-	}
-	if err := bulkInsertUsageEvents(ctx, tx, usageEvents); err != nil {
+	if err := s.replaceUsageEvents(ctx, tx, sessionID); err != nil {
 		return 0, err
 	}
 
@@ -1134,7 +1156,209 @@ func (s *Sync) pushMessages(
 		startOrdinal = nextOrdinal
 	}
 
+	if err := reconcilePinnedMessages(ctx, tx, sessionID); err != nil {
+		return count, err
+	}
+
 	return count, nil
+}
+
+// replaceUsageEvents replaces a session's usage_events in PG with the
+// current local set. Usage events are synced independently of transcript
+// messages because a session can have token/cost accounting with no
+// messages at all (e.g. a hermes state.db-only session). Both the
+// zero-message and the normal message-replace paths in pushMessages call
+// this so a session's cost always reaches PG.
+func (s *Sync) replaceUsageEvents(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM usage_events
+		WHERE session_id = $1
+	`, sessionID); err != nil {
+		return fmt.Errorf("deleting pg usage_events: %w", err)
+	}
+	usageEvents, err := s.local.GetUsageEvents(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("reading local usage events: %w", err)
+	}
+	if err := bulkInsertUsageEvents(ctx, tx, usageEvents); err != nil {
+		return err
+	}
+	return nil
+}
+
+func reconcilePinnedMessages(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE pinned_messages p
+		SET source_uuid = m.source_uuid
+		FROM messages m
+		WHERE p.session_id = $1
+			AND m.session_id = p.session_id
+			AND m.ordinal = p.message_id
+			AND p.source_uuid = ''
+			AND m.source_uuid <> ''`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf(
+			"backfilling pg pin source_uuid: %w", err,
+		)
+	}
+
+	// Move shifted source-backed pins out of the real ordinal range
+	// first. Pins already on their resolved target stay in place so
+	// duplicate repairs prefer the current target row's metadata.
+	// When multiple messages share a source_uuid (the schema allows
+	// it), prefer the message at the pin's current message_id so a
+	// correctly-placed pin is not relocated to a different duplicate.
+	if _, err := tx.ExecContext(ctx, `
+		WITH matched AS (
+			SELECT DISTINCT ON (p.id)
+				p.id, p.message_id, p.ordinal,
+				m.ordinal AS target_ordinal
+			FROM pinned_messages p
+			JOIN messages m
+				ON m.session_id = p.session_id
+				AND m.source_uuid = p.source_uuid
+			WHERE p.session_id = $1
+				AND p.source_uuid <> ''
+			ORDER BY p.id,
+				CASE WHEN m.ordinal = p.message_id THEN 0 ELSE 1 END,
+				m.ordinal
+		),
+		numbered AS (
+			SELECT id,
+				ROW_NUMBER() OVER (ORDER BY id) AS temp_ordinal
+			FROM matched
+			WHERE target_ordinal <> message_id
+				OR target_ordinal <> ordinal
+		)
+		UPDATE pinned_messages p
+		SET message_id = (-2000000000 + numbered.temp_ordinal::INT),
+			ordinal = (-2000000000 + numbered.temp_ordinal::INT)
+		FROM numbered
+		WHERE p.id = numbered.id`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf(
+			"staging pg pins for source_uuid realignment: %w", err,
+		)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		WITH matched AS (
+			SELECT DISTINCT ON (p.id)
+				p.id, p.message_id, p.created_at,
+				m.ordinal AS target_ordinal
+			FROM pinned_messages p
+			JOIN messages m
+				ON m.session_id = p.session_id
+				AND m.source_uuid = p.source_uuid
+			WHERE p.session_id = $1
+				AND p.source_uuid <> ''
+			ORDER BY p.id,
+				CASE WHEN m.ordinal = p.message_id THEN 0 ELSE 1 END,
+				m.ordinal
+		),
+		ranked AS (
+			SELECT id, target_ordinal,
+				ROW_NUMBER() OVER (
+					PARTITION BY target_ordinal
+					ORDER BY
+						(message_id = target_ordinal) DESC,
+						created_at DESC,
+						id DESC
+				) AS target_rank
+			FROM matched
+		)
+		DELETE FROM pinned_messages p
+		USING ranked r
+		WHERE p.session_id = $1
+			AND r.target_rank = 1
+			AND p.message_id = r.target_ordinal
+			AND p.id <> r.id`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf(
+			"clearing pg pin target conflicts: %w", err,
+		)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		WITH matched AS (
+			SELECT DISTINCT ON (p.id)
+				p.id, p.message_id, p.created_at,
+				m.ordinal AS target_ordinal
+			FROM pinned_messages p
+			JOIN messages m
+				ON m.session_id = p.session_id
+				AND m.source_uuid = p.source_uuid
+			WHERE p.session_id = $1
+				AND p.source_uuid <> ''
+			ORDER BY p.id,
+				CASE WHEN m.ordinal = p.message_id THEN 0 ELSE 1 END,
+				m.ordinal
+		),
+		ranked AS (
+			SELECT id, target_ordinal,
+				ROW_NUMBER() OVER (
+					PARTITION BY target_ordinal
+					ORDER BY
+						(message_id = target_ordinal) DESC,
+						created_at DESC,
+						id DESC
+				) AS target_rank
+			FROM matched
+		)
+		UPDATE pinned_messages p
+		SET message_id = r.target_ordinal,
+			ordinal = r.target_ordinal
+		FROM ranked r
+		WHERE p.id = r.id
+			AND r.target_rank = 1`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf(
+			"realigning pg pins by source_uuid: %w", err,
+		)
+	}
+
+	// Prune pins whose anchor no longer exists. For source-backed
+	// pins (source_uuid <> '') the canonical anchor is source_uuid,
+	// so a pin must be dropped when no message in this session has
+	// that source_uuid — otherwise a stale pin can survive on top
+	// of an unrelated message that now occupies the same ordinal.
+	// The ordinal-NOT-EXISTS clause additionally removes legacy
+	// pins (source_uuid = '') with a stale ordinal and clears any
+	// non-rank-1 duplicate left at the sentinel ordinal by step 2.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM pinned_messages p
+		WHERE p.session_id = $1
+			AND (
+				(
+					p.source_uuid <> ''
+					AND NOT EXISTS (
+						SELECT 1 FROM messages m
+						WHERE m.session_id = p.session_id
+							AND m.source_uuid = p.source_uuid
+					)
+				)
+				OR NOT EXISTS (
+					SELECT 1 FROM messages m
+					WHERE m.session_id = p.session_id
+						AND m.ordinal = p.message_id
+				)
+			)`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf(
+			"pruning stale pg pins: %w", err,
+		)
+	}
+
+	return nil
 }
 
 func pgMessageTokenFingerprint(
@@ -1535,6 +1759,92 @@ func bulkInsertToolResultEvents(
 		}
 	}
 	return nil
+}
+
+// pushSecretFindings replaces a session's secret findings in PG.
+// It deletes all existing rows for the session then bulk-inserts
+// the current local set. It reports whether it changed any rows
+// (deleted existing or inserted new) so the caller can bump
+// sessions.updated_at for secret-only changes that pushSession and
+// pushMessages would otherwise miss. Per-finding rules_version is
+// pushed via this table; the session-level
+// sessions.secrets_rules_version is pushed by pushSession alongside
+// the rest of the session columns.
+func (s *Sync) pushSecretFindings(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+) (bool, error) {
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM secret_findings WHERE session_id = $1`,
+		sessionID,
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"deleting pg secret_findings for %s: %w",
+			sessionID, err,
+		)
+	}
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf(
+			"counting deleted secret_findings for %s: %w",
+			sessionID, err,
+		)
+	}
+
+	findings, err := s.local.SessionSecretFindings(ctx, sessionID)
+	if err != nil {
+		return false, fmt.Errorf(
+			"reading local secret_findings for %s: %w",
+			sessionID, err,
+		)
+	}
+	if len(findings) == 0 {
+		return deleted > 0, nil
+	}
+
+	const sfBatch = 50
+	for i := 0; i < len(findings); i += sfBatch {
+		end := min(i+sfBatch, len(findings))
+		batch := findings[i:end]
+
+		var b strings.Builder
+		b.WriteString(`INSERT INTO secret_findings (
+			session_id, rule_name, confidence,
+			location_kind, message_ordinal,
+			call_index, event_index,
+			match_start, match_end, match_index,
+			redacted_match, rules_version) VALUES `)
+		const cols = 12
+		args := make([]any, 0, len(batch)*cols)
+		for j, f := range batch {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			p := j*cols + 1
+			fmt.Fprintf(&b,
+				"($%d,$%d,$%d,$%d,$%d,"+
+					"$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				p, p+1, p+2, p+3, p+4,
+				p+5, p+6, p+7, p+8, p+9, p+10, p+11,
+			)
+			args = append(args,
+				f.SessionID, f.RuleName, f.Confidence,
+				f.LocationKind, f.MessageOrdinal,
+				f.CallIndex, f.EventIndex,
+				f.MatchStart, f.MatchEnd, f.MatchIndex,
+				f.RedactedMatch, f.RulesVersion,
+			)
+		}
+		if _, err := tx.ExecContext(
+			ctx, b.String(), args...,
+		); err != nil {
+			return false, fmt.Errorf(
+				"bulk inserting secret_findings for %s: %w",
+				sessionID, err,
+			)
+		}
+	}
+	return true, nil
 }
 
 // normalizeSyncTimestamps ensures schema exists and normalizes

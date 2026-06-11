@@ -59,6 +59,8 @@
       <button
         class="close-btn"
         onclick={() => ui.activeModal = null}
+        title="Close shortcuts"
+        aria-label="Close shortcuts"
       >
         &times;
       </button>

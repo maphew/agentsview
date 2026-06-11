@@ -69,7 +69,12 @@
   <div class="confirm-modal">
     <div class="confirm-header">
       <h3 class="confirm-title">Delete Session</h3>
-      <button class="close-btn" onclick={close}>&times;</button>
+      <button
+        class="close-btn"
+        onclick={close}
+        title="Close delete confirmation"
+        aria-label="Close delete confirmation"
+      >&times;</button>
     </div>
 
     <div class="confirm-body">

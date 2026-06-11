@@ -1,5 +1,29 @@
 <script lang="ts">
   import {
+    ArrowDownIcon,
+    ArrowDownWideNarrowIcon,
+    ArrowUpNarrowWideIcon,
+    CheckIcon,
+    CloudUploadIcon,
+    DownloadIcon,
+    EllipsisIcon,
+    FunnelIcon,
+    Grid2x2Icon,
+    LayoutGridIcon,
+    LayoutListIcon,
+    LinkIcon,
+    ListCollapseIcon,
+    LogsIcon,
+    MenuIcon,
+    MoonIcon,
+    MoreHorizontalIcon,
+    RefreshCwIcon,
+    SearchIcon,
+    SettingsIcon,
+    SunIcon,
+    UploadIcon,
+  } from "../../icons.js";
+  import {
     ui,
     ALL_BLOCK_TYPES,
     type BlockType,
@@ -183,6 +207,16 @@
   });
 </script>
 
+{#snippet messageLayoutIcon(size: string)}
+  {#if ui.messageLayout === "default"}
+    <LayoutListIcon {size} strokeWidth="2" aria-hidden="true" />
+  {:else if ui.messageLayout === "compact"}
+    <ListCollapseIcon {size} strokeWidth="2" aria-hidden="true" />
+  {:else}
+    <LogsIcon {size} strokeWidth="2" aria-hidden="true" />
+  {/if}
+{/snippet}
+
 <header class="header">
   <div class="header-left">
     <button
@@ -198,9 +232,7 @@
       title="Toggle sidebar (b)"
       aria-label="Toggle sidebar"
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M1 2.75A.75.75 0 011.75 2h12.5a.75.75 0 010 1.5H1.75A.75.75 0 011 2.75zm0 5A.75.75 0 011.75 7h12.5a.75.75 0 010 1.5H1.75A.75.75 0 011 7.75zm0 5a.75.75 0 01.75-.75h12.5a.75.75 0 010 1.5H1.75a.75.75 0 01-.75-.75z"/>
-      </svg>
+      <MenuIcon size="16" strokeWidth="2" aria-hidden="true" />
     </button>
     <button
       class="header-home"
@@ -230,9 +262,7 @@
       title="Sessions"
       aria-label="Sessions"
     >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path d="M0 1.5A1.5 1.5 0 011.5 0h2A1.5 1.5 0 015 1.5v2A1.5 1.5 0 013.5 5h-2A1.5 1.5 0 010 3.5v-2zm6 0A1.5 1.5 0 017.5 0h2A1.5 1.5 0 0111 1.5v2A1.5 1.5 0 019.5 5h-2A1.5 1.5 0 016 3.5v-2zm5 0A1.5 1.5 0 0112.5 0h2A1.5 1.5 0 0116 1.5v2A1.5 1.5 0 0114.5 5h-2A1.5 1.5 0 0111 3.5v-2zM0 7.5A1.5 1.5 0 011.5 6h2A1.5 1.5 0 015 7.5v2A1.5 1.5 0 013.5 11h-2A1.5 1.5 0 010 9.5v-2zm6 0A1.5 1.5 0 017.5 6h2A1.5 1.5 0 0111 7.5v2A1.5 1.5 0 019.5 11h-2A1.5 1.5 0 016 9.5v-2zm5 0A1.5 1.5 0 0112.5 6h2A1.5 1.5 0 0116 7.5v2a1.5 1.5 0 01-1.5 1.5h-2A1.5 1.5 0 0111 9.5v-2zM0 13.5A1.5 1.5 0 011.5 12h2A1.5 1.5 0 015 13.5v2A1.5 1.5 0 013.5 17h-2A1.5 1.5 0 010 15.5v-2zm6 0A1.5 1.5 0 017.5 12h2a1.5 1.5 0 011.5 1.5v2A1.5 1.5 0 019.5 17h-2A1.5 1.5 0 016 15.5v-2zm5 0a1.5 1.5 0 011.5-1.5h2a1.5 1.5 0 011.5 1.5v2a1.5 1.5 0 01-1.5 1.5h-2a1.5 1.5 0 01-1.5-1.5v-2z"/>
-      </svg>
+      <LayoutGridIcon size="12" strokeWidth="2" aria-hidden="true" />
       <span class="nav-label">Sessions</span>
     </button>
 
@@ -243,9 +273,7 @@
       title="Token Usage"
       aria-label="Usage"
     >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v3A1.5 1.5 0 015.5 7h-3A1.5 1.5 0 011 5.5v-3zM2.5 2a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zm6.5.5A1.5 1.5 0 0110.5 1h3A1.5 1.5 0 0115 2.5v3A1.5 1.5 0 0113.5 7h-3A1.5 1.5 0 019 5.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zM1 10.5A1.5 1.5 0 012.5 9h3A1.5 1.5 0 017 10.5v3A1.5 1.5 0 015.5 15h-3A1.5 1.5 0 011 13.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3zm6.5.5A1.5 1.5 0 0110.5 9h3a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-3A1.5 1.5 0 019 13.5v-3zm1.5-.5a.5.5 0 00-.5.5v3a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-3a.5.5 0 00-.5-.5h-3z"/>
-      </svg>
+      <Grid2x2Icon size="12" strokeWidth="2" aria-hidden="true" />
       <span class="nav-label">Usage</span>
     </button>
 
@@ -255,12 +283,11 @@
         class:active={router.route === "trends" || router.route === "pinned" || router.route === "insights" || router.route === "trash" || moreOpen}
         bind:this={moreBtnRef}
         onclick={() => { moreOpen = !moreOpen; }}
+        title="More navigation"
         aria-label="More navigation"
         aria-expanded={moreOpen}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path d="M3 9.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/>
-        </svg>
+        <EllipsisIcon size="12" strokeWidth="2.4" aria-hidden="true" />
         <span class="nav-label">More</span>
       </button>
       {#if moreOpen}
@@ -295,9 +322,7 @@
     onclick={() => (ui.activeModal = "commandPalette")}
     title="Search sessions ({modKey}+K)"
   >
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85zm-5.44.656a5 5 0 110-10 5 5 0 010 10z"/>
-    </svg>
+    <SearchIcon size="12" strokeWidth="2" aria-hidden="true" />
     <span class="search-hint-text">Search sessions...</span>
     <kbd class="search-hint-kbd">{modKey}+K</kbd>
   </button>
@@ -336,9 +361,7 @@
             title="Filter block types"
             aria-label="Filter block types"
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-            </svg>
+            <FunnelIcon size="12" strokeWidth="2" aria-hidden="true" />
             {#if ui.hasBlockFilters}
               <span class="filter-badge">{ui.hiddenBlockCount}</span>
             {/if}
@@ -361,9 +384,7 @@
                   <span class="block-filter-label">{BLOCK_LABELS[bt]}</span>
                   <span class="block-filter-check" class:on={visible}>
                     {#if visible}
-                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                      </svg>
+                      <CheckIcon size="10" strokeWidth="2.4" aria-hidden="true" />
                     {/if}
                   </span>
                 </button>
@@ -383,18 +404,25 @@
 
       <button
         class="header-btn"
+        class:active={ui.followLatest}
+        onclick={() => ui.toggleFollowLatest()}
+        title="Follow latest messages"
+        aria-label="Follow latest messages"
+        aria-pressed={ui.followLatest}
+      >
+        <ArrowDownIcon size="14" strokeWidth="2" aria-hidden="true" />
+      </button>
+
+      <button
+        class="header-btn"
         onclick={() => ui.toggleSort()}
         title="Toggle sort order (o)"
         aria-label="Toggle sort order"
       >
         {#if ui.sortNewestFirst}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3.5 3a.5.5 0 01.5.5v8.793l2.146-2.147a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 01.708-.708L3 12.293V3.5a.5.5 0 01.5-.5zm4 0h7a.5.5 0 010 1h-7a.5.5 0 010-1zm0 3h5a.5.5 0 010 1h-5a.5.5 0 010-1zm0 3h3a.5.5 0 010 1h-3a.5.5 0 010-1z"/>
-          </svg>
+          <ArrowDownWideNarrowIcon size="14" strokeWidth="2" aria-hidden="true" />
         {:else}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3.5 13a.5.5 0 00.5-.5V3.707l2.146 2.147a.5.5 0 00.708-.708l-3-3a.5.5 0 00-.708 0l-3 3a.5.5 0 00.708.708L3 3.707V12.5a.5.5 0 00.5.5zm4-10h3a.5.5 0 010 1h-3a.5.5 0 010-1zm0 3h5a.5.5 0 010 1h-5a.5.5 0 010-1zm0 3h7a.5.5 0 010 1h-7a.5.5 0 010-1z"/>
-          </svg>
+          <ArrowUpNarrowWideIcon size="14" strokeWidth="2" aria-hidden="true" />
         {/if}
       </button>
 
@@ -405,22 +433,7 @@
         title="Cycle layout: {ui.messageLayout} (l)"
         aria-label="Cycle message layout"
       >
-        {#if ui.messageLayout === "default"}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1.5 2A1.5 1.5 0 000 3.5v2A1.5 1.5 0 001.5 7h13A1.5 1.5 0 0016 5.5v-2A1.5 1.5 0 0014.5 2h-13zm0 1h13a.5.5 0 01.5.5v2a.5.5 0 01-.5.5h-13a.5.5 0 01-.5-.5v-2a.5.5 0 01.5-.5zm0 6A1.5 1.5 0 000 10.5v2A1.5 1.5 0 001.5 14h13a1.5 1.5 0 001.5-1.5v-2A1.5 1.5 0 0014.5 9h-13zm0 1h13a.5.5 0 01.5.5v2a.5.5 0 01-.5.5h-13a.5.5 0 01-.5-.5v-2a.5.5 0 01.5-.5z"/>
-          </svg>
-        {:else if ui.messageLayout === "compact"}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3 4l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <line x1="9" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        {:else}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="1" y="1" width="14" height="4" rx="1" opacity="0.2"/>
-            <rect x="1" y="6" width="14" height="4" rx="1" opacity="0.08"/>
-            <rect x="1" y="11" width="14" height="4" rx="1" opacity="0.2"/>
-          </svg>
-        {/if}
+        {@render messageLayoutIcon("14")}
       </button>
 
       <div class="export-wrap collapsible">
@@ -436,10 +449,7 @@
           aria-label="Export session"
           aria-expanded={showExportMenu}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4.406 1.342A5.53 5.53 0 018 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 010-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 00-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 010 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
-            <path d="M7.646 4.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 5.707V14.5a.5.5 0 01-1 0V5.707L5.354 7.854a.5.5 0 11-.708-.708l3-3z"/>
-          </svg>
+          <CloudUploadIcon size="14" strokeWidth="2" aria-hidden="true" />
         </button>
 
         {#if showExportMenu}
@@ -451,20 +461,18 @@
                 showExportMenu = false;
               }}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4.406 1.342A5.53 5.53 0 018 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 010-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 00-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 010 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
-                <path d="M7.646 4.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 5.707V14.5a.5.5 0 01-1 0V5.707L5.354 7.854a.5.5 0 11-.708-.708l3-3z"/>
-              </svg>
+              <CloudUploadIcon size="13" strokeWidth="2" aria-hidden="true" />
               <span>Download HTML export</span>
             </button>
             <button
               class="overflow-item"
               onclick={handleCopyMarkdownExportLink}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4.5 2A2.5 2.5 0 002 4.5v7A2.5 2.5 0 004.5 14h5A2.5 2.5 0 0012 11.5v-1a.5.5 0 011 0v1A3.5 3.5 0 019.5 15h-5A3.5 3.5 0 011 11.5v-7A3.5 3.5 0 014.5 1h1a.5.5 0 010 1h-1z"/>
-                <path d="M6.854 1.146a.5.5 0 010 .708L5.707 3H11.5A3.5 3.5 0 0115 6.5v5a3.5 3.5 0 01-3.5 3.5h-1a.5.5 0 010-1h1A2.5 2.5 0 0014 11.5v-5A2.5 2.5 0 0011.5 4H5.707l1.147 1.146a.5.5 0 11-.708.708l-2-2a.5.5 0 010-.708l2-2a.5.5 0 01.708 0z"/>
-              </svg>
+              {#if copiedMarkdownLink}
+                <CheckIcon size="13" strokeWidth="2.4" aria-hidden="true" />
+              {:else}
+                <LinkIcon size="13" strokeWidth="2" aria-hidden="true" />
+              {/if}
               <span>
                 {#if copiedMarkdownLink}
                   Copied markdown link
@@ -484,9 +492,7 @@
         title="Publish to Gist (p)"
         aria-label="Publish to Gist"
       >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M3.5 13h9a.5.5 0 010 1h-9a.5.5 0 010-1zm4.854-9.354a.5.5 0 00-.708 0l-3 3a.5.5 0 10.708.708L7.5 5.207V11.5a.5.5 0 001 0V5.207l2.146 2.147a.5.5 0 00.708-.708l-3-3z"/>
-        </svg>
+        <UploadIcon size="14" strokeWidth="2" aria-hidden="true" />
       </button>
 
       <!-- Overflow menu (visible only at narrow widths) -->
@@ -498,9 +504,7 @@
           title="More actions"
           aria-label="More actions"
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3 8a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm6.5 0a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm5 1.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
-          </svg>
+          <MoreHorizontalIcon size="14" strokeWidth="2.4" aria-hidden="true" />
         </button>
 
         {#if showOverflow}
@@ -509,38 +513,25 @@
               class="overflow-item"
               onclick={() => { ui.cycleLayout(); showOverflow = false; }}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                {#if ui.messageLayout === "default"}
-                  <path d="M1.5 2A1.5 1.5 0 000 3.5v2A1.5 1.5 0 001.5 7h13A1.5 1.5 0 0016 5.5v-2A1.5 1.5 0 0014.5 2h-13zm0 1h13a.5.5 0 01.5.5v2a.5.5 0 01-.5.5h-13a.5.5 0 01-.5-.5v-2a.5.5 0 01.5-.5zm0 6A1.5 1.5 0 000 10.5v2A1.5 1.5 0 001.5 14h13a1.5 1.5 0 001.5-1.5v-2A1.5 1.5 0 0014.5 9h-13zm0 1h13a.5.5 0 01.5.5v2a.5.5 0 01-.5.5h-13a.5.5 0 01-.5-.5v-2a.5.5 0 01.5-.5z"/>
-                {:else if ui.messageLayout === "compact"}
-                  <path d="M3 4l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  <line x1="9" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                {:else}
-                  <rect x="1" y="1" width="14" height="4" rx="1" opacity="0.2"/>
-                  <rect x="1" y="6" width="14" height="4" rx="1" opacity="0.08"/>
-                  <rect x="1" y="11" width="14" height="4" rx="1" opacity="0.2"/>
-                {/if}
-              </svg>
+              {@render messageLayoutIcon("13")}
               <span>Layout: {ui.messageLayout}</span>
             </button>
             <button
               class="overflow-item"
               onclick={() => { handleExport(); showOverflow = false; }}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4.406 1.342A5.53 5.53 0 018 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 010-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 00-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 010 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/>
-                <path d="M7.646 4.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 5.707V14.5a.5.5 0 01-1 0V5.707L5.354 7.854a.5.5 0 11-.708-.708l3-3z"/>
-              </svg>
+              <CloudUploadIcon size="13" strokeWidth="2" aria-hidden="true" />
               <span>Download HTML export</span>
             </button>
             <button
               class="overflow-item"
               onclick={handleCopyMarkdownExportLink}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4.5 2A2.5 2.5 0 002 4.5v7A2.5 2.5 0 004.5 14h5A2.5 2.5 0 0012 11.5v-1a.5.5 0 011 0v1A3.5 3.5 0 019.5 15h-5A3.5 3.5 0 011 11.5v-7A3.5 3.5 0 014.5 1h1a.5.5 0 010 1h-1z"/>
-                <path d="M6.854 1.146a.5.5 0 010 .708L5.707 3H11.5A3.5 3.5 0 0115 6.5v5a3.5 3.5 0 01-3.5 3.5h-1a.5.5 0 010-1h1A2.5 2.5 0 0014 11.5v-5A2.5 2.5 0 0011.5 4H5.707l1.147 1.146a.5.5 0 11-.708.708l-2-2a.5.5 0 010-.708l2-2a.5.5 0 01.708 0z"/>
-              </svg>
+              {#if copiedMarkdownLink}
+                <CheckIcon size="13" strokeWidth="2.4" aria-hidden="true" />
+              {:else}
+                <LinkIcon size="13" strokeWidth="2" aria-hidden="true" />
+              {/if}
               <span>
                 {#if copiedMarkdownLink}
                   Copied markdown link
@@ -553,9 +544,7 @@
               class="overflow-item"
               onclick={() => { ui.activeModal = "publish"; showOverflow = false; }}
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M3.5 13h9a.5.5 0 010 1h-9a.5.5 0 010-1zm4.854-9.354a.5.5 0 00-.708 0l-3 3a.5.5 0 10.708.708L7.5 5.207V11.5a.5.5 0 001 0V5.207l2.146 2.147a.5.5 0 00.708-.708l-3-3z"/>
-              </svg>
+              <UploadIcon size="13" strokeWidth="2" aria-hidden="true" />
               <span>Publish to Gist</span>
             </button>
           </div>
@@ -568,24 +557,24 @@
       class:syncing={sync.syncing}
       onclick={() => sync.triggerSync()}
       disabled={sync.syncing}
-      title="Sync sessions (r)"
-      aria-label="Sync sessions"
+      title={sync.readOnly ? "Refresh data (r)" : "Sync sessions (r)"}
+      aria-label={sync.readOnly ? "Refresh data" : "Sync sessions"}
     >
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8 3a5 5 0 00-4.546 2.914.5.5 0 01-.908-.418A6 6 0 0114 8a.5.5 0 01-1 0 5 5 0 00-5-5zm4.546 7.086a.5.5 0 01.908.418A6 6 0 012 8a.5.5 0 011 0 5 5 0 005 5 5 5 0 004.546-2.914z"/>
-      </svg>
+      <RefreshCwIcon size="14" strokeWidth="2" aria-hidden="true" />
     </button>
 
     <button
       class="import-btn"
-      onclick={() => showImportModal = true}
-      title="Import conversations"
+      onclick={() => {
+        if (!sync.readOnly) showImportModal = true;
+      }}
+      disabled={sync.readOnly}
+      title={sync.readOnly
+        ? "Import unavailable in read-only mode"
+        : "Import conversations"}
       aria-label="Import conversations"
     >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M2.75 14A1.75 1.75 0 011 12.25v-2.5a.75.75 0 011.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25v-2.5a.75.75 0 011.5 0v2.5A1.75 1.75 0 0113.25 14H2.75z"/>
-        <path d="M11.78 4.72a.75.75 0 00-1.06 0L8.75 6.69V1.5a.75.75 0 00-1.5 0v5.19L5.28 4.72a.75.75 0 00-1.06 1.06l3.25 3.25a.75.75 0 001.06 0l3.25-3.25a.75.75 0 000-1.06z"/>
-      </svg>
+      <DownloadIcon size="12" strokeWidth="2" aria-hidden="true" />
       <span class="import-label">Import</span>
     </button>
 
@@ -598,13 +587,9 @@
       aria-label="Toggle theme"
     >
       {#if ui.theme === "light"}
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M6 .278a.768.768 0 01.08.858 7.208 7.208 0 00-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 01.81.316.733.733 0 01-.031.893A8.349 8.349 0 018.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 016 .278z"/>
-        </svg>
+        <MoonIcon size="14" strokeWidth="2" aria-hidden="true" />
       {:else}
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.5.5 0 01.5.5v2a.5.5 0 01-1 0v-2A.5.5 0 018 0zm0 13a.5.5 0 01.5.5v2a.5.5 0 01-1 0v-2A.5.5 0 018 13zm8-5a.5.5 0 01-.5.5h-2a.5.5 0 010-1h2A.5.5 0 0116 8zM3 8a.5.5 0 01-.5.5h-2a.5.5 0 010-1h2A.5.5 0 013 8zm10.657-5.657a.5.5 0 010 .707l-1.414 1.414a.5.5 0 11-.707-.707l1.414-1.414a.5.5 0 01.707 0zm-9.193 9.193a.5.5 0 010 .707L3.05 13.657a.5.5 0 01-.707-.707l1.414-1.414a.5.5 0 01.707 0zm9.193 2.121a.5.5 0 01-.707 0l-1.414-1.414a.5.5 0 01.707-.707l1.414 1.414a.5.5 0 010 .707zM4.464 4.465a.5.5 0 01-.707 0L2.343 3.05a.5.5 0 01.707-.707l1.414 1.414a.5.5 0 010 .708z"/>
-        </svg>
+        <SunIcon size="14" strokeWidth="2" aria-hidden="true" />
       {/if}
     </button>
 
@@ -615,15 +600,14 @@
       title="Settings"
       aria-label="Settings"
     >
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 01-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 01.872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 012.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 012.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 01.872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 01-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 01-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 110-5.86 2.929 2.929 0 010 5.858z"/>
-      </svg>
+      <SettingsIcon size="14" strokeWidth="2" aria-hidden="true" />
     </button>
 
     <button
       class="header-btn"
       onclick={() => (ui.activeModal = "shortcuts")}
       title="Keyboard shortcuts (?)"
+      aria-label="Keyboard shortcuts"
     >
       ?
     </button>
@@ -1008,6 +992,11 @@
     color: var(--text-secondary);
   }
 
+  .header-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
   .header-btn.active {
     color: var(--accent-purple);
   }
@@ -1031,9 +1020,14 @@
     transition: background 0.12s, color 0.12s;
   }
 
-  .import-btn:hover {
+  .import-btn:hover:not(:disabled) {
     background: var(--bg-surface-hover);
     color: var(--text-primary);
+  }
+
+  .import-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .header-divider {
@@ -1126,7 +1120,7 @@
     color: var(--text-primary);
   }
 
-  .overflow-item svg {
+  .overflow-item :global(svg) {
     flex-shrink: 0;
     color: var(--text-muted);
   }

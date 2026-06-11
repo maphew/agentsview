@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -44,24 +47,26 @@ func (readOnlyUsageSpy) GetUsageSessionCounts(
 func TestUsageHandlers_ReturnNotImplementedOnReadOnlyStore(
 	t *testing.T,
 ) {
-	s := &Server{db: readOnlyUsageSpy{}}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  readOnlyUsageSpy{},
+		mux: http.NewServeMux(),
+	}
+	s.routes()
 
 	cases := []struct {
-		name    string
-		path    string
-		handler func(http.ResponseWriter, *http.Request)
+		name string
+		path string
 	}{
 		{
 			name: "summary",
 			path: "/api/v1/usage/summary?" +
 				"from=2024-06-01&to=2024-06-03",
-			handler: s.handleUsageSummary,
 		},
 		{
 			name: "top-sessions",
 			path: "/api/v1/usage/top-sessions?" +
 				"from=2024-06-01&to=2024-06-03",
-			handler: s.handleUsageTopSessions,
 		},
 	}
 	for _, tc := range cases {
@@ -70,13 +75,9 @@ func TestUsageHandlers_ReturnNotImplementedOnReadOnlyStore(
 				http.MethodGet, tc.path, nil,
 			)
 			w := httptest.NewRecorder()
-			tc.handler(w, req)
-			if w.Code != http.StatusNotImplemented {
-				t.Errorf(
-					"status = %d, want 501; body=%s",
-					w.Code, w.Body.String(),
-				)
-			}
+			s.mux.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusNotImplemented, w.Code,
+				"body=%s", w.Body.String())
 		})
 	}
 }

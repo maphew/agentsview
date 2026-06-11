@@ -6,6 +6,9 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInferTokenPresence(t *testing.T) {
@@ -120,12 +123,8 @@ func TestInferTokenPresence(t *testing.T) {
 				tt.hasContext,
 				tt.hasOutput,
 			)
-			if gotCtx != tt.wantCtx || gotOut != tt.wantOut {
-				t.Errorf(
-					"InferTokenPresence() = (%v, %v), want (%v, %v)",
-					gotCtx, gotOut, tt.wantCtx, tt.wantOut,
-				)
-			}
+			assert.Equal(t, tt.wantCtx, gotCtx, "InferTokenPresence context")
+			assert.Equal(t, tt.wantOut, gotOut, "InferTokenPresence output")
 		})
 	}
 }
@@ -149,17 +148,9 @@ func TestAgentByType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		def, ok := AgentByType(tt.input)
-		if ok != tt.want {
-			t.Errorf(
-				"AgentByType(%q) ok = %v, want %v",
-				tt.input, ok, tt.want,
-			)
-		}
-		if ok && def.Type != tt.input {
-			t.Errorf(
-				"AgentByType(%q).Type = %q",
-				tt.input, def.Type,
-			)
+		assert.Equalf(t, tt.want, ok, "AgentByType(%q) ok", tt.input)
+		if ok {
+			assert.Equalf(t, tt.input, def.Type, "AgentByType(%q).Type", tt.input)
 		}
 	}
 }
@@ -232,6 +223,12 @@ func TestAgentByPrefix(t *testing.T) {
 			true,
 		},
 		{
+			"zed prefix",
+			"zed:sess-id",
+			AgentZed,
+			true,
+		},
+		{
 			"unknown prefix",
 			"future:sess-id",
 			"",
@@ -247,17 +244,10 @@ func TestAgentByPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			def, ok := AgentByPrefix(tt.sessionID)
-			if ok != tt.wantOK {
-				t.Fatalf(
-					"AgentByPrefix(%q) ok = %v, want %v",
-					tt.sessionID, ok, tt.wantOK,
-				)
-			}
-			if ok && def.Type != tt.wantType {
-				t.Errorf(
-					"AgentByPrefix(%q).Type = %q, want %q",
-					tt.sessionID, def.Type, tt.wantType,
-				)
+			require.Equalf(t, tt.wantOK, ok, "AgentByPrefix(%q) ok", tt.sessionID)
+			if ok {
+				assert.Equalf(t, tt.wantType, def.Type,
+					"AgentByPrefix(%q).Type", tt.sessionID)
 			}
 		})
 	}
@@ -276,6 +266,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		AgentVSCodeCopilot,
 		AgentPi,
 		AgentOpenClaw,
+		AgentQClaw,
 		AgentKimi,
 		AgentClaudeAI,
 		AgentChatGPT,
@@ -287,6 +278,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		AgentPiebald,
 		AgentWarp,
 		AgentPositron,
+		AgentZed,
 	}
 
 	registered := make(map[AgentType]bool)
@@ -295,11 +287,8 @@ func TestRegistryCompleteness(t *testing.T) {
 	}
 
 	for _, at := range allTypes {
-		if !registered[at] {
-			t.Errorf(
-				"AgentType %q missing from Registry", at,
-			)
-		}
+		assert.Truef(t, registered[at],
+			"AgentType %q missing from Registry", at)
 	}
 }
 
@@ -383,16 +372,10 @@ func TestInferRelationshipTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			InferRelationshipTypes(tt.inputs)
-			if len(tt.inputs) != len(tt.want) {
-				t.Fatalf("len(inputs) = %d, want %d", len(tt.inputs), len(tt.want))
-			}
+			require.Len(t, tt.inputs, len(tt.want), "inputs len")
 			for i, r := range tt.inputs {
-				if r.Session.RelationshipType != tt.want[i] {
-					t.Errorf(
-						"inputs[%d].RelationshipType = %q, want %q",
-						i, r.Session.RelationshipType, tt.want[i],
-					)
-				}
+				assert.Equalf(t, tt.want[i], r.Session.RelationshipType,
+					"inputs[%d].RelationshipType", i)
 			}
 		})
 	}
@@ -403,56 +386,59 @@ func TestFileBasedAgentsHaveConfigKey(t *testing.T) {
 		if !def.FileBased {
 			continue
 		}
-		if def.ConfigKey == "" {
-			t.Errorf(
-				"file-based agent %q (%s) has empty ConfigKey",
-				def.DisplayName, def.Type,
-			)
-		}
+		assert.NotEmptyf(t, def.ConfigKey,
+			"file-based agent %q (%s) has empty ConfigKey",
+			def.DisplayName, def.Type)
+	}
+}
+
+func TestZedRegistryEntry(t *testing.T) {
+	def, ok := AgentByType(AgentZed)
+	if !ok {
+		t.Fatalf("AgentZed missing from Registry")
+	}
+	if !def.FileBased {
+		t.Fatalf("Zed FileBased = false, want true")
+	}
+	if def.EnvVar != "ZED_DIR" {
+		t.Fatalf("Zed EnvVar = %q", def.EnvVar)
+	}
+	if def.ConfigKey != "zed_dirs" {
+		t.Fatalf("Zed ConfigKey = %q", def.ConfigKey)
+	}
+	if def.IDPrefix != "zed:" {
+		t.Fatalf("Zed IDPrefix = %q", def.IDPrefix)
+	}
+	if def.DiscoverFunc == nil || def.FindSourceFunc == nil {
+		t.Fatalf("Zed discover/source funcs must be set")
 	}
 }
 
 func TestOpenCodeRegistryEntry(t *testing.T) {
 	def, ok := AgentByType(AgentOpenCode)
-	if !ok {
-		t.Fatalf("AgentOpenCode missing from Registry")
-	}
-	if !def.FileBased {
-		t.Fatalf("OpenCode FileBased = false, want true")
-	}
-	if def.DiscoverFunc == nil {
-		t.Fatalf("OpenCode DiscoverFunc = nil")
-	}
-	if def.FindSourceFunc == nil {
-		t.Fatalf("OpenCode FindSourceFunc = nil")
-	}
-	if got, want := def.WatchSubdirs, []string{
+	require.True(t, ok, "AgentOpenCode missing from Registry")
+	require.True(t, def.FileBased, "OpenCode FileBased")
+	require.NotNil(t, def.DiscoverFunc, "OpenCode DiscoverFunc")
+	require.NotNil(t, def.FindSourceFunc, "OpenCode FindSourceFunc")
+	want := []string{
 		"storage/session",
 		"storage/message",
 		"storage/part",
-	}; !slices.Equal(got, want) {
-		t.Fatalf("OpenCode WatchSubdirs = %v, want %v", got, want)
 	}
+	require.Truef(t, slices.Equal(def.WatchSubdirs, want),
+		"OpenCode WatchSubdirs = %v, want %v", def.WatchSubdirs, want)
 }
 
 func TestResolveOpenCodeSourcePrefersStorage(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "storage", "session", "global")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755), "mkdir session dir")
 	dbPath := filepath.Join(root, "opencode.db")
-	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	require.NoError(t, os.WriteFile(dbPath, []byte("x"), 0o644), "write db marker")
 
 	got := ResolveOpenCodeSource(root)
-	if got.Mode != OpenCodeSourceStorage {
-		t.Fatalf("Mode = %v, want %v", got.Mode, OpenCodeSourceStorage)
-	}
-	if got.SessionRoot != filepath.Join(root, "storage", "session") {
-		t.Fatalf("SessionRoot = %q", got.SessionRoot)
-	}
+	require.Equal(t, OpenCodeSourceStorage, got.Mode, "Mode")
+	require.Equal(t, filepath.Join(root, "storage", "session"), got.SessionRoot, "SessionRoot")
 }
 
 func TestResolveOpenCodeSourceFallsBackToSQLiteOnBrokenStoragePath(
@@ -460,21 +446,13 @@ func TestResolveOpenCodeSourceFallsBackToSQLiteOnBrokenStoragePath(
 ) {
 	root := t.TempDir()
 	storagePath := filepath.Join(root, "storage")
-	if err := os.WriteFile(storagePath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write storage marker: %v", err)
-	}
+	require.NoError(t, os.WriteFile(storagePath, []byte("x"), 0o644), "write storage marker")
 	dbPath := filepath.Join(root, "opencode.db")
-	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	require.NoError(t, os.WriteFile(dbPath, []byte("x"), 0o644), "write db marker")
 
 	got := ResolveOpenCodeSource(root)
-	if got.Mode != OpenCodeSourceSQLite {
-		t.Fatalf("Mode = %v, want %v", got.Mode, OpenCodeSourceSQLite)
-	}
-	if got.DBPath != dbPath {
-		t.Fatalf("DBPath = %q, want %q", got.DBPath, dbPath)
-	}
+	require.Equal(t, OpenCodeSourceSQLite, got.Mode, "Mode")
+	require.Equal(t, dbPath, got.DBPath, "DBPath")
 }
 
 func TestResolveOpenCodeSourceKeepsStorageAuthoritativeWhenUnreadable(
@@ -485,115 +463,71 @@ func TestResolveOpenCodeSourceKeepsStorageAuthoritativeWhenUnreadable(
 	}
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "storage", "session", "global")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755), "mkdir session dir")
 	storageRoot := filepath.Join(root, "storage")
-	if err := os.Chmod(storageRoot, 0o000); err != nil {
-		t.Fatalf("chmod storage root: %v", err)
-	}
+	require.NoError(t, os.Chmod(storageRoot, 0o000), "chmod storage root")
 	defer func() {
 		_ = os.Chmod(storageRoot, 0o755)
 	}()
 	dbPath := filepath.Join(root, "opencode.db")
-	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	require.NoError(t, os.WriteFile(dbPath, []byte("x"), 0o644), "write db marker")
 
 	got := ResolveOpenCodeSource(root)
-	if got.Mode != OpenCodeSourceStorage {
-		t.Fatalf("Mode = %v, want %v", got.Mode, OpenCodeSourceStorage)
-	}
-	if got.SessionRoot != filepath.Join(root, "storage", "session") {
-		t.Fatalf("SessionRoot = %q", got.SessionRoot)
-	}
+	require.Equal(t, OpenCodeSourceStorage, got.Mode, "Mode")
+	require.Equal(t, filepath.Join(root, "storage", "session"), got.SessionRoot, "SessionRoot")
 }
 
 func TestDiscoverOpenCodeSessions(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "storage", "session", "global")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755), "mkdir")
 	path := filepath.Join(dir, "ses_test.json")
 	data := []byte(`{"id":"ses_test","directory":"/home/user/code/my-app"}`)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, data, 0o644), "write session")
 
 	got := DiscoverOpenCodeSessions(root)
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	if got[0].Path != path {
-		t.Fatalf("Path = %q, want %q", got[0].Path, path)
-	}
-	if got[0].Project != "my_app" {
-		t.Fatalf("Project = %q, want %q", got[0].Project, "my_app")
-	}
-	if got[0].Agent != AgentOpenCode {
-		t.Fatalf("Agent = %q, want %q", got[0].Agent, AgentOpenCode)
-	}
+	require.Len(t, got, 1, "len")
+	require.Equal(t, path, got[0].Path, "Path")
+	require.Equal(t, "my_app", got[0].Project, "Project")
+	require.Equal(t, AgentOpenCode, got[0].Agent, "Agent")
 }
 
 func TestDiscoverOpenCodeSessionsIgnoresNestedJSON(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "storage", "session", "global")
-	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "nested"), 0o755), "mkdir")
 	path := filepath.Join(dir, "ses_test.json")
-	if err := os.WriteFile(path, []byte(`{"id":"ses_test"}`), 0o644); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "nested", "meta.json"), []byte(`{"id":"meta"}`), 0o644); err != nil {
-		t.Fatalf("write nested json: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(`{"id":"ses_test"}`), 0o644), "write session")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "meta.json"), []byte(`{"id":"meta"}`), 0o644), "write nested json")
 
 	got := DiscoverOpenCodeSessions(root)
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	if got[0].Path != path {
-		t.Fatalf("Path = %q, want %q", got[0].Path, path)
-	}
+	require.Len(t, got, 1, "len")
+	require.Equal(t, path, got[0].Path, "Path")
 }
 
 func TestFindOpenCodeSourceFilePrefersStorage(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "storage", "session", "global", "ses_123.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(`{"id":"ses_123"}`), 0o644); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "opencode.db"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "mkdir")
+	require.NoError(t, os.WriteFile(path, []byte(`{"id":"ses_123"}`), 0o644), "write session")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "opencode.db"), []byte("x"), 0o644), "write db marker")
 
 	got := FindOpenCodeSourceFile(root, "ses_123")
-	if got != path {
-		t.Fatalf("FindOpenCodeSourceFile() = %q, want %q", got, path)
-	}
+	require.Equal(t, path, got, "FindOpenCodeSourceFile()")
 }
 
 func TestFindOpenCodeSourceFileFallsBackToSQLiteInHybridRoot(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "storage", "session", "global"),
 		0o755,
-	); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	), "mkdir session dir")
 	dbPath := filepath.Join(root, "opencode.db")
 	seedHybridSQLiteDB(t, dbPath, "ses_456")
 
 	got := FindOpenCodeSourceFile(root, "ses_456")
 	want := OpenCodeSQLiteVirtualPath(dbPath, "ses_456")
-	if got != want {
-		t.Fatalf("FindOpenCodeSourceFile() = %q, want %q", got, want)
-	}
+	require.Equal(t, want, got, "FindOpenCodeSourceFile()")
 }
 
 // TestFindOpenCodeSourceFileReturnsEmptyWhenSessionMissing covers
@@ -603,18 +537,15 @@ func TestFindOpenCodeSourceFileFallsBackToSQLiteInHybridRoot(t *testing.T) {
 // where the session actually lives.
 func TestFindOpenCodeSourceFileReturnsEmptyWhenSessionMissing(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "storage", "session", "global"),
 		0o755,
-	); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	), "mkdir session dir")
 	dbPath := filepath.Join(root, "opencode.db")
 	seedHybridSQLiteDB(t, dbPath, "ses_unrelated")
 
-	if got := FindOpenCodeSourceFile(root, "ses_missing"); got != "" {
-		t.Fatalf("FindOpenCodeSourceFile() = %q, want empty", got)
-	}
+	got := FindOpenCodeSourceFile(root, "ses_missing")
+	assert.Empty(t, got, "FindOpenCodeSourceFile()")
 }
 
 func TestFindOpenCodeSourceFilePureSQLiteOnlyForExistingSession(t *testing.T) {
@@ -622,42 +553,30 @@ func TestFindOpenCodeSourceFilePureSQLiteOnlyForExistingSession(t *testing.T) {
 	dbPath := filepath.Join(root, "opencode.db")
 	seedHybridSQLiteDB(t, dbPath, "ses_present")
 
-	if got := FindOpenCodeSourceFile(root, "ses_present"); got !=
-		OpenCodeSQLiteVirtualPath(dbPath, "ses_present") {
-		t.Fatalf(
-			"FindOpenCodeSourceFile(present) = %q, want virtual path",
-			got,
-		)
-	}
-	if got := FindOpenCodeSourceFile(root, "ses_absent"); got != "" {
-		t.Fatalf(
-			"FindOpenCodeSourceFile(absent) = %q, want empty", got,
-		)
-	}
+	got := FindOpenCodeSourceFile(root, "ses_present")
+	assert.Equal(t,
+		OpenCodeSQLiteVirtualPath(dbPath, "ses_present"),
+		got, "FindOpenCodeSourceFile(present)")
+	got = FindOpenCodeSourceFile(root, "ses_absent")
+	assert.Empty(t, got, "FindOpenCodeSourceFile(absent)")
 }
 
 func TestOpenCodeStorageSessionIDsCollectsJSONFiles(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "storage", "session")
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(sessionDir, "global"), 0o755,
-	); err != nil {
-		t.Fatalf("mkdir global: %v", err)
-	}
-	if err := os.MkdirAll(
+	), "mkdir global")
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(sessionDir, "proj-x"), 0o755,
-	); err != nil {
-		t.Fatalf("mkdir proj-x: %v", err)
-	}
+	), "mkdir proj-x")
 	for _, p := range []string{
 		filepath.Join(sessionDir, "global", "ses_a.json"),
 		filepath.Join(sessionDir, "global", "ses_b.json"),
 		filepath.Join(sessionDir, "proj-x", "ses_c.json"),
 		filepath.Join(sessionDir, "global", "skip.txt"),
 	} {
-		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", p, err)
-		}
+		require.NoErrorf(t, os.WriteFile(p, []byte("{}"), 0o644), "write %s", p)
 	}
 
 	got := OpenCodeStorageSessionIDs(root)
@@ -666,63 +585,49 @@ func TestOpenCodeStorageSessionIDsCollectsJSONFiles(t *testing.T) {
 		"ses_b": {},
 		"ses_c": {},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d ids, want %d: %v", len(got), len(want), got)
-	}
+	require.Lenf(t, got, len(want), "got %v, want %v", got, want)
 	for id := range want {
-		if _, ok := got[id]; !ok {
-			t.Errorf("missing %q in result %v", id, got)
-		}
+		_, ok := got[id]
+		assert.Truef(t, ok, "missing %q in result %v", id, got)
 	}
 }
 
 func TestOpenCodeStorageSessionIDsNilForNonStorageRoot(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "opencode.db"), []byte("x"), 0o644,
-	); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
-	if got := OpenCodeStorageSessionIDs(root); got != nil {
-		t.Fatalf("got %v, want nil for SQLite-only root", got)
-	}
+	), "write db marker")
+	got := OpenCodeStorageSessionIDs(root)
+	assert.Nil(t, got, "want nil for SQLite-only root")
 }
 
 func TestResolveOpenCodeWatchRootsStorage(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "storage", "session", "global"),
 		0o755,
-	); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	), "mkdir session dir")
 
 	got := ResolveOpenCodeWatchRoots(root)
 	want := []string{filepath.Join(root, "storage")}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
-	}
+	assert.Truef(t, slices.Equal(got, want),
+		"ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
 }
 
 func TestResolveOpenCodeWatchRootsHybrid(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "storage", "session", "global"),
 		0o755,
-	); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	if err := os.WriteFile(
+	), "mkdir session dir")
+	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "opencode.db"), []byte("x"), 0o644,
-	); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	), "write db marker")
 
 	got := ResolveOpenCodeWatchRoots(root)
 	want := []string{root}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
-	}
+	assert.Truef(t, slices.Equal(got, want),
+		"ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
 }
 
 // A fresh opencode install may only have storage/session at startup;
@@ -731,65 +636,52 @@ func TestResolveOpenCodeWatchRootsHybrid(t *testing.T) {
 // Create handler picks up those lazy subdirs without a restart.
 func TestResolveOpenCodeWatchRootsStorageMissingSubdirs(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(
+	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "storage", "session"),
 		0o755,
-	); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
+	), "mkdir session dir")
 
 	got := ResolveOpenCodeWatchRoots(root)
 	want := []string{filepath.Join(root, "storage")}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
-	}
+	assert.Truef(t, slices.Equal(got, want),
+		"ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
 }
 
 func TestResolveOpenCodeWatchRootsSQLite(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(
+	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "opencode.db"), []byte("x"), 0o644,
-	); err != nil {
-		t.Fatalf("write db marker: %v", err)
-	}
+	), "write db marker")
 
 	got := ResolveOpenCodeWatchRoots(root)
 	want := []string{root}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
-	}
+	assert.Truef(t, slices.Equal(got, want),
+		"ResolveOpenCodeWatchRoots() = %v, want %v", got, want)
 }
 
 func TestResolveOpenCodeWatchRootsMissingRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing")
 	got := ResolveOpenCodeWatchRoots(root)
-	if got != nil {
-		t.Fatalf("ResolveOpenCodeWatchRoots() = %v, want nil", got)
-	}
+	assert.Nil(t, got, "ResolveOpenCodeWatchRoots()")
 }
 
 func TestParseOpenCodeSQLiteVirtualPath(t *testing.T) {
 	dbPath := filepath.Join("/tmp", "opencode.db")
 	virtual := OpenCodeSQLiteVirtualPath(dbPath, "ses_123")
 	gotDB, gotSessionID, ok := ParseOpenCodeSQLiteVirtualPath(virtual)
-	if !ok {
-		t.Fatal("expected virtual path to parse")
-	}
-	if gotDB != dbPath || gotSessionID != "ses_123" {
-		t.Fatalf("ParseOpenCodeSQLiteVirtualPath() = (%q, %q), want (%q, %q)", gotDB, gotSessionID, dbPath, "ses_123")
-	}
+	require.True(t, ok, "expected virtual path to parse")
+	assert.Equal(t, dbPath, gotDB, "db path")
+	assert.Equal(t, "ses_123", gotSessionID, "session ID")
 	hashDBPath := filepath.Join("/tmp", "opencode#dev", "opencode.db")
 	hashVirtual := OpenCodeSQLiteVirtualPath(hashDBPath, "ses_456")
 	gotDB, gotSessionID, ok = ParseOpenCodeSQLiteVirtualPath(hashVirtual)
-	if !ok {
-		t.Fatal("expected virtual path with # in db path to parse")
-	}
-	if gotDB != hashDBPath || gotSessionID != "ses_456" {
-		t.Fatalf("ParseOpenCodeSQLiteVirtualPath() with # in db path = (%q, %q), want (%q, %q)", gotDB, gotSessionID, hashDBPath, "ses_456")
-	}
-	if _, _, ok := ParseOpenCodeSQLiteVirtualPath("/tmp/project#dir/storage/session/global/ses_123.json"); ok {
-		t.Fatal("expected real storage path with # to be rejected")
-	}
+	require.True(t, ok, "expected virtual path with # in db path to parse")
+	assert.Equal(t, hashDBPath, gotDB, "db path with #")
+	assert.Equal(t, "ses_456", gotSessionID, "session ID with #")
+	_, _, ok = ParseOpenCodeSQLiteVirtualPath(
+		"/tmp/project#dir/storage/session/global/ses_123.json",
+	)
+	assert.False(t, ok, "expected real storage path with # to be rejected")
 }
 
 func TestStripHostPrefix(t *testing.T) {
@@ -845,18 +737,8 @@ func TestStripHostPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			host, raw := StripHostPrefix(tt.id)
-			if host != tt.wantHost {
-				t.Errorf(
-					"StripHostPrefix(%q) host = %q, want %q",
-					tt.id, host, tt.wantHost,
-				)
-			}
-			if raw != tt.wantRaw {
-				t.Errorf(
-					"StripHostPrefix(%q) raw = %q, want %q",
-					tt.id, raw, tt.wantRaw,
-				)
-			}
+			assert.Equalf(t, tt.wantHost, host, "StripHostPrefix(%q) host", tt.id)
+			assert.Equalf(t, tt.wantRaw, raw, "StripHostPrefix(%q) raw", tt.id)
 		})
 	}
 }
@@ -914,17 +796,10 @@ func TestAgentByPrefixRemote(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			def, ok := AgentByPrefix(tt.sessionID)
-			if ok != tt.wantOK {
-				t.Fatalf(
-					"AgentByPrefix(%q) ok = %v, want %v",
-					tt.sessionID, ok, tt.wantOK,
-				)
-			}
-			if ok && def.Type != tt.wantType {
-				t.Errorf(
-					"AgentByPrefix(%q).Type = %q, want %q",
-					tt.sessionID, def.Type, tt.wantType,
-				)
+			require.Equalf(t, tt.wantOK, ok, "AgentByPrefix(%q) ok", tt.sessionID)
+			if ok {
+				assert.Equalf(t, tt.wantType, def.Type,
+					"AgentByPrefix(%q).Type", tt.sessionID)
 			}
 		})
 	}
@@ -932,9 +807,7 @@ func TestAgentByPrefixRemote(t *testing.T) {
 
 func TestVSCodeCopilotDefaultDirs(t *testing.T) {
 	def, ok := AgentByType(AgentVSCodeCopilot)
-	if !ok {
-		t.Fatal("AgentVSCodeCopilot not in Registry")
-	}
+	require.True(t, ok, "AgentVSCodeCopilot not in Registry")
 
 	required := []string{
 		// Windows
@@ -951,8 +824,7 @@ func TestVSCodeCopilotDefaultDirs(t *testing.T) {
 		".config/VSCodium/User",
 	}
 	for _, path := range required {
-		if !slices.Contains(def.DefaultDirs, path) {
-			t.Errorf("missing default dir: %s", path)
-		}
+		assert.Truef(t, slices.Contains(def.DefaultDirs, path),
+			"missing default dir: %s", path)
 	}
 }

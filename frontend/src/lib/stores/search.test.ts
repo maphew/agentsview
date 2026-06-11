@@ -1,11 +1,48 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { searchStore } from "./search.svelte.js";
-import * as api from "../api/client.js";
+import { SearchService } from "../api/generated/index";
 import type { SearchResponse } from "../api/types.js";
 
-vi.mock("../api/client.js", () => ({
-  search: vi.fn(),
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+  isAbortError: (err: unknown) => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return true;
+    }
+    if (err === null || typeof err !== "object") {
+      return false;
+    }
+    const candidate = err as {
+      isCancelled?: unknown;
+      name?: unknown;
+    };
+    return candidate.isCancelled === true ||
+      candidate.name === "CancelError";
+  },
+  withAbort: async <T>(promise: Promise<T> & { cancel?: () => void }, signal?: AbortSignal) => {
+    if (signal) {
+      if (signal.aborted) {
+        promise.cancel?.();
+      } else {
+        signal.addEventListener("abort", () => promise.cancel?.(), {
+          once: true,
+        });
+      }
+    }
+    return promise;
+  },
 }));
+
+vi.mock("../api/generated/index", () => ({
+  SearchService: {
+    getApiV1Search: vi.fn(),
+  },
+}));
+
+const searchService = SearchService as unknown as {
+  getApiV1Search: ReturnType<typeof vi.fn>;
+};
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -36,8 +73,22 @@ function makeSearchResponse(
   };
 }
 
-function abortError(): DOMException {
-  return new DOMException("The operation was aborted", "AbortError");
+function generatedCancelError(): Error & { isCancelled: true } {
+  const err = new Error("Request aborted") as Error & {
+    isCancelled: true;
+  };
+  err.name = "CancelError";
+  err.isCancelled = true;
+  return err;
+}
+
+function cancelableNever<T>(): Promise<T> & { cancel: () => void } {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((_resolve, r) => {
+    reject = r;
+  }) as Promise<T> & { cancel: () => void };
+  promise.cancel = () => reject(generatedCancelError());
+  return promise;
 }
 
 /** Flush multiple microtask ticks for async chains + reactivity. */
@@ -63,17 +114,10 @@ describe("SearchStore", () => {
 
   it("should abort stale in-flight search when a new one starts", async () => {
     // First search: slow, will be aborted
-    vi.mocked(api.search).mockImplementationOnce(
-      (_q, _p, init) =>
-        new Promise((resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(abortError());
-          });
-        }),
-    );
+    searchService.getApiV1Search.mockReturnValueOnce(cancelableNever());
 
     // Second search: resolves immediately
-    vi.mocked(api.search).mockResolvedValueOnce(
+    searchService.getApiV1Search.mockResolvedValueOnce(
       makeSearchResponse("world", 2),
     );
 
@@ -95,14 +139,7 @@ describe("SearchStore", () => {
   });
 
   it("should abort in-flight search on clear()", async () => {
-    vi.mocked(api.search).mockImplementationOnce(
-      (_q, _p, init) =>
-        new Promise((resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(abortError());
-          });
-        }),
-    );
+    searchService.getApiV1Search.mockReturnValueOnce(cancelableNever());
 
     // Trigger search
     searchStore.search("hello");
@@ -119,7 +156,7 @@ describe("SearchStore", () => {
   });
 
   it("should debounce rapid queries and only fire the last one", async () => {
-    vi.mocked(api.search).mockResolvedValueOnce(
+    searchService.getApiV1Search.mockResolvedValueOnce(
       makeSearchResponse("final", 3),
     );
 
@@ -135,11 +172,9 @@ describe("SearchStore", () => {
     await Promise.resolve();
 
     // Only one API call should have been made (for "final")
-    expect(api.search).toHaveBeenCalledTimes(1);
-    expect(api.search).toHaveBeenCalledWith(
-      "final",
-      expect.objectContaining({ limit: 30 }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    expect(searchService.getApiV1Search).toHaveBeenCalledTimes(1);
+    expect(searchService.getApiV1Search).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "final", limit: 30 }),
     );
     expect(searchStore.results.length).toBe(3);
   });
@@ -154,23 +189,16 @@ describe("SearchStore", () => {
     expect(searchStore.isSearching).toBe(false);
     // No API call should be made for empty query
     vi.advanceTimersByTime(DEBOUNCE_MS);
-    expect(api.search).not.toHaveBeenCalled();
+    expect(searchService.getApiV1Search).not.toHaveBeenCalled();
   });
 
   it("should keep isSearching true while a newer search is pending", async () => {
     // First search: aborted when second starts
-    vi.mocked(api.search).mockImplementationOnce(
-      (_q, _p, init) =>
-        new Promise((resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(abortError());
-          });
-        }),
-    );
+    searchService.getApiV1Search.mockReturnValueOnce(cancelableNever());
 
     // Second search: hangs until resolved
     const secondReq = createDeferred<SearchResponse>();
-    vi.mocked(api.search).mockReturnValueOnce(secondReq.promise);
+    searchService.getApiV1Search.mockReturnValueOnce(secondReq.promise);
 
     // Trigger first search
     searchStore.search("first");
@@ -192,22 +220,42 @@ describe("SearchStore", () => {
     expect(searchStore.results.length).toBe(2);
   });
 
+  it("should keep previous results when generated cancellation aborts stale search", async () => {
+    searchService.getApiV1Search.mockResolvedValueOnce(
+      makeSearchResponse("stable", 3),
+    );
+
+    searchStore.search("stable");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await vi.runAllTimersAsync();
+    await flushMicrotasks();
+
+    expect(searchStore.results.length).toBe(3);
+
+    searchService.getApiV1Search.mockReturnValueOnce(cancelableNever());
+
+    searchStore.search("slow");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await flushMicrotasks();
+
+    searchStore.search("next");
+    await flushMicrotasks();
+
+    expect(searchStore.results.length).toBe(3);
+  });
+
   it("should discard results from request that resolves during debounce window", async () => {
     const firstReq = createDeferred<SearchResponse>();
 
     // First search: resolves after query changes but before debounce fires
-    vi.mocked(api.search).mockImplementationOnce(
-      (_q, _p, init) =>
-        new Promise((resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(abortError());
-          });
-          firstReq.promise.then(resolve, reject);
-        }),
-    );
+    const firstPromise = firstReq.promise as Promise<SearchResponse> & {
+      cancel: () => void;
+    };
+    firstPromise.cancel = () => undefined;
+    searchService.getApiV1Search.mockReturnValueOnce(firstPromise);
 
     // Second search: resolves immediately
-    vi.mocked(api.search).mockResolvedValueOnce(
+    searchService.getApiV1Search.mockResolvedValueOnce(
       makeSearchResponse("beta", 2),
     );
 
@@ -237,8 +285,8 @@ describe("SearchStore", () => {
     expect(searchStore.isSearching).toBe(false);
   });
 
-  it("should pass signal to api.search", async () => {
-    vi.mocked(api.search).mockResolvedValueOnce(
+  it("should call generated search with query params", async () => {
+    searchService.getApiV1Search.mockResolvedValueOnce(
       makeSearchResponse("test", 1),
     );
 
@@ -248,10 +296,8 @@ describe("SearchStore", () => {
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
-    expect(api.search).toHaveBeenCalledWith(
-      "test",
-      { project: undefined, limit: 30, sort: "relevance" },
-      { signal: expect.any(AbortSignal) },
+    expect(searchService.getApiV1Search).toHaveBeenCalledWith(
+      { q: "test", project: undefined, limit: 30, sort: "relevance" },
     );
   });
 
@@ -267,7 +313,7 @@ describe("SearchStore", () => {
   });
 
   it("setSort re-runs search when query is active", async () => {
-    vi.mocked(api.search)
+    searchService.getApiV1Search
       .mockResolvedValueOnce(makeSearchResponse("hello", 2))
       .mockResolvedValueOnce(makeSearchResponse("hello", 1));
 
@@ -284,11 +330,9 @@ describe("SearchStore", () => {
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
-    expect(api.search).toHaveBeenCalledTimes(2);
-    expect(api.search).toHaveBeenLastCalledWith(
-      "hello",
-      expect.objectContaining({ sort: "recency" }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    expect(searchService.getApiV1Search).toHaveBeenCalledTimes(2);
+    expect(searchService.getApiV1Search).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: "hello", sort: "recency" }),
     );
     expect(searchStore.results.length).toBe(1);
   });
@@ -296,7 +340,7 @@ describe("SearchStore", () => {
   it("setSort does nothing when no query is active", () => {
     searchStore.clear();
     searchStore.setSort("recency");
-    expect(api.search).not.toHaveBeenCalled();
+    expect(searchService.getApiV1Search).not.toHaveBeenCalled();
   });
 
   it("clear() does not reset sort (sort persists within a palette session)", () => {
@@ -314,7 +358,7 @@ describe("SearchStore", () => {
   });
 
   it("setSort cancels pending debounced search before running", async () => {
-    vi.mocked(api.search).mockResolvedValue(makeSearchResponse("hello", 1));
+    searchService.getApiV1Search.mockResolvedValue(makeSearchResponse("hello", 1));
 
     // Start a search but don't let the debounce fire yet
     searchStore.search("hello");
@@ -326,11 +370,9 @@ describe("SearchStore", () => {
     await Promise.resolve();
 
     // Only the immediate setSort call should have fired, not the queued debounce
-    expect(api.search).toHaveBeenCalledTimes(1);
-    expect(api.search).toHaveBeenCalledWith(
-      "hello",
-      expect.objectContaining({ sort: "recency" }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    expect(searchService.getApiV1Search).toHaveBeenCalledTimes(1);
+    expect(searchService.getApiV1Search).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "hello", sort: "recency" }),
     );
   });
 });

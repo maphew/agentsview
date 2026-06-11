@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMigrationAddsTokenColumns(t *testing.T) {
@@ -24,10 +27,8 @@ func TestMigrationAddsTokenColumns(t *testing.T) {
 			"SELECT count(*) FROM pragma_table_info('messages')"+
 				" WHERE name = ?", col,
 		).Scan(&count)
-		requireNoError(t, err, "probing messages."+col)
-		if count != 1 {
-			t.Errorf("expected messages.%s to exist", col)
-		}
+		require.NoError(t, err, "probing messages.%s", col)
+		assert.Equal(t, 1, count, "expected messages.%s to exist", col)
 	}
 
 	// Verify session token columns exist.
@@ -40,10 +41,8 @@ func TestMigrationAddsTokenColumns(t *testing.T) {
 			"SELECT count(*) FROM pragma_table_info('sessions')"+
 				" WHERE name = ?", col,
 		).Scan(&count)
-		requireNoError(t, err, "probing sessions."+col)
-		if count != 1 {
-			t.Errorf("expected sessions.%s to exist", col)
-		}
+		require.NoError(t, err, "probing sessions.%s", col)
+		assert.Equal(t, 1, count, "expected sessions.%s to exist", col)
 	}
 }
 
@@ -52,12 +51,12 @@ func TestMigrationIdempotent(t *testing.T) {
 	path := filepath.Join(dir, "test.db")
 
 	d1, err := Open(path)
-	requireNoError(t, err, "first open")
+	require.NoError(t, err, "first open")
 	d1.Close()
 
 	// Re-open should not fail even though columns already exist.
 	d2, err := Open(path)
-	requireNoError(t, err, "second open")
+	require.NoError(t, err, "second open")
 	d2.Close()
 }
 
@@ -98,47 +97,23 @@ func TestInsertAndGetMessagesTokenUsage(t *testing.T) {
 	insertMessages(t, d, msgs...)
 
 	got, err := d.GetMessages(ctx, "s1", 0, 100, true)
-	requireNoError(t, err, "GetMessages")
+	require.NoError(t, err, "GetMessages")
 
-	if len(got) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(got))
-	}
+	require.Len(t, got, 2)
 
 	// Verify first message fields.
-	if got[0].Model != "claude-sonnet-4-20250514" {
-		t.Errorf("msg[0].Model = %q, want %q",
-			got[0].Model, "claude-sonnet-4-20250514")
-	}
-	if string(got[0].TokenUsage) != `{"input":100,"output":0}` {
-		t.Errorf("msg[0].TokenUsage = %q, want %q",
-			string(got[0].TokenUsage), `{"input":100,"output":0}`)
-	}
-	if got[0].ContextTokens != 500 {
-		t.Errorf("msg[0].ContextTokens = %d, want 500",
-			got[0].ContextTokens)
-	}
-	if !got[0].HasContextTokens {
-		t.Error("msg[0].HasContextTokens = false, want true")
-	}
-	if !got[0].HasOutputTokens {
-		t.Error("msg[0].HasOutputTokens = false, want true")
-	}
+	assert.Equal(t, "claude-sonnet-4-20250514", got[0].Model, "msg[0].Model")
+	assert.Equal(t, `{"input":100,"output":0}`, string(got[0].TokenUsage),
+		"msg[0].TokenUsage")
+	assert.Equal(t, 500, got[0].ContextTokens, "msg[0].ContextTokens")
+	assert.True(t, got[0].HasContextTokens, "msg[0].HasContextTokens")
+	assert.True(t, got[0].HasOutputTokens, "msg[0].HasOutputTokens")
 
 	// Verify second message fields.
-	if got[1].OutputTokens != 200 {
-		t.Errorf("msg[1].OutputTokens = %d, want 200",
-			got[1].OutputTokens)
-	}
-	if got[1].ContextTokens != 600 {
-		t.Errorf("msg[1].ContextTokens = %d, want 600",
-			got[1].ContextTokens)
-	}
-	if !got[1].HasContextTokens {
-		t.Error("msg[1].HasContextTokens = false, want true")
-	}
-	if !got[1].HasOutputTokens {
-		t.Error("msg[1].HasOutputTokens = false, want true")
-	}
+	assert.Equal(t, 200, got[1].OutputTokens, "msg[1].OutputTokens")
+	assert.Equal(t, 600, got[1].ContextTokens, "msg[1].ContextTokens")
+	assert.True(t, got[1].HasContextTokens, "msg[1].HasContextTokens")
+	assert.True(t, got[1].HasOutputTokens, "msg[1].HasOutputTokens")
 }
 
 func TestGetAllMessagesTokenUsage(t *testing.T) {
@@ -159,20 +134,12 @@ func TestGetAllMessagesTokenUsage(t *testing.T) {
 	})
 
 	got, err := d.GetAllMessages(ctx, "s1")
-	requireNoError(t, err, "GetAllMessages")
+	require.NoError(t, err, "GetAllMessages")
 
-	if len(got) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(got))
-	}
-	if got[0].Model != "gpt-4o" {
-		t.Errorf("Model = %q, want %q", got[0].Model, "gpt-4o")
-	}
-	if got[0].OutputTokens != 150 {
-		t.Errorf("OutputTokens = %d, want 150", got[0].OutputTokens)
-	}
-	if got[0].ContextTokens != 300 {
-		t.Errorf("ContextTokens = %d, want 300", got[0].ContextTokens)
-	}
+	require.Len(t, got, 1)
+	assert.Equal(t, "gpt-4o", got[0].Model, "Model")
+	assert.Equal(t, 150, got[0].OutputTokens, "OutputTokens")
+	assert.Equal(t, 300, got[0].ContextTokens, "ContextTokens")
 }
 
 func TestGetMessageByOrdinalTokenUsage(t *testing.T) {
@@ -192,25 +159,12 @@ func TestGetMessageByOrdinalTokenUsage(t *testing.T) {
 	})
 
 	m, err := d.GetMessageByOrdinal("s1", 0)
-	requireNoError(t, err, "GetMessageByOrdinal")
-	if m == nil {
-		t.Fatal("expected message, got nil")
-	}
-	if m.Model != "claude-sonnet-4-20250514" {
-		t.Errorf("Model = %q, want %q",
-			m.Model, "claude-sonnet-4-20250514")
-	}
-	if string(m.TokenUsage) != `{"cache_read":42}` {
-		t.Errorf("TokenUsage = %q, want %q",
-			string(m.TokenUsage), `{"cache_read":42}`)
-	}
-	if m.ContextTokens != 250 {
-		t.Errorf("ContextTokens = %d, want 250",
-			m.ContextTokens)
-	}
-	if m.OutputTokens != 99 {
-		t.Errorf("OutputTokens = %d, want 99", m.OutputTokens)
-	}
+	require.NoError(t, err, "GetMessageByOrdinal")
+	require.NotNil(t, m, "expected message")
+	assert.Equal(t, "claude-sonnet-4-20250514", m.Model, "Model")
+	assert.Equal(t, `{"cache_read":42}`, string(m.TokenUsage), "TokenUsage")
+	assert.Equal(t, 250, m.ContextTokens, "ContextTokens")
+	assert.Equal(t, 99, m.OutputTokens, "OutputTokens")
 }
 
 func TestUpsertSessionTokenUsage(t *testing.T) {
@@ -228,49 +182,27 @@ func TestUpsertSessionTokenUsage(t *testing.T) {
 		HasTotalOutputTokens: true,
 		HasPeakContextTokens: true,
 	}
-	requireNoError(t, d.UpsertSession(s), "upsert")
+	require.NoError(t, d.UpsertSession(s), "upsert")
 
 	got, err := d.GetSession(ctx, "s1")
-	requireNoError(t, err, "GetSession")
-	if got == nil {
-		t.Fatal("expected session, got nil")
-	}
-	if got.TotalOutputTokens != 2000 {
-		t.Errorf("TotalOutputTokens = %d, want 2000",
-			got.TotalOutputTokens)
-	}
-	if got.PeakContextTokens != 8000 {
-		t.Errorf("PeakContextTokens = %d, want 8000",
-			got.PeakContextTokens)
-	}
-	if !got.HasTotalOutputTokens {
-		t.Error("HasTotalOutputTokens = false, want true")
-	}
-	if !got.HasPeakContextTokens {
-		t.Error("HasPeakContextTokens = false, want true")
-	}
+	require.NoError(t, err, "GetSession")
+	require.NotNil(t, got, "expected session")
+	assert.Equal(t, 2000, got.TotalOutputTokens, "TotalOutputTokens")
+	assert.Equal(t, 8000, got.PeakContextTokens, "PeakContextTokens")
+	assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+	assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 
 	// Update with new token values.
 	s.TotalOutputTokens = 2500
 	s.PeakContextTokens = 9000
-	requireNoError(t, d.UpsertSession(s), "upsert update")
+	require.NoError(t, d.UpsertSession(s), "upsert update")
 
 	got, err = d.GetSession(ctx, "s1")
-	requireNoError(t, err, "GetSession after update")
-	if got.TotalOutputTokens != 2500 {
-		t.Errorf("TotalOutputTokens after update = %d, want 2500",
-			got.TotalOutputTokens)
-	}
-	if got.PeakContextTokens != 9000 {
-		t.Errorf("PeakContextTokens after update = %d, want 9000",
-			got.PeakContextTokens)
-	}
-	if !got.HasTotalOutputTokens {
-		t.Error("HasTotalOutputTokens after update = false, want true")
-	}
-	if !got.HasPeakContextTokens {
-		t.Error("HasPeakContextTokens after update = false, want true")
-	}
+	require.NoError(t, err, "GetSession after update")
+	assert.Equal(t, 2500, got.TotalOutputTokens, "TotalOutputTokens after update")
+	assert.Equal(t, 9000, got.PeakContextTokens, "PeakContextTokens after update")
+	assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens after update")
+	assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens after update")
 }
 
 func TestSessionTokenUsageDefaultsToZero(t *testing.T) {
@@ -281,24 +213,12 @@ func TestSessionTokenUsageDefaultsToZero(t *testing.T) {
 	insertSession(t, d, "s1", "proj")
 
 	got, err := d.GetSession(ctx, "s1")
-	requireNoError(t, err, "GetSession")
-	if got == nil {
-		t.Fatal("expected session, got nil")
-	}
-	if got.TotalOutputTokens != 0 {
-		t.Errorf("TotalOutputTokens = %d, want 0",
-			got.TotalOutputTokens)
-	}
-	if got.PeakContextTokens != 0 {
-		t.Errorf("PeakContextTokens = %d, want 0",
-			got.PeakContextTokens)
-	}
-	if got.HasTotalOutputTokens {
-		t.Error("HasTotalOutputTokens = true, want false")
-	}
-	if got.HasPeakContextTokens {
-		t.Error("HasPeakContextTokens = true, want false")
-	}
+	require.NoError(t, err, "GetSession")
+	require.NotNil(t, got, "expected session")
+	assert.Equal(t, 0, got.TotalOutputTokens, "TotalOutputTokens")
+	assert.Equal(t, 0, got.PeakContextTokens, "PeakContextTokens")
+	assert.False(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+	assert.False(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 }
 
 func TestMessageTokenUsageDefaultsToZero(t *testing.T) {
@@ -310,31 +230,14 @@ func TestMessageTokenUsageDefaultsToZero(t *testing.T) {
 	insertMessages(t, d, userMsg("s1", 0, "hello"))
 
 	got, err := d.GetMessages(ctx, "s1", 0, 100, true)
-	requireNoError(t, err, "GetMessages")
-	if len(got) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(got))
-	}
-	if got[0].Model != "" {
-		t.Errorf("Model = %q, want empty", got[0].Model)
-	}
-	if len(got[0].TokenUsage) != 0 {
-		t.Errorf("TokenUsage = %q, want empty",
-			string(got[0].TokenUsage))
-	}
-	if got[0].ContextTokens != 0 {
-		t.Errorf("ContextTokens = %d, want 0",
-			got[0].ContextTokens)
-	}
-	if got[0].OutputTokens != 0 {
-		t.Errorf("OutputTokens = %d, want 0",
-			got[0].OutputTokens)
-	}
-	if got[0].HasContextTokens {
-		t.Error("HasContextTokens = true, want false")
-	}
-	if got[0].HasOutputTokens {
-		t.Error("HasOutputTokens = true, want false")
-	}
+	require.NoError(t, err, "GetMessages")
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].Model, "Model")
+	assert.Empty(t, got[0].TokenUsage, "TokenUsage")
+	assert.Equal(t, 0, got[0].ContextTokens, "ContextTokens")
+	assert.Equal(t, 0, got[0].OutputTokens, "OutputTokens")
+	assert.False(t, got[0].HasContextTokens, "HasContextTokens")
+	assert.False(t, got[0].HasOutputTokens, "HasOutputTokens")
 }
 
 func TestGetSessionFullTokenUsage(t *testing.T) {
@@ -350,21 +253,13 @@ func TestGetSessionFullTokenUsage(t *testing.T) {
 		TotalOutputTokens: 600,
 		PeakContextTokens: 4000,
 	}
-	requireNoError(t, d.UpsertSession(s), "upsert")
+	require.NoError(t, d.UpsertSession(s), "upsert")
 
 	got, err := d.GetSessionFull(ctx, "s1")
-	requireNoError(t, err, "GetSessionFull")
-	if got == nil {
-		t.Fatal("expected session, got nil")
-	}
-	if got.TotalOutputTokens != 600 {
-		t.Errorf("TotalOutputTokens = %d, want 600",
-			got.TotalOutputTokens)
-	}
-	if got.PeakContextTokens != 4000 {
-		t.Errorf("PeakContextTokens = %d, want 4000",
-			got.PeakContextTokens)
-	}
+	require.NoError(t, err, "GetSessionFull")
+	require.NotNil(t, got, "expected session")
+	assert.Equal(t, 600, got.TotalOutputTokens, "TotalOutputTokens")
+	assert.Equal(t, 4000, got.PeakContextTokens, "PeakContextTokens")
 }
 
 func TestReplaceSessionMessagesTokenUsage(t *testing.T) {
@@ -395,38 +290,21 @@ func TestReplaceSessionMessagesTokenUsage(t *testing.T) {
 		HasContextTokens: true,
 		HasOutputTokens:  true,
 	}}
-	requireNoError(t,
+	require.NoError(t,
 		d.ReplaceSessionMessages("s1", newMsgs),
 		"ReplaceSessionMessages",
 	)
 
 	got, err := d.GetMessages(ctx, "s1", 0, 100, true)
-	requireNoError(t, err, "GetMessages after replace")
-	if len(got) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(got))
-	}
-	if got[0].Model != "claude-sonnet-4-20250514" {
-		t.Errorf("Model = %q, want %q",
-			got[0].Model, "claude-sonnet-4-20250514")
-	}
-	if string(got[0].TokenUsage) != `{"input":999,"output":888}` {
-		t.Errorf("TokenUsage = %q, want %q",
-			string(got[0].TokenUsage), `{"input":999,"output":888}`)
-	}
-	if got[0].ContextTokens != 700 {
-		t.Errorf("ContextTokens = %d, want 700",
-			got[0].ContextTokens)
-	}
-	if got[0].OutputTokens != 888 {
-		t.Errorf("OutputTokens = %d, want 888",
-			got[0].OutputTokens)
-	}
-	if !got[0].HasContextTokens {
-		t.Error("HasContextTokens = false, want true")
-	}
-	if !got[0].HasOutputTokens {
-		t.Error("HasOutputTokens = false, want true")
-	}
+	require.NoError(t, err, "GetMessages after replace")
+	require.Len(t, got, 1)
+	assert.Equal(t, "claude-sonnet-4-20250514", got[0].Model, "Model")
+	assert.Equal(t, `{"input":999,"output":888}`, string(got[0].TokenUsage),
+		"TokenUsage")
+	assert.Equal(t, 700, got[0].ContextTokens, "ContextTokens")
+	assert.Equal(t, 888, got[0].OutputTokens, "OutputTokens")
+	assert.True(t, got[0].HasContextTokens, "HasContextTokens")
+	assert.True(t, got[0].HasOutputTokens, "HasOutputTokens")
 }
 
 func TestListSessionsTokenUsage(t *testing.T) {
@@ -444,29 +322,16 @@ func TestListSessionsTokenUsage(t *testing.T) {
 		HasTotalOutputTokens: true,
 		HasPeakContextTokens: true,
 	}
-	requireNoError(t, d.UpsertSession(s), "upsert")
+	require.NoError(t, d.UpsertSession(s), "upsert")
 
 	page, err := d.ListSessions(ctx, SessionFilter{})
-	requireNoError(t, err, "ListSessions")
-	if len(page.Sessions) != 1 {
-		t.Fatalf("expected 1 session, got %d",
-			len(page.Sessions))
-	}
+	require.NoError(t, err, "ListSessions")
+	require.Len(t, page.Sessions, 1)
 	got := page.Sessions[0]
-	if got.TotalOutputTokens != 222 {
-		t.Errorf("TotalOutputTokens = %d, want 222",
-			got.TotalOutputTokens)
-	}
-	if got.PeakContextTokens != 5000 {
-		t.Errorf("PeakContextTokens = %d, want 5000",
-			got.PeakContextTokens)
-	}
-	if !got.HasTotalOutputTokens {
-		t.Error("HasTotalOutputTokens = false, want true")
-	}
-	if !got.HasPeakContextTokens {
-		t.Error("HasPeakContextTokens = false, want true")
-	}
+	assert.Equal(t, 222, got.TotalOutputTokens, "TotalOutputTokens")
+	assert.Equal(t, 5000, got.PeakContextTokens, "PeakContextTokens")
+	assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+	assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 }
 
 func TestIncrementalUpdatePreservesTokenTotals(t *testing.T) {
@@ -488,7 +353,7 @@ func TestIncrementalUpdatePreservesTokenTotals(t *testing.T) {
 		FileSize:             new(int64(2048)),
 		FileMtime:            new(int64(100)),
 	}
-	requireNoError(t, d.UpsertSession(s), "upsert")
+	require.NoError(t, d.UpsertSession(s), "upsert")
 
 	t.Run("metadata-only update preserves tokens", func(t *testing.T) {
 		// Simulate a no-new-messages incremental update that
@@ -499,28 +364,14 @@ func TestIncrementalUpdatePreservesTokenTotals(t *testing.T) {
 			"inc-tokens", &ended, 5, 2, 4096, 200,
 			1000, 8000, true, true,
 		)
-		requireNoError(t, err, "incremental update")
+		require.NoError(t, err, "incremental update")
 
 		got, err := d.GetSessionFull(ctx, "inc-tokens")
-		requireNoError(t, err, "get session")
-		if got.TotalOutputTokens != 1000 {
-			t.Errorf(
-				"TotalOutputTokens = %d, want 1000",
-				got.TotalOutputTokens,
-			)
-		}
-		if got.PeakContextTokens != 8000 {
-			t.Errorf(
-				"PeakContextTokens = %d, want 8000",
-				got.PeakContextTokens,
-			)
-		}
-		if !got.HasTotalOutputTokens {
-			t.Error("HasTotalOutputTokens = false, want true")
-		}
-		if !got.HasPeakContextTokens {
-			t.Error("HasPeakContextTokens = false, want true")
-		}
+		require.NoError(t, err, "get session")
+		assert.Equal(t, 1000, got.TotalOutputTokens, "TotalOutputTokens")
+		assert.Equal(t, 8000, got.PeakContextTokens, "PeakContextTokens")
+		assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+		assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 	})
 
 	t.Run("update with new messages advances tokens", func(t *testing.T) {
@@ -529,28 +380,14 @@ func TestIncrementalUpdatePreservesTokenTotals(t *testing.T) {
 			"inc-tokens", &ended, 8, 3, 8192, 300,
 			1500, 9000, true, true,
 		)
-		requireNoError(t, err, "incremental update")
+		require.NoError(t, err, "incremental update")
 
 		got, err := d.GetSessionFull(ctx, "inc-tokens")
-		requireNoError(t, err, "get session")
-		if got.TotalOutputTokens != 1500 {
-			t.Errorf(
-				"TotalOutputTokens = %d, want 1500",
-				got.TotalOutputTokens,
-			)
-		}
-		if got.PeakContextTokens != 9000 {
-			t.Errorf(
-				"PeakContextTokens = %d, want 9000",
-				got.PeakContextTokens,
-			)
-		}
-		if !got.HasTotalOutputTokens {
-			t.Error("HasTotalOutputTokens = false, want true")
-		}
-		if !got.HasPeakContextTokens {
-			t.Error("HasPeakContextTokens = false, want true")
-		}
+		require.NoError(t, err, "get session")
+		assert.Equal(t, 1500, got.TotalOutputTokens, "TotalOutputTokens")
+		assert.Equal(t, 9000, got.PeakContextTokens, "PeakContextTokens")
+		assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+		assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 	})
 
 	t.Run("idempotent retry does not inflate tokens", func(t *testing.T) {
@@ -561,22 +398,13 @@ func TestIncrementalUpdatePreservesTokenTotals(t *testing.T) {
 			"inc-tokens", &ended, 8, 3, 8192, 300,
 			1500, 9000, true, true,
 		)
-		requireNoError(t, err, "retry update")
+		require.NoError(t, err, "retry update")
 
 		got, err := d.GetSessionFull(ctx, "inc-tokens")
-		requireNoError(t, err, "get session")
-		if got.TotalOutputTokens != 1500 {
-			t.Errorf(
-				"TotalOutputTokens = %d, want 1500"+
-					" (retry inflated)",
-				got.TotalOutputTokens,
-			)
-		}
-		if !got.HasTotalOutputTokens {
-			t.Error("HasTotalOutputTokens = false, want true")
-		}
-		if !got.HasPeakContextTokens {
-			t.Error("HasPeakContextTokens = false, want true")
-		}
+		require.NoError(t, err, "get session")
+		assert.Equal(t, 1500, got.TotalOutputTokens,
+			"TotalOutputTokens (retry inflated)")
+		assert.True(t, got.HasTotalOutputTokens, "HasTotalOutputTokens")
+		assert.True(t, got.HasPeakContextTokens, "HasPeakContextTokens")
 	})
 }

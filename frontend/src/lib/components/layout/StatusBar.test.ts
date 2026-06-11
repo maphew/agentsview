@@ -22,6 +22,9 @@ describe("StatusBar", () => {
     sync.stats = null;
     sync.serverVersion = null;
     sync.versionMismatch = false;
+    sync.remoteUnreachable = false;
+    sync.backendDegraded = false;
+    sync.backendDegradedMessage = null;
   });
 
   afterEach(() => {
@@ -31,6 +34,9 @@ describe("StatusBar", () => {
     sync.stats = null;
     sync.serverVersion = null;
     sync.versionMismatch = false;
+    sync.remoteUnreachable = false;
+    sync.backendDegraded = false;
+    sync.backendDegradedMessage = null;
     sync.progress = null;
     sync.syncing = false;
   });
@@ -65,6 +71,45 @@ describe("StatusBar", () => {
     expect(document.body.textContent).toContain(
       "synced 1m ago",
     );
+
+    unmount(component);
+  });
+
+  it("shows a remote-unreachable indicator only when flagged", async () => {
+    sync.remoteUnreachable = true;
+    const component = mount(StatusBar, {
+      target: document.body,
+    });
+    await tick();
+    expect(document.body.textContent).toContain(
+      "remote server unreachable",
+    );
+
+    sync.remoteUnreachable = false;
+    await tick();
+    expect(document.body.textContent).not.toContain(
+      "remote server unreachable",
+    );
+
+    unmount(component);
+  });
+
+  it("shows a sync-not-ready indicator when backend is degraded", async () => {
+    sync.backendDegraded = true;
+    sync.backendDegradedMessage = "sync not ready";
+    const component = mount(StatusBar, {
+      target: document.body,
+    });
+    await tick();
+
+    expect(document.body.textContent).toContain("sync not ready");
+    expect(
+      document.querySelector(".backend-warn")?.getAttribute("title"),
+    ).toBe("sync not ready");
+
+    sync.backendDegraded = false;
+    await tick();
+    expect(document.body.textContent).not.toContain("sync not ready");
 
     unmount(component);
   });

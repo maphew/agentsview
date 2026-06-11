@@ -14,7 +14,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
-	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/pricing"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -126,31 +126,27 @@ func resolveRawSessionID(
 	return input, false
 }
 
-// tokenUseExitCode classifies a session record into an exit code:
-// 0 when token metrics are present, 2 when the session is not in
-// the DB, and 3 when the session exists but has no token data
-// yet (e.g. the parser hasn't ingested it or the agent never
-// emitted usage metadata).
-func tokenUseExitCode(sess *db.Session) int {
-	if sess == nil {
+// usageExitCode classifies a SessionUsage into an exit code: 2 when
+// the session is not in the DB, 0 when token data OR cost is present,
+// 3 when the session exists but has neither. Cost-only sessions
+// (e.g. Hermes) return 0 so callers do not discard useful cost.
+func usageExitCode(u *db.SessionUsage) int {
+	if u == nil {
 		return tokenUseExitNotFound
 	}
-	if sess.HasTotalOutputTokens || sess.HasPeakContextTokens {
+	if u.HasTokenData || u.HasCost {
 		return tokenUseExitOK
 	}
 	return tokenUseExitNoTokenData
 }
 
-// tokenUseOutput is the JSON structure written to stdout.
-// This format is experimental and may change.
-type tokenUseOutput struct {
-	SessionID         string `json:"session_id"`
-	Agent             string `json:"agent"`
-	Project           string `json:"project"`
-	TotalOutputTokens int    `json:"total_output_tokens"`
-	PeakContextTokens int    `json:"peak_context_tokens"`
-	HasTokenData      bool   `json:"has_token_data"`
-	ServerRunning     bool   `json:"server_running"`
+// sessionUsageOutput is the JSON shape emitted by `session usage`
+// and the deprecated `token-use`. It is a strict superset of the
+// historical token-use output (same fields, plus cost). The shape
+// is experimental and may change.
+type sessionUsageOutput struct {
+	db.SessionUsage
+	ServerRunning bool `json:"server_running"`
 }
 
 // startupWaitTimeout is how long CLI subcommands wait for a
@@ -164,47 +160,55 @@ func runTokenUse(args []string) {
 			"usage: agentsview token-use <session-id>")
 		os.Exit(tokenUseExitErr)
 	}
+	fmt.Fprintln(os.Stderr,
+		"note: 'token-use' is deprecated; use 'session usage <id>' instead")
 
-	code, err := tokenUse(args[0])
+	out, code, err := sessionUsageData(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(tokenUseExitErr)
 	}
+	if out != nil {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(out); encErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", encErr)
+			os.Exit(tokenUseExitErr)
+		}
+	}
 	os.Exit(code)
 }
 
-func tokenUse(sessionID string) (int, error) {
+func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 	appCfg, err := config.LoadMinimal()
 	if err != nil {
-		return tokenUseExitErr, fmt.Errorf("loading config: %w", err)
+		return nil, tokenUseExitErr, fmt.Errorf("loading config: %w", err)
 	}
 
 	if err := os.MkdirAll(appCfg.DataDir, 0o755); err != nil {
-		return tokenUseExitErr,
+		return nil, tokenUseExitErr,
 			fmt.Errorf("creating data dir: %w", err)
 	}
 
-	serverActive := server.IsLocalServerActive(appCfg.DataDir)
+	serverActive := IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken)
 
-	// If a server is actively starting up (startup lock
+	// If a server is actively starting up (daemon start lock
 	// present), wait for it to finish so we read fresh data
 	// rather than returning stale results or "not found".
-	// We only wait when the startup lock is the reason
-	// IsLocalServerActive returned true — if a state file has a
-	// live PID but the TCP probe is transiently failing,
-	// the server is running and we should just read the DB.
+	// We only wait when the start lock is the reason
+	// IsLocalDaemonActive returned true.
 	if serverActive &&
-		server.FindRunningServer(appCfg.DataDir) == nil {
-		if server.IsStartupLocked(appCfg.DataDir) {
+		FindDaemonRuntime(appCfg.DataDir, appCfg.AuthToken) == nil {
+		if IsDaemonStarting(appCfg.DataDir) {
 			fmt.Fprintf(os.Stderr,
 				"server is starting up, waiting...\n")
-			if !server.WaitForStartup(
-				appCfg.DataDir, startupWaitTimeout,
+			if !WaitForDaemonStartup(
+				appCfg.DataDir, startupWaitTimeout, appCfg.AuthToken,
 			) {
-				if server.IsStartupLocked(appCfg.DataDir) {
+				if IsDaemonStarting(appCfg.DataDir) {
 					// Lock still live after timeout:
 					// the server is active (still
-					// syncing, or state file write
+					// syncing, or runtime record write
 					// failed). Don't compete — read
 					// the DB as-is.
 					fmt.Fprintf(os.Stderr,
@@ -213,15 +217,15 @@ func tokenUse(sessionID string) (int, error) {
 						startupWaitTimeout,
 					)
 				} else {
-					// Lock cleared but no running
-					// server. Re-check in case of
-					// transient TCP failure.
-					serverActive = server.IsLocalServerActive(
-						appCfg.DataDir,
+					// Lock cleared. Re-check in case a
+					// runtime record was written just
+					// after the wait timed out.
+					serverActive = IsLocalDaemonActive(
+						appCfg.DataDir, appCfg.AuthToken,
 					)
 				}
 			}
-		} else if !server.IsLocalServerActive(appCfg.DataDir) {
+		} else if !IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken) {
 			// The server that was alive at the first check
 			// has since exited. Fall back to on-demand sync.
 			serverActive = false
@@ -231,7 +235,7 @@ func tokenUse(sessionID string) (int, error) {
 	applyClassifierConfig(appCfg)
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
-		return tokenUseExitErr,
+		return nil, tokenUseExitErr,
 			fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
@@ -241,11 +245,27 @@ func tokenUse(sessionID string) (int, error) {
 			appCfg.CursorSecret,
 		)
 		if decErr != nil {
-			return tokenUseExitErr, fmt.Errorf(
+			return nil, tokenUseExitErr, fmt.Errorf(
 				"invalid cursor secret: %w", decErr,
 			)
 		}
 		database.SetCursorSecret(secret)
+	}
+
+	// Pricing setup for the direct path: db.Open (unlike openDB)
+	// neither applies custom rates nor seeds model_pricing. Custom
+	// rates are in-memory only (safe always). Fallback seeding is a
+	// DB write, so do it only when no writable local daemon owns the
+	// DB (same condition as the on-demand sync below); a running
+	// server already seeds pricing at startup.
+	applyCustomPricing(database, appCfg)
+	if !serverActive {
+		if perr := insertMissingPricing(
+			database, pricing.FallbackPricing(),
+		); perr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: pricing seed failed: %v\n", perr)
+		}
 	}
 
 	ctx := context.Background()
@@ -260,25 +280,24 @@ func tokenUse(sessionID string) (int, error) {
 	// If the re-check detects a starting server, wait for
 	// it rather than reading potentially stale data.
 	if !serverActive {
-		serverActive = server.IsLocalServerActive(appCfg.DataDir)
+		serverActive = IsLocalDaemonActive(appCfg.DataDir, appCfg.AuthToken)
 		if serverActive &&
-			server.FindRunningServer(appCfg.DataDir) == nil &&
-			server.IsStartupLocked(appCfg.DataDir) {
+			FindDaemonRuntime(appCfg.DataDir, appCfg.AuthToken) == nil &&
+			IsDaemonStarting(appCfg.DataDir) {
 			fmt.Fprintf(os.Stderr,
 				"server is starting up, waiting...\n")
-			if server.WaitForStartup(
-				appCfg.DataDir, startupWaitTimeout,
+			if WaitForDaemonStartup(
+				appCfg.DataDir, startupWaitTimeout, appCfg.AuthToken,
 			) {
 				// Server is ready; read DB below.
-			} else if !server.IsStartupLocked(
+			} else if !IsDaemonStarting(
 				appCfg.DataDir,
 			) {
-				// Lock cleared, no running server
-				// via TCP. Re-check: a live state
-				// file (transient probe failure)
-				// still means the server is active.
-				serverActive = server.IsLocalServerActive(
-					appCfg.DataDir,
+				// Lock cleared. Re-check in case a
+				// runtime record was written just
+				// after the wait timed out.
+				serverActive = IsLocalDaemonActive(
+					appCfg.DataDir, appCfg.AuthToken,
 				)
 			}
 			// Lock still live after timeout: server is
@@ -294,8 +313,8 @@ func tokenUse(sessionID string) (int, error) {
 			Machine:                 "local",
 			BlockedResultCategories: appCfg.ResultContentBlockedCategories,
 		})
-		if syncErr := engine.SyncSingleSession(
-			resolvedID,
+		if syncErr := engine.SyncSingleSessionContext(
+			ctx, resolvedID,
 		); syncErr != nil {
 			// Not fatal: session may already be in the DB
 			// from a previous sync, or may not exist at all.
@@ -304,39 +323,44 @@ func tokenUse(sessionID string) (int, error) {
 		}
 	}
 
-	sess, err := database.GetSession(ctx, resolvedID)
+	u, err := database.GetSessionUsage(ctx, resolvedID)
 	if err != nil {
-		return tokenUseExitErr,
-			fmt.Errorf("querying session: %w", err)
+		return nil, tokenUseExitErr,
+			fmt.Errorf("querying session usage: %w", err)
 	}
-	if sess == nil {
-		fmt.Fprintf(os.Stderr,
-			"session not found: %s\n", sessionID)
-		return tokenUseExitNotFound, nil
+	if u == nil {
+		fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
+		return nil, tokenUseExitNotFound, nil
 	}
-
-	agent := sess.Agent
-	if agent == "" {
-		if def, ok := parser.AgentByPrefix(sess.ID); ok {
-			agent = string(def.Type)
+	// If the session uses models the local pricing catalog
+	// doesn't know about, try a one-off LiteLLM refresh and
+	// re-query — newly released models often hit this until
+	// the user next runs `agentsview serve`. Skip when a
+	// server is active (it owns pricing writes) or the
+	// cooldown hasn't elapsed.
+	if len(u.UnpricedModels) > 0 && !serverActive {
+		refreshed, refErr := refreshPricingIfStale(
+			database, pricing.FetchLiteLLMPricing,
+			pricingRefreshCooldown, time.Now(),
+		)
+		if refErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: pricing refresh failed: %v\n", refErr)
+		} else if refreshed {
+			if u2, e := database.GetSessionUsage(
+				ctx, resolvedID,
+			); e == nil && u2 != nil {
+				u = u2
+			}
 		}
 	}
-
-	out := tokenUseOutput{
-		SessionID:         sess.ID,
-		Agent:             agent,
-		Project:           sess.Project,
-		TotalOutputTokens: sess.TotalOutputTokens,
-		PeakContextTokens: sess.PeakContextTokens,
-		HasTokenData: sess.HasTotalOutputTokens ||
-			sess.HasPeakContextTokens,
+	if u.Agent == "" {
+		if def, ok := parser.AgentByPrefix(u.SessionID); ok {
+			u.Agent = string(def.Type)
+		}
+	}
+	return &sessionUsageOutput{
+		SessionUsage:  *u,
 		ServerRunning: serverActive,
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
-		return tokenUseExitErr, err
-	}
-	return tokenUseExitCode(sess), nil
+	}, usageExitCode(u), nil
 }

@@ -12,11 +12,18 @@ import { trends } from "../../stores/trends.svelte.js";
 import type { TrendsTermsResponse } from "../../api/types.js";
 
 const mocks = vi.hoisted(() => ({
-  getTrendsTerms: vi.fn(),
+  getApiV1TrendsTerms: vi.fn(),
 }));
 
-vi.mock("../../api/client.js", () => ({
-  getTrendsTerms: mocks.getTrendsTerms,
+vi.mock("../../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
+}));
+
+vi.mock("../../api/generated/index", () => ({
+  TrendsService: {
+    getApiV1TrendsTerms: mocks.getApiV1TrendsTerms,
+  },
 }));
 
 // @ts-ignore
@@ -53,7 +60,7 @@ describe("TrendsPage", () => {
         disconnect() {}
       },
     );
-    mocks.getTrendsTerms.mockImplementation((params) =>
+    mocks.getApiV1TrendsTerms.mockImplementation((params) =>
       Promise.resolve(makeResponse(params.from, params.to)),
     );
     trends.from = "2024-01-01";
@@ -89,7 +96,7 @@ describe("TrendsPage", () => {
     fromInput!.dispatchEvent(new Event("change", { bubbles: true }));
     await flushPromises();
 
-    expect(mocks.getTrendsTerms).toHaveBeenLastCalledWith(
+    expect(mocks.getApiV1TrendsTerms).toHaveBeenLastCalledWith(
       expect.objectContaining({ from: "2024-01-10" }),
     );
     expect(window.location.search).toContain("from=2024-01-10");
@@ -106,7 +113,7 @@ describe("TrendsPage", () => {
     let resolveFetch:
       | ((response: TrendsTermsResponse) => void)
       | undefined;
-    mocks.getTrendsTerms.mockReturnValueOnce(
+    mocks.getApiV1TrendsTerms.mockReturnValueOnce(
       new Promise<TrendsTermsResponse>((resolve) => {
         resolveFetch = resolve;
       }),
@@ -134,7 +141,7 @@ describe("TrendsPage", () => {
     component = mount(TrendsPage, { target: document.body });
     await flushPromises();
 
-    mocks.getTrendsTerms.mockRejectedValueOnce(
+    mocks.getApiV1TrendsTerms.mockRejectedValueOnce(
       new Error("at least one trend term is required"),
     );
     const textarea = document.querySelector<HTMLTextAreaElement>(
@@ -158,7 +165,7 @@ describe("TrendsPage", () => {
   });
 
   it("toggles normalized term totals", async () => {
-    mocks.getTrendsTerms.mockResolvedValueOnce({
+    mocks.getApiV1TrendsTerms.mockResolvedValueOnce({
       granularity: "week",
       from: "2024-01-01",
       to: "2024-01-31",
@@ -200,7 +207,7 @@ describe("TrendsPage", () => {
   });
 
   it("shows a y-axis metric label", async () => {
-    mocks.getTrendsTerms.mockResolvedValueOnce({
+    mocks.getApiV1TrendsTerms.mockResolvedValueOnce({
       granularity: "week",
       from: "2024-01-01",
       to: "2024-01-31",
@@ -222,7 +229,7 @@ describe("TrendsPage", () => {
   });
 
   it("uses the dedicated trends palette for seven terms", async () => {
-    mocks.getTrendsTerms.mockResolvedValueOnce({
+    mocks.getApiV1TrendsTerms.mockResolvedValueOnce({
       granularity: "week",
       from: "2024-01-01",
       to: "2024-01-31",

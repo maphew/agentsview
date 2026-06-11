@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInsertAndGetMessage_ThinkingText(t *testing.T) {
@@ -24,35 +27,28 @@ func TestInsertAndGetMessage_ThinkingText(t *testing.T) {
 	})
 
 	got, err := d.GetAllMessages(context.Background(), sessionID)
-	requireNoError(t, err, "GetAllMessages")
-	if len(got) != 1 {
-		t.Fatalf("GetAllMessages returned %d messages, want 1", len(got))
-	}
-	if got[0].ThinkingText != "I am pondering" {
-		t.Errorf(
-			"ThinkingText = %q, want %q",
-			got[0].ThinkingText, "I am pondering",
-		)
-	}
+	require.NoError(t, err, "GetAllMessages")
+	require.Len(t, got, 1)
+	assert.Equal(t, "I am pondering", got[0].ThinkingText, "ThinkingText")
 }
 
 func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 	d := testDB(t)
 
-	requireNoError(t, d.Update(func(tx *sql.Tx) error {
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
 		_, err := tx.Exec(
 			"INSERT INTO excluded_sessions (id) VALUES (?)",
 			"excluded",
 		)
 		return err
 	}), "seed excluded session")
-	requireNoError(t, d.UpsertSession(Session{
+	require.NoError(t, d.UpsertSession(Session{
 		ID:      "trashed",
 		Project: "proj",
 		Machine: defaultMachine,
 		Agent:   defaultAgent,
 	}), "seed trashed session")
-	requireNoError(t, d.SoftDeleteSession("trashed"), "soft delete session")
+	require.NoError(t, d.SoftDeleteSession("trashed"), "soft delete session")
 
 	health := 95
 	grade := "A"
@@ -135,68 +131,35 @@ func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 			DataVersion: CurrentDataVersion(),
 		},
 	})
-	requireNoError(t, err, "WriteSessionBatch")
-	if result.WrittenSessions != 1 {
-		t.Fatalf("WrittenSessions = %d, want 1", result.WrittenSessions)
-	}
-	if result.WrittenMessages != 2 {
-		t.Fatalf("WrittenMessages = %d, want 2", result.WrittenMessages)
-	}
-	if result.FailedSessions != 1 {
-		t.Fatalf("FailedSessions = %d, want 1", result.FailedSessions)
-	}
-	if result.ExcludedSessions != 2 {
-		t.Fatalf("ExcludedSessions = %d, want 2", result.ExcludedSessions)
-	}
+	require.NoError(t, err, "WriteSessionBatch")
+	require.Equal(t, 1, result.WrittenSessions, "WrittenSessions")
+	require.Equal(t, 2, result.WrittenMessages, "WrittenMessages")
+	require.Equal(t, 1, result.FailedSessions, "FailedSessions")
+	require.Equal(t, 2, result.ExcludedSessions, "ExcludedSessions")
 
 	sess, err := d.GetSessionFull(context.Background(), "good")
-	requireNoError(t, err, "GetSessionFull good")
-	if sess == nil {
-		t.Fatal("good session not found")
-	}
-	if sess.DataVersion != CurrentDataVersion() {
-		t.Errorf(
-			"DataVersion = %d, want %d",
-			sess.DataVersion, CurrentDataVersion(),
-		)
-	}
-	if sess.Outcome != "success" || sess.OutcomeConfidence != "high" {
-		t.Errorf(
-			"signals = %q/%q, want success/high",
-			sess.Outcome, sess.OutcomeConfidence,
-		)
-	}
-	if !sess.HasToolCalls {
-		t.Error("HasToolCalls = false, want true")
-	}
+	require.NoError(t, err, "GetSessionFull good")
+	require.NotNil(t, sess, "good session not found")
+	assert.Equal(t, CurrentDataVersion(), sess.DataVersion, "DataVersion")
+	assert.Equal(t, "success", sess.Outcome, "Outcome")
+	assert.Equal(t, "high", sess.OutcomeConfidence, "OutcomeConfidence")
+	assert.True(t, sess.HasToolCalls, "HasToolCalls")
 	trashed, err := d.GetSessionFull(context.Background(), "trashed")
-	requireNoError(t, err, "GetSessionFull trashed")
-	if trashed == nil || trashed.DeletedAt == nil {
-		t.Fatal("trashed session was not preserved in trash")
-	}
+	require.NoError(t, err, "GetSessionFull trashed")
+	require.NotNil(t, trashed, "trashed session was not preserved in trash")
+	assert.NotNil(t, trashed.DeletedAt, "trashed session was not preserved in trash")
 
 	msgs, err := d.GetAllMessages(context.Background(), "good")
-	requireNoError(t, err, "GetAllMessages good")
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages, want 2", len(msgs))
-	}
-	if len(msgs[1].ToolCalls) != 1 {
-		t.Fatalf(
-			"assistant tool calls = %d, want 1",
-			len(msgs[1].ToolCalls),
-		)
-	}
+	require.NoError(t, err, "GetAllMessages good")
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1, "assistant tool calls")
 
 	bad, err := d.GetSessionFull(context.Background(), "bad")
-	requireNoError(t, err, "GetSessionFull bad")
-	if bad != nil {
-		t.Fatal("bad session should have rolled back")
-	}
+	require.NoError(t, err, "GetSessionFull bad")
+	assert.Nil(t, bad, "bad session should have rolled back")
 	excluded, err := d.GetSessionFull(context.Background(), "excluded")
-	requireNoError(t, err, "GetSessionFull excluded")
-	if excluded != nil {
-		t.Fatal("excluded session should not be written")
-	}
+	require.NoError(t, err, "GetSessionFull excluded")
+	assert.Nil(t, excluded, "excluded session should not be written")
 }
 
 func TestMigration_ThinkingTextColumn(t *testing.T) {
@@ -206,7 +169,7 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 	// Create a DB with the current schema then drop the
 	// thinking_text column to simulate a pre-migration DB.
 	d, err := Open(path)
-	requireNoError(t, err, "initial open")
+	require.NoError(t, err, "initial open")
 	insertSession(t, d, "s1", "proj")
 	insertMessages(t, d,
 		userMsg("s1", 0, "hello"),
@@ -223,11 +186,11 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 	// Remove thinking_text via ALTER TABLE DROP COLUMN
 	// (SQLite 3.35+) to simulate a legacy schema.
 	conn, err := sql.Open("sqlite3", path)
-	requireNoError(t, err, "raw open")
+	require.NoError(t, err, "raw open")
 	_, err = conn.Exec(
 		`ALTER TABLE messages DROP COLUMN thinking_text`,
 	)
-	requireNoError(t, err, "drop thinking_text column")
+	require.NoError(t, err, "drop thinking_text column")
 
 	// Verify column is gone.
 	var count int
@@ -235,10 +198,8 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 		`SELECT count(*) FROM pragma_table_info('messages')` +
 			` WHERE name = 'thinking_text'`,
 	).Scan(&count)
-	requireNoError(t, err, "verify column removed")
-	if count != 0 {
-		t.Fatal("expected thinking_text column to be absent")
-	}
+	require.NoError(t, err, "verify column removed")
+	require.Zero(t, count, "expected thinking_text column to be absent")
 
 	// Insert a legacy row with an explicit column list that
 	// cannot reference thinking_text (column doesn't exist yet).
@@ -264,12 +225,12 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 			'', 0,
 			0
 		)`)
-	requireNoError(t, err, "insert legacy row")
+	require.NoError(t, err, "insert legacy row")
 	conn.Close()
 
 	// Reopen with Open() — migration should add the column.
 	d2, err := Open(path)
-	requireNoError(t, err, "reopen after migration")
+	require.NoError(t, err, "reopen after migration")
 	defer d2.Close()
 
 	// Verify column exists.
@@ -277,24 +238,15 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 		`SELECT count(*) FROM pragma_table_info('messages')` +
 			` WHERE name = 'thinking_text'`,
 	).Scan(&count)
-	requireNoError(t, err, "verify column added")
-	if count != 1 {
-		t.Fatal("expected thinking_text column after migration")
-	}
+	require.NoError(t, err, "verify column added")
+	require.Equal(t, 1, count, "expected thinking_text column after migration")
 
 	// Verify all rows survive and the legacy row defaults to "".
 	msgs, err := d2.GetAllMessages(context.Background(), "s1")
-	requireNoError(t, err, "get messages")
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(msgs))
-	}
+	require.NoError(t, err, "get messages")
+	require.Len(t, msgs, 3)
 	for _, m := range msgs {
-		if m.ThinkingText != "" {
-			t.Errorf(
-				"ord=%d ThinkingText = %q, want %q (default)",
-				m.Ordinal, m.ThinkingText, "",
-			)
-		}
+		assert.Empty(t, m.ThinkingText, "ord=%d ThinkingText", m.Ordinal)
 	}
 
 	// Insert a new message with ThinkingText and verify round-trip.
@@ -306,16 +258,9 @@ func TestMigration_ThinkingTextColumn(t *testing.T) {
 		ThinkingText: "x",
 	})
 	msgs, err = d2.GetAllMessages(context.Background(), "s1")
-	requireNoError(t, err, "get messages after insert")
-	if len(msgs) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(msgs))
-	}
-	if msgs[3].ThinkingText != "x" {
-		t.Errorf(
-			"ThinkingText = %q, want %q",
-			msgs[3].ThinkingText, "x",
-		)
-	}
+	require.NoError(t, err, "get messages after insert")
+	require.Len(t, msgs, 4)
+	assert.Equal(t, "x", msgs[3].ThinkingText, "ThinkingText")
 }
 
 // TestReplaceSessionMessages_LargeSession is a perf regression test
@@ -335,6 +280,7 @@ func TestReplaceSessionMessages_LargeSession(t *testing.T) {
 	}
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 	const sessionID = "perf-large"
 	insertSession(t, d, sessionID, "proj")
 
@@ -363,26 +309,16 @@ func TestReplaceSessionMessages_LargeSession(t *testing.T) {
 		repl = append(repl, userMsg(sessionID, i, "after"))
 	}
 	start := time.Now()
-	if err := d.ReplaceSessionMessages(sessionID, repl); err != nil {
-		t.Fatalf("ReplaceSessionMessages: %v", err)
-	}
+	require.NoError(t, d.ReplaceSessionMessages(sessionID, repl),
+		"ReplaceSessionMessages")
 	elapsed := time.Since(start)
-	if elapsed > 10*time.Second {
-		t.Fatalf(
-			"ReplaceSessionMessages took %s, want < 10s "+
-				"(per-row FTS trigger regression?)",
-			elapsed.Round(time.Millisecond),
-		)
-	}
+	require.LessOrEqual(t, elapsed, 10*time.Second,
+		"ReplaceSessionMessages took %s, want < 10s (per-row FTS trigger regression?)",
+		elapsed.Round(time.Millisecond))
 
 	got, err := d.GetAllMessages(context.Background(), sessionID)
-	requireNoError(t, err, "GetAllMessages after replace")
-	if len(got) != len(repl) {
-		t.Fatalf(
-			"after replace got %d messages, want %d",
-			len(got), len(repl),
-		)
-	}
+	require.NoError(t, err, "GetAllMessages after replace")
+	require.Len(t, got, len(repl), "after replace")
 
 	// Verify the FTS index was actually scrubbed: count rows in
 	// messages_fts that join back to the (now-deleted) original
@@ -394,11 +330,7 @@ func TestReplaceSessionMessages_LargeSession(t *testing.T) {
 		`SELECT count(*) FROM messages_fts
 		 WHERE messages_fts MATCH 'xxx'`,
 	).Scan(&leaked)
-	requireNoError(t, err, "fts leak check")
-	if leaked != 0 {
-		t.Fatalf(
-			"FTS still contains %d rows matching 'xxx' from deleted blob",
-			leaked,
-		)
-	}
+	require.NoError(t, err, "fts leak check")
+	assert.Zero(t, leaked,
+		"FTS still contains rows matching 'xxx' from deleted blob")
 }

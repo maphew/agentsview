@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { ProjectInfo } from "../../api/types/core.js";
+  import { ChevronDownIcon } from "../../icons.js";
 
   interface Props {
     projects: ProjectInfo[];
@@ -139,9 +140,7 @@
   {:else}
     <button class="typeahead-trigger" onclick={openDropdown} title="Select project">
       <span class="typeahead-value">{displayValue}</span>
-      <svg class="typeahead-chevron" width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path d="M1.646 4.646a.5.5 0 01.708 0L8 10.293l5.646-5.647a.5.5 0 01.708.708l-6 6a.5.5 0 01-.708 0l-6-6a.5.5 0 010-.708z"/>
-      </svg>
+      <ChevronDownIcon class="typeahead-chevron" size="10" strokeWidth="2" aria-hidden="true" />
     </button>
   {/if}
 </div>
@@ -186,7 +185,7 @@
     white-space: nowrap;
   }
 
-  .typeahead-chevron {
+  :global(.typeahead-chevron) {
     flex-shrink: 0;
     opacity: 0.5;
   }

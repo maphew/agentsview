@@ -1,6 +1,10 @@
 package postgres
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestCheckSSL(t *testing.T) {
 	tests := []struct {
@@ -87,12 +91,7 @@ func TestCheckSSL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckSSL(tt.dsn)
-			if (err != nil) != tt.wantErr {
-				t.Errorf(
-					"CheckSSL() error = %v, wantErr %v",
-					err, tt.wantErr,
-				)
-			}
+			assert.Equal(t, tt.wantErr, err != nil, "err = %v", err)
 		})
 	}
 }
@@ -121,13 +120,7 @@ func TestRedactDSN(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := RedactDSN(tt.dsn)
-			if got != tt.want {
-				t.Errorf(
-					"RedactDSN() = %q, want %q",
-					got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, RedactDSN(tt.dsn))
 		})
 	}
 }
@@ -147,12 +140,7 @@ func TestIsLoopback(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			if got := isLoopback(tt.host); got != tt.want {
-				t.Errorf(
-					"isLoopback(%q) = %v, want %v",
-					tt.host, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, isLoopback(tt.host))
 		})
 	}
 }
@@ -174,18 +162,8 @@ func TestQuoteIdentifier(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := quoteIdentifier(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf(
-					"quoteIdentifier() err = %v, wantErr %v",
-					err, tt.wantErr,
-				)
-			}
-			if got != tt.want {
-				t.Errorf(
-					"quoteIdentifier() = %q, want %q",
-					got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.wantErr, err != nil, "err = %v", err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

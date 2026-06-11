@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // skipIfNoGit lets CI environments without git on PATH pass cleanly instead
@@ -26,9 +29,7 @@ func gitRun(t *testing.T, repo string, env []string, args ...string) {
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
+	require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
 }
 
 // initRepo creates a fresh repo at t.TempDir() with a deterministic default
@@ -49,12 +50,9 @@ func initRepo(t *testing.T) string {
 func writeFile(t *testing.T, repo, relpath string, content []byte) {
 	t.Helper()
 	p := filepath.Join(repo, relpath)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(p), err)
-	}
-	if err := os.WriteFile(p, content, 0o644); err != nil {
-		t.Fatalf("write %s: %v", p, err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755),
+		"mkdir %s", filepath.Dir(p))
+	require.NoError(t, os.WriteFile(p, content, 0o644), "write %s", p)
 }
 
 // commitAs stages all changes and commits with an explicit author identity.
@@ -98,9 +96,7 @@ func TestAggregateLog_CountsCommitsLOCAndFiles(t *testing.T) {
 		repo, "test@example.com",
 		"1970-01-01T00:00:00Z", "2099-01-01T00:00:00Z",
 	)
-	if err != nil {
-		t.Fatalf("AggregateLog: %v", err)
-	}
+	require.NoError(t, err, "AggregateLog")
 
 	// Expected totals for test@example.com across the three commits. Values
 	// reflect git's diff for each commit; verified manually via
@@ -115,9 +111,7 @@ func TestAggregateLog_CountsCommitsLOCAndFiles(t *testing.T) {
 		LOCRemoved:   1,
 		FilesChanged: 4,
 	}
-	if got != want {
-		t.Fatalf("AggregateLog = %+v, want %+v", got, want)
-	}
+	assert.Equal(t, want, got, "AggregateLog")
 }
 
 func TestAggregateLog_EmptyWindowReturnsZero(t *testing.T) {
@@ -133,12 +127,8 @@ func TestAggregateLog_EmptyWindowReturnsZero(t *testing.T) {
 		repo, "test@example.com",
 		"1970-01-01T00:00:00Z", "1970-01-02T00:00:00Z",
 	)
-	if err != nil {
-		t.Fatalf("AggregateLog: %v", err)
-	}
-	if got != (LogResult{}) {
-		t.Fatalf("AggregateLog = %+v, want zero value", got)
-	}
+	require.NoError(t, err, "AggregateLog")
+	assert.Equal(t, LogResult{}, got, "AggregateLog")
 }
 
 func TestAggregateLog_UnknownAuthorReturnsZero(t *testing.T) {
@@ -153,12 +143,8 @@ func TestAggregateLog_UnknownAuthorReturnsZero(t *testing.T) {
 		repo, "nobody@example.invalid",
 		"1970-01-01T00:00:00Z", "2099-01-01T00:00:00Z",
 	)
-	if err != nil {
-		t.Fatalf("AggregateLog: %v", err)
-	}
-	if got != (LogResult{}) {
-		t.Fatalf("AggregateLog = %+v, want zero value", got)
-	}
+	require.NoError(t, err, "AggregateLog")
+	assert.Equal(t, LogResult{}, got, "AggregateLog")
 }
 
 func TestAggregateLog_BadRepoReturnsError(t *testing.T) {
@@ -171,9 +157,7 @@ func TestAggregateLog_BadRepoReturnsError(t *testing.T) {
 		notARepo, "test@example.com",
 		"1970-01-01T00:00:00Z", "2099-01-01T00:00:00Z",
 	)
-	if err == nil {
-		t.Fatalf("AggregateLog on non-repo: expected error, got nil")
-	}
+	require.Error(t, err, "AggregateLog on non-repo")
 }
 
 // TestAggregateLog_EmptyRepoReturnsZero covers the "git init but no
@@ -190,12 +174,44 @@ func TestAggregateLog_EmptyRepoReturnsZero(t *testing.T) {
 		repo, "test@example.com",
 		"1970-01-01T00:00:00Z", "2099-01-01T00:00:00Z",
 	)
-	if err != nil {
-		t.Fatalf("AggregateLog on empty repo: got error %v, want nil", err)
-	}
-	if got != (LogResult{}) {
-		t.Fatalf("AggregateLog on empty repo = %+v, want zero", got)
-	}
+	require.NoError(t, err, "AggregateLog on empty repo")
+	assert.Equal(t, LogResult{}, got, "AggregateLog on empty repo")
+}
+
+func TestAggregateLog_UsesGlobalGitConfig(t *testing.T) {
+	skipIfNoGit(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	globalConfig := filepath.Join(home, ".gitconfig")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	attrsPath := filepath.Join(home, "attributes")
+	require.NoError(t, os.WriteFile(
+		attrsPath, []byte("*.txt binary\n"), 0o644,
+	), "write global attributes")
+	require.NoError(t, os.WriteFile(
+		globalConfig,
+		[]byte("[core]\n\tattributesfile = "+filepath.ToSlash(attrsPath)+"\n"),
+		0o644,
+	), "write global git config")
+
+	repo := initRepo(t)
+	writeFile(t, repo, "configured-binary.txt", []byte("a\nb\nc\n"))
+	commitAs(t, repo, "test@example.com", "Test User", "c1")
+
+	got, err := AggregateLog(
+		context.Background(),
+		repo, "test@example.com",
+		"1970-01-01T00:00:00Z", "2099-01-01T00:00:00Z",
+	)
+	require.NoError(t, err, "AggregateLog")
+	assert.Equal(t, LogResult{
+		Commits:      1,
+		LOCAdded:     0,
+		LOCRemoved:   0,
+		FilesChanged: 1,
+	}, got, "AggregateLog should respect global git config")
 }
 
 func TestAuthorEmail_LocalConfig(t *testing.T) {
@@ -204,10 +220,8 @@ func TestAuthorEmail_LocalConfig(t *testing.T) {
 	gitRun(t, repo, nil, "init", "-q", "-b", "main")
 	gitRun(t, repo, nil, "config", "user.email", "local@example.com")
 
-	got := AuthorEmail(repo)
-	if got != "local@example.com" {
-		t.Fatalf("AuthorEmail = %q, want %q", got, "local@example.com")
-	}
+	got := AuthorEmail(context.Background(), repo)
+	assert.Equal(t, "local@example.com", got, "AuthorEmail")
 }
 
 func TestAuthorEmail_FallsBackToGlobal(t *testing.T) {
@@ -228,9 +242,8 @@ func TestAuthorEmail_FallsBackToGlobal(t *testing.T) {
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"GIT_CONFIG_GLOBAL="+globalCfg,
 	)
-	if out, err := setGlobal.CombinedOutput(); err != nil {
-		t.Fatalf("seed global config: %v\n%s", err, out)
-	}
+	out, err := setGlobal.CombinedOutput()
+	require.NoError(t, err, "seed global config: %s", out)
 
 	repo := t.TempDir()
 	// Init with no local user.email — `AuthorEmail` must fall through to global.
@@ -241,14 +254,41 @@ func TestAuthorEmail_FallsBackToGlobal(t *testing.T) {
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"GIT_CONFIG_GLOBAL="+globalCfg,
 	)
-	if out, err := initCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
+	out, err = initCmd.CombinedOutput()
+	require.NoError(t, err, "git init: %s", out)
 
-	got := AuthorEmail(repo)
-	if got != "global@example.com" {
-		t.Fatalf("AuthorEmail (global fallback) = %q, want %q", got, "global@example.com")
-	}
+	got := AuthorEmail(context.Background(), repo)
+	assert.Equal(t, "global@example.com", got, "AuthorEmail (global fallback)")
+}
+
+func TestAuthorEmail_UsesIncludeIfGitdir(t *testing.T) {
+	skipIfNoGit(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	globalConfig := filepath.Join(home, ".gitconfig")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	repo := t.TempDir()
+	gitRun(t, repo, nil, "init", "-q", "-b", "main")
+
+	includePath := filepath.Join(home, "repo.gitconfig")
+	require.NoError(t, os.WriteFile(
+		includePath,
+		[]byte("[user]\n\temail = includeif@example.com\n"),
+		0o644,
+	), "write include config")
+	gitdir, err := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
+	require.NoError(t, err, "resolve repo gitdir")
+	require.NoError(t, os.WriteFile(
+		globalConfig,
+		[]byte(`[includeIf "gitdir:`+filepath.ToSlash(gitdir)+`"]
+	path = `+filepath.ToSlash(includePath)+"\n"),
+		0o644,
+	), "write global config")
+
+	got := AuthorEmail(context.Background(), repo)
+	assert.Equal(t, "includeif@example.com", got, "AuthorEmail (includeIf.gitdir)")
 }
 
 func TestParseNumstat_SkipsBinaryLOCButCountsFile(t *testing.T) {
@@ -273,7 +313,5 @@ func TestParseNumstat_SkipsBinaryLOCButCountsFile(t *testing.T) {
 		LOCRemoved:   1,
 		FilesChanged: 4,
 	}
-	if got != want {
-		t.Fatalf("parseNumstat = %+v, want %+v", got, want)
-	}
+	assert.Equal(t, want, got, "parseNumstat")
 }

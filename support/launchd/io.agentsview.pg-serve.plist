@@ -8,7 +8,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/mariusvniekerk/.local/share/mise/installs/github-wesm-agentsview/0.25.0/agentsview</string>
+    <string>/Users/mariusvniekerk/.local/share/mise/installs/github-kenn-io-agentsview/0.25.0/agentsview</string>
     <string>pg</string>
     <string>serve</string>
     <string>--no-browser</string>

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 )
@@ -120,9 +122,7 @@ func TestBuildPrompt(t *testing.T) {
 			wantContains: []string{"omitted"},
 			checkPrompt: func(t *testing.T, prompt string) {
 				count := strings.Count(prompt, "### Session")
-				if count != 50 {
-					t.Errorf("got %d sessions in prompt, want 50", count)
-				}
+				assert.Equal(t, 50, count, "got %d sessions in prompt, want 50", count)
 			},
 		},
 		{
@@ -207,19 +207,13 @@ func TestBuildPrompt(t *testing.T) {
 			}
 
 			prompt, err := BuildPrompt(ctx, d, tt.req)
-			if err != nil {
-				t.Fatalf("BuildPrompt: %v", err)
-			}
+			require.NoError(t, err)
 
 			for _, want := range tt.wantContains {
-				if !strings.Contains(prompt, want) {
-					t.Errorf("prompt missing %q", want)
-				}
+				assert.Contains(t, prompt, want)
 			}
 			for _, notWant := range tt.wantNot {
-				if strings.Contains(prompt, notWant) {
-					t.Errorf("prompt unexpectedly contains %q", notWant)
-				}
+				assert.NotContains(t, prompt, notWant)
 			}
 			if tt.checkPrompt != nil {
 				tt.checkPrompt(t, prompt)

@@ -1,11 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { trends } from "./trends.svelte.js";
-import * as api from "../api/client.js";
+import { TrendsService } from "../api/generated/index";
 import type { TrendsTermsResponse } from "../api/types.js";
 
-vi.mock("../api/client.js", () => ({
-  getTrendsTerms: vi.fn(),
+vi.mock("../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  callGenerated: vi.fn((request: () => Promise<unknown>) => request()),
 }));
+
+vi.mock("../api/generated/index", () => ({
+  TrendsService: {
+    getApiV1TrendsTerms: vi.fn(),
+  },
+}));
+
+const trendsService = TrendsService as unknown as {
+  getApiV1TrendsTerms: ReturnType<typeof vi.fn>;
+};
 
 function makeResponse(): TrendsTermsResponse {
   return {
@@ -32,19 +43,19 @@ function resetStore() {
 beforeEach(() => {
   resetStore();
   vi.clearAllMocks();
-  vi.mocked(api.getTrendsTerms).mockResolvedValue(makeResponse());
+  trendsService.getApiV1TrendsTerms.mockResolvedValue(makeResponse());
 });
 
 describe("TrendsStore.fetchTerms", () => {
   it("fetches default terms with timezone and date range", async () => {
     await trends.fetchTerms();
 
-    expect(api.getTrendsTerms).toHaveBeenCalledWith(
+    expect(trendsService.getApiV1TrendsTerms).toHaveBeenCalledWith(
       expect.objectContaining({
         from: "2024-01-01",
         to: "2024-01-31",
         granularity: "week",
-        terms: ["load bearing | load-bearing", "seam"],
+        term: ["load bearing | load-bearing", "seam"],
         timezone: expect.any(String),
       }),
     );
@@ -56,15 +67,15 @@ describe("TrendsStore.fetchTerms", () => {
 
     await trends.fetchTerms();
 
-    expect(api.getTrendsTerms).toHaveBeenCalledWith(
+    expect(trendsService.getApiV1TrendsTerms).toHaveBeenCalledWith(
       expect.objectContaining({
-        terms: ["seam", "blast radius"],
+        term: ["seam", "blast radius"],
       }),
     );
   });
 
   it("sets first-load error state", async () => {
-    vi.mocked(api.getTrendsTerms).mockRejectedValue(new Error("boom"));
+    trendsService.getApiV1TrendsTerms.mockRejectedValue(new Error("boom"));
 
     await trends.fetchTerms();
 
@@ -77,7 +88,7 @@ describe("TrendsStore.fetchTerms", () => {
     const existing = makeResponse();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     trends.response = existing;
-    vi.mocked(api.getTrendsTerms).mockRejectedValue(new Error("boom"));
+    trendsService.getApiV1TrendsTerms.mockRejectedValue(new Error("boom"));
 
     await trends.fetchTerms();
 
@@ -94,7 +105,7 @@ describe("TrendsStore.fetchTerms", () => {
   it("setGranularity refetches with the new granularity", async () => {
     await trends.setGranularity("month");
 
-    expect(api.getTrendsTerms).toHaveBeenCalledWith(
+    expect(trendsService.getApiV1TrendsTerms).toHaveBeenCalledWith(
       expect.objectContaining({ granularity: "month" }),
     );
   });

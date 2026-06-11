@@ -61,16 +61,30 @@ type claudeQueuedCommand struct {
 func ParseClaudeSession(
 	path, project, machine string,
 ) ([]ParseResult, error) {
+	results, _, err := ParseClaudeSessionWithExclusions(
+		path, project, machine,
+	)
+	return results, err
+}
+
+// ParseClaudeSessionWithExclusions parses a Claude Code JSONL
+// session file and also returns session IDs intentionally excluded
+// from the archive, such as content-free /usage probes. Sync uses
+// those IDs during full resync so orphan preservation does not
+// restore rows the current parser deliberately dropped.
+func ParseClaudeSessionWithExclusions(
+	path, project, machine string,
+) ([]ParseResult, []string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -228,7 +242,7 @@ func ParseClaudeSession(
 	}
 
 	if err := lr.Err(); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	// Detect truncation: last line is non-empty, invalid JSON,
@@ -282,7 +296,7 @@ func ParseClaudeSession(
 		)
 	}
 	if parseErr != nil {
-		return nil, parseErr
+		return nil, nil, parseErr
 	}
 
 	// Splice queued_command attachments into the main session
@@ -306,7 +320,21 @@ func ParseClaudeSession(
 			lastLineFailed,
 		)
 	}
-	return results, nil
+
+	// Drop content-free /usage probe sessions (e.g. CodexBar's
+	// ClaudeProbe) after the queued-command splice so both inline
+	// and queued /usage prompts are visible to the check. They never
+	// enter the archive.
+	kept := results[:0]
+	var excluded []string
+	for _, r := range results {
+		if isUsageProbeSession(r.Messages) {
+			excluded = append(excluded, r.Session.ID)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, excluded, nil
 }
 
 // lastAssistantStopReason returns the StopReason of the most
@@ -1654,6 +1682,27 @@ func firstMessageAndUserCount(
 		}
 	}
 	return firstMsg, userCount
+}
+
+// isUsageProbeSession reports whether a parsed session's only real
+// user turn(s) are the /usage command — a content-free usage probe
+// (for example CodexBar's ClaudeProbe, which runs `claude /usage` to
+// read usage stats) with no actual prompt. Such sessions carry no
+// conversational content and are skipped during parsing. The notion
+// of a real user turn mirrors firstMessageAndUserCount: non-system,
+// role=user, non-empty content.
+func isUsageProbeSession(messages []ParsedMessage) bool {
+	sawUsage := false
+	for _, m := range messages {
+		if m.IsSystem || m.Role != RoleUser || m.Content == "" {
+			continue
+		}
+		if strings.TrimSpace(m.Content) != "/usage" {
+			return false
+		}
+		sawUsage = true
+	}
+	return sawUsage
 }
 
 // fileEndsWithNewline returns true when the byte at size-1

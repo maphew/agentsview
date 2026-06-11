@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // triggerCalls names the qualified function calls that read
@@ -37,9 +39,7 @@ const wiringHelper = "applyClassifierConfig"
 // db package singleton.
 func TestEveryStoreOpenPathIsWired(t *testing.T) {
 	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("listing cmd/agentsview: %v", err)
-	}
+	require.NoError(t, err, "listing cmd/agentsview")
 
 	fset := token.NewFileSet()
 	var violations []string
@@ -53,9 +53,7 @@ func TestEveryStoreOpenPathIsWired(t *testing.T) {
 			fset, filepath.Join(".", name), nil,
 			parser.ParseComments,
 		)
-		if err != nil {
-			t.Fatalf("parsing %s: %v", name, err)
-		}
+		require.NoError(t, err, "parsing %s", name)
 		violations = append(
 			violations, scanFile(fset, f)...,
 		)

@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -29,7 +32,7 @@ func TestPushSessionTrustsLocalIsAutomated(t *testing.T) {
 	// sets is_automated=1 on the SQLite row.
 	db.SetUserAutomationPrefixes([]string{"You are analyzing an essay"})
 	fm := "You are analyzing an essay about epistemology."
-	if err := local.UpsertSession(db.Session{
+	require.NoError(t, local.UpsertSession(db.Session{
 		ID:               "essay-1",
 		Project:          "proj",
 		Machine:          "local",
@@ -38,9 +41,7 @@ func TestPushSessionTrustsLocalIsAutomated(t *testing.T) {
 		MessageCount:     2,
 		UserMessageCount: 1,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
+	}), "upsert")
 
 	// Clear the user prefix so a recompute in pushSession
 	// would now classify this row as is_automated=0. If
@@ -52,9 +53,7 @@ func TestPushSessionTrustsLocalIsAutomated(t *testing.T) {
 		"trust-test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx, cancel := context.WithTimeout(
@@ -62,23 +61,17 @@ func TestPushSessionTrustsLocalIsAutomated(t *testing.T) {
 	)
 	defer cancel()
 
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	var got bool
-	if err := ps.DB().QueryRowContext(ctx,
+	require.NoError(t, ps.DB().QueryRowContext(ctx,
 		`SELECT is_automated FROM sessions WHERE id = $1`,
 		"essay-1",
-	).Scan(&got); err != nil {
-		t.Fatalf("query pg: %v", err)
-	}
-	if !got {
-		t.Error("pushSession recomputed is_automated; expected to trust local value")
-	}
+	).Scan(&got), "query pg")
+	assert.True(t, got,
+		"pushSession recomputed is_automated; expected to trust local value")
 }
 
 // TestBackfillIsAutomatedPGRerunsOnHashChange exercises the
@@ -93,7 +86,7 @@ func TestBackfillIsAutomatedPGRerunsOnHashChange(t *testing.T) {
 
 	local := testDB(t)
 	fm := "You are analyzing an essay about epistemology."
-	if err := local.UpsertSession(db.Session{
+	require.NoError(t, local.UpsertSession(db.Session{
 		ID:               "essay-pg",
 		Project:          "proj",
 		Machine:          "local",
@@ -102,18 +95,14 @@ func TestBackfillIsAutomatedPGRerunsOnHashChange(t *testing.T) {
 		MessageCount:     2,
 		UserMessageCount: 1,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
+	}), "upsert")
 
 	ps, err := New(
 		pgURL, "agentsview", local,
 		"backfill-test-machine", true,
 		SyncOptions{},
 	)
-	if err != nil {
-		t.Fatalf("creating sync: %v", err)
-	}
+	require.NoError(t, err, "creating sync")
 	defer ps.Close()
 
 	ctx, cancel := context.WithTimeout(
@@ -121,42 +110,31 @@ func TestBackfillIsAutomatedPGRerunsOnHashChange(t *testing.T) {
 	)
 	defer cancel()
 
-	if err := ps.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	if _, err := ps.Push(ctx, false, nil); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	require.NoError(t, ps.EnsureSchema(ctx), "ensure schema")
+	_, err = ps.Push(ctx, false, nil)
+	require.NoError(t, err, "push")
 
 	// Confirm the PG row starts as is_automated=false.
 	var pre bool
-	if err := ps.DB().QueryRowContext(ctx,
+	require.NoError(t, ps.DB().QueryRowContext(ctx,
 		`SELECT is_automated FROM sessions WHERE id = $1`,
 		"essay-pg",
-	).Scan(&pre); err != nil {
-		t.Fatalf("query pre: %v", err)
-	}
-	if pre {
-		t.Fatalf("precondition: PG row should be is_automated=false")
-	}
+	).Scan(&pre), "query pre")
+	require.False(t, pre, "precondition: PG row should be is_automated=false")
 
 	// Add a user prefix so the classifier hash changes,
 	// then re-run the PG backfill directly (bypassing
 	// Sync.EnsureSchema's memo so the second pass actually
 	// executes). The matching row should flip to true.
 	db.SetUserAutomationPrefixes([]string{"You are analyzing an essay"})
-	if err := backfillIsAutomatedPG(ctx, ps.DB()); err != nil {
-		t.Fatalf("backfill after prefix add: %v", err)
-	}
+	require.NoError(t, backfillIsAutomatedPG(ctx, ps.DB()),
+		"backfill after prefix add")
 
 	var got bool
-	if err := ps.DB().QueryRowContext(ctx,
+	require.NoError(t, ps.DB().QueryRowContext(ctx,
 		`SELECT is_automated FROM sessions WHERE id = $1`,
 		"essay-pg",
-	).Scan(&got); err != nil {
-		t.Fatalf("query post: %v", err)
-	}
-	if !got {
-		t.Error("PG row should be is_automated=true after backfill on hash change")
-	}
+	).Scan(&got), "query post")
+	assert.True(t, got,
+		"PG row should be is_automated=true after backfill on hash change")
 }

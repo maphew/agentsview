@@ -142,6 +142,9 @@ func printSessionDetailHuman(w io.Writer, s *service.SessionDetail) error {
 	} else {
 		fmt.Fprintf(w, "%s -\n", label("Health"))
 	}
+	if s.SecretLeakCount > 0 {
+		fmt.Fprintf(w, "%s %d\n", label("Secrets"), s.SecretLeakCount)
+	}
 	return nil
 }
 

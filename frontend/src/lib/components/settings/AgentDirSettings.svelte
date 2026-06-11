@@ -16,8 +16,13 @@
     pi: "Pi",
     qwen: "Qwen Code",
     openclaw: "OpenClaw",
+    qclaw: "QClaw",
+    zed: "Zed",
     kimi: "Kimi",
+    workbuddy: "WorkBuddy",
     piebald: "Piebald",
+    antigravity: "Antigravity",
+    "antigravity-cli": "Antigravity CLI",
   };
 </script>
 

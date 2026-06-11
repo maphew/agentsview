@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 )
@@ -32,15 +33,9 @@ func TestParsePruneFlags(t *testing.T) {
 			args: []string{"--project", "myapp"},
 			check: func(t *testing.T, cfg PruneConfig) {
 				t.Helper()
-				if cfg.Filter.Project != "myapp" {
-					t.Errorf(
-						"Project = %q, want %q",
-						cfg.Filter.Project, "myapp",
-					)
-				}
-				if cfg.DryRun || cfg.Yes {
-					t.Error("unexpected flag defaults")
-				}
+				assert.Equal(t, "myapp", cfg.Filter.Project)
+				assert.False(t, cfg.DryRun, "DryRun default")
+				assert.False(t, cfg.Yes, "Yes default")
 			},
 		},
 		{
@@ -55,29 +50,13 @@ func TestParsePruneFlags(t *testing.T) {
 			},
 			check: func(t *testing.T, cfg PruneConfig) {
 				t.Helper()
-				if cfg.Filter.Project != "p" {
-					t.Errorf("Project = %q", cfg.Filter.Project)
-				}
-				if cfg.Filter.MaxMessages == nil || *cfg.Filter.MaxMessages != 5 {
-					t.Errorf(
-						"MaxMessages = %v", cfg.Filter.MaxMessages,
-					)
-				}
-				if cfg.Filter.Before != "2024-01-01" {
-					t.Errorf("Before = %q", cfg.Filter.Before)
-				}
-				if cfg.Filter.FirstMessage != "hello" {
-					t.Errorf(
-						"FirstMessage = %q",
-						cfg.Filter.FirstMessage,
-					)
-				}
-				if !cfg.DryRun {
-					t.Error("DryRun should be true")
-				}
-				if !cfg.Yes {
-					t.Error("Yes should be true")
-				}
+				assert.Equal(t, "p", cfg.Filter.Project)
+				require.NotNil(t, cfg.Filter.MaxMessages)
+				assert.Equal(t, 5, *cfg.Filter.MaxMessages)
+				assert.Equal(t, "2024-01-01", cfg.Filter.Before)
+				assert.Equal(t, "hello", cfg.Filter.FirstMessage)
+				assert.True(t, cfg.DryRun, "DryRun should be true")
+				assert.True(t, cfg.Yes, "Yes should be true")
 			},
 		},
 		{
@@ -96,19 +75,12 @@ func TestParsePruneFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, err := parsePruneFlags(tt.args)
 			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q",
-						tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("error %q missing %q",
-						err, tt.wantErr)
-				}
+				require.Error(t, err,
+					"expected error containing %q", tt.wantErr)
+				assert.Contains(t, err.Error(), tt.wantErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 			if tt.check != nil {
 				tt.check(t, cfg)
 			}
@@ -118,11 +90,7 @@ func TestParsePruneFlags(t *testing.T) {
 
 func TestParsePruneFlagsHelp(t *testing.T) {
 	_, err := parsePruneFlags([]string{"--help"})
-	if !errors.Is(err, flag.ErrHelp) {
-		t.Fatalf(
-			"expected flag.ErrHelp, got %v", err,
-		)
-	}
+	require.ErrorIs(t, err, flag.ErrHelp)
 }
 
 func TestPrunerEmptyFilterReturnsError(t *testing.T) {
@@ -134,15 +102,9 @@ func TestPrunerEmptyFilterReturnsError(t *testing.T) {
 	}
 
 	err := pruner.Prune(cfg)
-	if err == nil {
-		t.Fatal("expected error for empty filter")
-	}
-	if !strings.Contains(err.Error(), "at least one filter") {
-		t.Errorf(
-			"error %q should mention filter requirement",
-			err,
-		)
-	}
+	require.Error(t, err, "expected error for empty filter")
+	assert.Contains(t, err.Error(), "at least one filter",
+		"error should mention filter requirement")
 }
 
 func TestConfirm(t *testing.T) {
@@ -165,12 +127,9 @@ func TestConfirm(t *testing.T) {
 			in := strings.NewReader(tt.input)
 			out := &bytes.Buffer{}
 			got := confirm(in, out, "Delete?")
-			if got != tt.want {
-				t.Errorf("confirm() = %v, want %v", got, tt.want)
-			}
-			if !strings.Contains(out.String(), "[y/N]") {
-				t.Error("prompt missing [y/N]")
-			}
+			assert.Equal(t, tt.want, got)
+			assert.Contains(t, out.String(), "[y/N]",
+				"prompt missing [y/N]")
 		})
 	}
 }
@@ -192,9 +151,7 @@ By project:
   projA                                    2
   projB                                    1
 `
-	if out != want {
-		t.Errorf("writeSummary() mismatch\nwant:\n%s\ngot:\n%s", want, out)
-	}
+	assert.Equal(t, want, out, "writeSummary() mismatch")
 }
 
 func TestFormatBytes(t *testing.T) {
@@ -213,13 +170,8 @@ func TestFormatBytes(t *testing.T) {
 	for _, tt := range tests {
 		name := fmt.Sprintf("%d_bytes", tt.input)
 		t.Run(name, func(t *testing.T) {
-			got := formatBytes(tt.input)
-			if got != tt.want {
-				t.Errorf(
-					"formatBytes(%d) = %q, want %q",
-					tt.input, got, tt.want,
-				)
-			}
+			assert.Equal(t, tt.want, formatBytes(tt.input),
+				"formatBytes(%d)", tt.input)
 		})
 	}
 }
@@ -264,16 +216,11 @@ func TestPrunerMaxMessagesCountsUserOnly(t *testing.T) {
 		DryRun: true,
 	}
 
-	if err := pruner.Prune(cfg); err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	require.NoError(t, pruner.Prune(cfg), "Prune")
 
 	out := buf.String()
-	if !strings.Contains(out, "Found 1 sessions") {
-		t.Errorf(
-			"expected 1 match (oneshot only), got: %s", out,
-		)
-	}
+	assert.Contains(t, out, "Found 1 sessions",
+		"expected 1 match (oneshot only)")
 }
 
 func TestPruner_PruneScenarios(t *testing.T) {
@@ -327,25 +274,23 @@ func TestPruner_PruneScenarios(t *testing.T) {
 			})
 
 			pruner, buf := newTestPruner(t, d, tt.input)
-			if err := pruner.Prune(tt.cfg); err != nil {
-				t.Fatalf("Prune: %v", err)
-			}
+			require.NoError(t, pruner.Prune(tt.cfg), "Prune")
 
 			out := buf.String()
 			for _, want := range tt.wantOutput {
-				if !strings.Contains(out, want) {
-					t.Errorf("expected output containing %q, got: %s", want, out)
-				}
+				assert.Contains(t, out, want,
+					"expected output containing %q", want)
 			}
-			if tt.cfg.Yes && strings.Contains(out, "[y/N]") {
-				t.Error("should not prompt when --yes is set")
+			if tt.cfg.Yes {
+				assert.NotContains(t, out, "[y/N]",
+					"should not prompt when --yes is set")
 			}
 
 			s, _ := d.GetSession(context.Background(), "s1")
-			if tt.wantKept && s == nil {
-				t.Error("session was deleted unexpectedly")
-			} else if !tt.wantKept && s != nil {
-				t.Error("session still exists")
+			if tt.wantKept {
+				assert.NotNil(t, s, "session was deleted unexpectedly")
+			} else {
+				assert.Nil(t, s, "session still exists")
 			}
 		})
 	}
@@ -354,36 +299,26 @@ func TestPruner_PruneScenarios(t *testing.T) {
 func TestDeleteFilesRemovesFiles(t *testing.T) {
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "session1")
-	if err := os.MkdirAll(subdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(subdir, 0o755))
 
 	f := filepath.Join(subdir, "data.jsonl")
-	if err := os.WriteFile(f, []byte("test data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(f, []byte("test data"), 0o644))
 
 	sessions := []db.Session{
 		{ID: "s1", FilePath: new(f)},
 	}
 
 	removed, reclaimed := deleteFiles(sessions)
-	if removed != 1 {
-		t.Errorf("removed = %d, want 1", removed)
-	}
-	if reclaimed != 9 {
-		t.Errorf("reclaimed = %d, want 9", reclaimed)
-	}
+	assert.Equal(t, 1, removed)
+	assert.Equal(t, int64(9), reclaimed)
 
 	// File should be gone.
-	if _, err := os.Stat(f); !os.IsNotExist(err) {
-		t.Error("file still exists")
-	}
+	_, err := os.Stat(f)
+	assert.True(t, os.IsNotExist(err), "file still exists")
 
 	// Empty parent dir should be removed.
-	if _, err := os.Stat(subdir); !os.IsNotExist(err) {
-		t.Error("empty parent dir still exists")
-	}
+	_, err = os.Stat(subdir)
+	assert.True(t, os.IsNotExist(err), "empty parent dir still exists")
 }
 
 func TestDeleteFilesMissingFile(t *testing.T) {
@@ -392,12 +327,8 @@ func TestDeleteFilesMissingFile(t *testing.T) {
 	}
 
 	removed, reclaimed := deleteFiles(sessions)
-	if removed != 0 {
-		t.Errorf("removed = %d, want 0", removed)
-	}
-	if reclaimed != 0 {
-		t.Errorf("reclaimed = %d, want 0", reclaimed)
-	}
+	assert.Equal(t, 0, removed)
+	assert.Equal(t, int64(0), reclaimed)
 }
 
 func TestDeleteFilesNilPath(t *testing.T) {
@@ -406,12 +337,8 @@ func TestDeleteFilesNilPath(t *testing.T) {
 	}
 
 	removed, reclaimed := deleteFiles(sessions)
-	if removed != 0 {
-		t.Errorf("removed = %d, want 0", removed)
-	}
-	if reclaimed != 0 {
-		t.Errorf("reclaimed = %d, want 0", reclaimed)
-	}
+	assert.Equal(t, 0, removed)
+	assert.Equal(t, int64(0), reclaimed)
 }
 
 func newTestPruner(t *testing.T, d *db.DB, input string) (*Pruner, *bytes.Buffer) {

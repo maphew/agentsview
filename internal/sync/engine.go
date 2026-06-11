@@ -17,6 +17,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/signals"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
@@ -101,7 +102,17 @@ type Engine struct {
 	idPrefix     string
 	pathRewriter func(string) string
 	emitter      Emitter
+
+	// phaseStats accumulates per-phase wall-clock time inside the bulk
+	// write path. Exposed via PhaseStats() so a CLI driver can log the
+	// totals after a sync pass completes.
+	phaseStats PhaseStats
 }
+
+// PhaseStats returns the engine's phase counter. The values reflect only
+// the most recent sync pass; callers should read after SyncAll/ResyncAll
+// returns.
+func (e *Engine) PhaseStats() *PhaseStats { return &e.phaseStats }
 
 // codexExecMigrationKey is the pg_sync_state flag that
 // records whether the one-time cleanup of legacy codex_exec
@@ -442,12 +453,15 @@ func (e *Engine) classifyOnePath(
 	if df, ok := e.classifyKiroSQLitePath(path); ok {
 		return df, true
 	}
+	if df, ok := e.classifyZedSQLitePath(path); ok {
+		return df, true
+	}
 	if !pathExists {
 		return parser.DiscoveredFile{}, false
 	}
 
 	// Claude: <claudeDir>/<project>/<session>.jsonl
-	//     or: <claudeDir>/<project>/<session>/subagents/agent-<id>.jsonl
+	//     or: <claudeDir>/<project>/<session>/subagents/**/agent-<id>.jsonl
 	for _, claudeDir := range e.agentDirs[parser.AgentClaude] {
 		if claudeDir == "" {
 			continue
@@ -473,10 +487,10 @@ func (e *Engine) classifyOnePath(
 				}, true
 			}
 
-			// Subagent: project/session/subagents/agent-*.jsonl
-			if len(parts) == 4 && parts[2] == "subagents" {
+			// Subagent: project/session/subagents/**/agent-*.jsonl
+			if len(parts) >= 4 && parts[2] == "subagents" {
 				stem := strings.TrimSuffix(
-					parts[3], ".jsonl",
+					parts[len(parts)-1], ".jsonl",
 				)
 				if !strings.HasPrefix(stem, "agent-") {
 					continue
@@ -690,6 +704,38 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// WorkBuddy: <workbuddyDir>/<project>/<session>.jsonl
+	//     or: <workbuddyDir>/<project>/<session>/subagents/*.jsonl
+	for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
+		if workBuddyDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(workBuddyDir, path); ok {
+			if !strings.HasSuffix(path, ".jsonl") {
+				continue
+			}
+			parts := strings.Split(rel, sep)
+			if len(parts) == 2 {
+				stem := strings.TrimSuffix(parts[1], ".jsonl")
+				if !parser.IsValidSessionID(stem) {
+					continue
+				}
+				return parser.DiscoveredFile{
+					Path:    path,
+					Project: parts[0],
+					Agent:   parser.AgentWorkBuddy,
+				}, true
+			}
+			if len(parts) == 4 && parts[2] == "subagents" {
+				return parser.DiscoveredFile{
+					Path:    path,
+					Project: parts[0],
+					Agent:   parser.AgentWorkBuddy,
+				}, true
+			}
+		}
+	}
+
 	// Amp: <ampDir>/T-*.json
 	for _, ampDir := range e.agentDirs[parser.AgentAmp] {
 		if ampDir == "" {
@@ -874,6 +920,47 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// QClaw: <qclawDir>/<agentId>/sessions/<sessionId>.jsonl
+	//     or: <qclawDir>/<agentId>/sessions/<sessionId>.jsonl.<archiveSuffix>
+	for _, qcDir := range e.agentDirs[parser.AgentQClaw] {
+		if qcDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(qcDir, path); ok {
+			parts := strings.Split(rel, sep)
+			// Expect: <agentId>/sessions/<file>
+			if len(parts) != 3 || parts[1] != "sessions" {
+				continue
+			}
+			if !parser.IsValidSessionID(parts[0]) {
+				continue
+			}
+			if !parser.IsQClawSessionFile(parts[2]) {
+				continue
+			}
+			if !strings.HasSuffix(parts[2], ".jsonl") {
+				sid := parser.QClawSessionID(parts[2])
+				active := filepath.Join(
+					qcDir, parts[0], "sessions",
+					sid+".jsonl",
+				)
+				if _, err := os.Stat(active); err == nil {
+					continue
+				}
+				best := parser.FindQClawSourceFile(
+					qcDir, parts[0]+":"+sid,
+				)
+				if best != path {
+					continue
+				}
+			}
+			return parser.DiscoveredFile{
+				Path:  path,
+				Agent: parser.AgentQClaw,
+			}, true
+		}
+	}
+
 	// Cortex: <cortexDir>/<uuid>.json
 	//     or: <cortexDir>/<uuid>.history.jsonl → remap to .json
 	for _, cortexDir := range e.agentDirs[parser.AgentCortex] {
@@ -908,6 +995,87 @@ func (e *Engine) classifyOnePath(
 					Agent: parser.AgentCortex,
 				}, true
 			}
+		}
+	}
+
+	// Antigravity IDE: <root>/conversations/<uuid>.db (+ -wal, -shm)
+	for _, agDir := range e.agentDirs[parser.AgentAntigravity] {
+		if agDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(agDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 2 || parts[0] != "conversations" {
+				continue
+			}
+			name := parts[1]
+			name = strings.TrimSuffix(name, "-wal")
+			name = strings.TrimSuffix(name, "-shm")
+			if !strings.HasSuffix(name, ".db") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".db")
+			if !parser.IsValidSessionID(id) {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path: filepath.Join(
+					agDir, "conversations", name,
+				),
+				Agent: parser.AgentAntigravity,
+			}, true
+		}
+	}
+
+	// Antigravity CLI: <root>/conversations/<uuid>.db or
+	// <root>/conversations|implicit/<uuid>.pb (+ trajectory.json sidecars)
+	for _, agDir := range e.agentDirs[parser.AgentAntigravityCLI] {
+		if agDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(agDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 2 ||
+				(parts[0] != "conversations" &&
+					parts[0] != "implicit") {
+				continue
+			}
+			name := parts[1]
+			var sourcePath string
+			var id string
+			if strings.HasSuffix(name, ".pb") {
+				sourcePath = path
+				id = strings.TrimSuffix(name, ".pb")
+			} else if strings.HasSuffix(name, ".db") ||
+				strings.HasSuffix(name, ".db-wal") ||
+				strings.HasSuffix(name, ".db-shm") {
+				name = strings.TrimSuffix(name, "-wal")
+				name = strings.TrimSuffix(name, "-shm")
+				sourcePath = filepath.Join(agDir, parts[0], name)
+				id = strings.TrimSuffix(name, ".db")
+			} else if strings.HasSuffix(name, ".trajectory.json") {
+				sourcePath = strings.TrimSuffix(path, ".trajectory.json") + ".pb"
+				id = strings.TrimSuffix(name, ".trajectory.json")
+			} else {
+				continue
+			}
+			if !parser.IsValidSessionID(id) {
+				continue
+			}
+			if parts[0] == "conversations" &&
+				strings.HasSuffix(sourcePath, ".pb") {
+				dbPath := filepath.Join(agDir, parts[0], id+".db")
+				if _, err := os.Stat(dbPath); err == nil {
+					sourcePath = dbPath
+				}
+			}
+			if _, err := os.Stat(sourcePath); err != nil {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path:  sourcePath,
+				Agent: parser.AgentAntigravityCLI,
+			}, true
 		}
 	}
 
@@ -1069,6 +1237,48 @@ func (e *Engine) classifyKiroSQLitePath(
 			return parser.DiscoveredFile{
 				Path:  dbPath,
 				Agent: parser.AgentKiro,
+			}, true
+		}
+	}
+	return parser.DiscoveredFile{}, false
+}
+
+func (e *Engine) classifyZedSQLitePath(
+	path string,
+) (parser.DiscoveredFile, bool) {
+	// Virtual path: threads.db#<sessionID>
+	if dbPath, _, ok := parser.ParseZedSQLiteVirtualPath(path); ok {
+		for _, zedDir := range e.agentDirs[parser.AgentZed] {
+			if _, under := isUnder(zedDir, dbPath); under {
+				return parser.DiscoveredFile{
+					Path:  path,
+					Agent: parser.AgentZed,
+				}, true
+			}
+		}
+	}
+	// Real path: threads/threads.db or WAL/SHM siblings.
+	// Handled here (before the !pathExists guard) so that delete
+	// and rename events on threads.db-wal / threads.db-shm are
+	// not dropped when the sibling no longer exists on disk.
+	zedDBRel := filepath.Join("threads", "threads.db")
+	for _, zedDir := range e.agentDirs[parser.AgentZed] {
+		if zedDir == "" {
+			continue
+		}
+		rel, ok := isUnder(zedDir, path)
+		if !ok {
+			continue
+		}
+		base := filepath.Base(rel)
+		if rel != zedDBRel && !strings.HasPrefix(base, "threads.db-") {
+			continue
+		}
+		dbPath := filepath.Join(zedDir, zedDBRel)
+		if fi, err := os.Stat(dbPath); err == nil && !fi.IsDir() {
+			return parser.DiscoveredFile{
+				Path:  dbPath,
+				Agent: parser.AgentZed,
 			}, true
 		}
 	}
@@ -1241,11 +1451,17 @@ func (e *Engine) ResyncAll(
 		stats.TotalSessions > 0 &&
 		stats.Failed == 0 &&
 		(oldFileSessions == 0 || trashedCopied > 0)
+	excludedOnly := stats.Synced == 0 &&
+		stats.TotalSessions > 0 &&
+		stats.Failed == 0 &&
+		stats.parserExcludedFiles > 0 &&
+		stats.filesOK == stats.parserExcludedFiles
 	abortSwap := stats.Aborted ||
 		emptyDiscovery ||
 		(stats.Synced == 0 &&
 			stats.TotalSessions > 0 &&
-			!preservedOnly) ||
+			!preservedOnly &&
+			!excludedOnly) ||
 		(stats.Failed > 0 && stats.Failed > stats.filesOK)
 	if abortSwap {
 		log.Printf(
@@ -1331,7 +1547,9 @@ func (e *Engine) ResyncAll(
 	// Copy orphaned sessions (source files gone) from the
 	// old DB so archived data is preserved. Failure aborts
 	// the swap to avoid losing archived sessions.
-	orphaned, err := newDB.CopyOrphanedDataFrom(origPath)
+	orphaned, err := newDB.CopyOrphanedDataFromExcluding(
+		origPath, stats.parserExcludedIDs,
+	)
 	if err != nil {
 		log.Printf("resync: copy orphaned sessions: %v", err)
 		stats.Aborted = true
@@ -1575,6 +1793,7 @@ func (e *Engine) syncAllLocked(
 	}
 
 	e.recordSyncStarted()
+	e.phaseStats.Reset()
 
 	t0 := time.Now()
 
@@ -1602,7 +1821,7 @@ func (e *Engine) syncAllLocked(
 
 	if verbose {
 		log.Printf(
-			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi, %d kiro) in %s",
+			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi, %d kiro, %d zed) in %s",
 			len(all),
 			counts[parser.AgentClaude],
 			counts[parser.AgentCodex],
@@ -1615,6 +1834,7 @@ func (e *Engine) syncAllLocked(
 			counts[parser.AgentVSCodeCopilot],
 			counts[parser.AgentPi],
 			counts[parser.AgentKiro],
+			counts[parser.AgentZed],
 			time.Since(t0).Round(time.Millisecond),
 		)
 	}
@@ -2049,6 +2269,20 @@ func discoveredFileMtime(
 			return parser.OpenCodeSourceMtime(file.Path)
 		}
 	}
+	if file.Agent == parser.AgentZed {
+		dbPath := file.Path
+		if p, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
+			dbPath = p
+		}
+		return zedDBCompositeMtime(dbPath)
+	}
+	if file.Agent == parser.AgentAntigravityCLI {
+		info, err := parser.AntigravityCLIFileInfo(file.Path)
+		if err != nil {
+			return 0, err
+		}
+		return info.ModTime().UnixNano(), nil
+	}
 
 	info, err := os.Stat(file.Path)
 	if err != nil {
@@ -2060,6 +2294,27 @@ func discoveredFileMtime(
 	}
 
 	return info.ModTime().UnixNano(), nil
+}
+
+// zedDBCompositeMtime returns the maximum mtime across the Zed
+// threads.db main file and its WAL/SHM siblings. WAL-only updates
+// do not touch threads.db itself, so the composite is needed to
+// detect all changes.
+func zedDBCompositeMtime(dbPath string) (int64, error) {
+	var maxMtime int64
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(dbPath + suffix)
+		if err != nil {
+			continue
+		}
+		if t := info.ModTime().UnixNano(); t > maxMtime {
+			maxMtime = t
+		}
+	}
+	if maxMtime == 0 {
+		return 0, &os.PathError{Op: "stat", Path: dbPath, Err: os.ErrNotExist}
+	}
+	return maxMtime, nil
 }
 
 // syncOpenCode syncs sessions from OpenCode SQLite databases.
@@ -2403,7 +2658,7 @@ func (e *Engine) startWorkers(
 					continue
 				}
 				results <- syncJob{
-					processResult: e.processFile(file),
+					processResult: e.processFile(ctx, file),
 					path:          file.Path,
 				}
 			}
@@ -2479,7 +2734,27 @@ func (e *Engine) collectAndBatch(
 			}
 			continue
 		}
+		excludedSessionIDs := e.applyIDPrefixToSessionIDs(
+			r.excludedSessionIDs,
+		)
+		if len(excludedSessionIDs) > 0 {
+			if _, err := e.db.DeleteParserExcludedSessions(
+				excludedSessionIDs,
+			); err != nil {
+				log.Printf("delete parser-excluded sessions: %v", err)
+				stats.RecordFailed()
+				continue
+			}
+			stats.parserExcludedIDs = append(
+				stats.parserExcludedIDs,
+				excludedSessionIDs...,
+			)
+		}
 		if len(r.results) == 0 && r.incremental == nil {
+			if len(r.excludedSessionIDs) > 0 {
+				stats.filesOK++
+				stats.parserExcludedFiles++
+			}
 			if r.cacheSkip {
 				e.cacheSkip(r.path, r.mtime)
 			}
@@ -2511,6 +2786,7 @@ func (e *Engine) collectAndBatch(
 					sess:         pr.Session,
 					msgs:         pr.Messages,
 					usageEvents:  pr.UsageEvents,
+					needsRetry:   r.needsRetry,
 					forceReplace: r.forceReplace,
 				})
 			}
@@ -2584,12 +2860,14 @@ type incrementalUpdate struct {
 }
 
 type processResult struct {
-	results     []parser.ParseResult
-	skip        bool
-	mtime       int64
-	err         error
-	incremental *incrementalUpdate
-	cacheSkip   bool
+	results            []parser.ParseResult
+	excludedSessionIDs []string
+	skip               bool
+	mtime              int64
+	err                error
+	incremental        *incrementalUpdate
+	cacheSkip          bool
+	needsRetry         bool
 	// forceReplace requests full message replacement on write,
 	// even when the existing rows would otherwise be left in
 	// place. Set when a fall-through to full parse is recovering
@@ -2600,17 +2878,26 @@ type processResult struct {
 }
 
 func (e *Engine) processFile(
+	ctx context.Context,
 	file parser.DiscoveredFile,
 ) processResult {
 
-	statPath := file.Path
-	if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
-		statPath = dbPath
+	var info os.FileInfo
+	var err error
+	if file.Agent == parser.AgentAntigravityCLI {
+		info, err = parser.AntigravityCLIFileInfo(file.Path)
+	} else {
+		statPath := file.Path
+		if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+			statPath = dbPath
+		} else if dbPath, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
+			statPath = dbPath
+		}
+		info, err = os.Stat(statPath)
 	}
-	info, err := os.Stat(statPath)
 	if err != nil {
 		return processResult{
-			err: fmt.Errorf("stat %s: %w", statPath, err),
+			err: fmt.Errorf("stat %s: %w", file.Path, err),
 		}
 	}
 
@@ -2649,7 +2936,7 @@ func (e *Engine) processFile(
 	var res processResult
 	switch file.Agent {
 	case parser.AgentClaude:
-		res = e.processClaude(file, info)
+		res = e.processClaude(ctx, file, info)
 	case parser.AgentCodex:
 		res = e.processCodex(file, info)
 	case parser.AgentCopilot:
@@ -2663,7 +2950,7 @@ func (e *Engine) processFile(
 	case parser.AgentCursor:
 		res = e.processCursor(file, info)
 	case parser.AgentIflow:
-		res = e.processIflow(file, info)
+		res = e.processIflow(ctx, file, info)
 	case parser.AgentAmp:
 		res = e.processAmp(file, info)
 	case parser.AgentZencoder:
@@ -2676,6 +2963,8 @@ func (e *Engine) processFile(
 		res = e.processQwen(file, info)
 	case parser.AgentOpenClaw:
 		res = e.processOpenClaw(file, info)
+	case parser.AgentQClaw:
+		res = e.processQClaw(file, info)
 	case parser.AgentKimi:
 		res = e.processKimi(file, info)
 	case parser.AgentKiro:
@@ -2686,8 +2975,16 @@ func (e *Engine) processFile(
 		res = e.processCortex(file, info)
 	case parser.AgentHermes:
 		res = e.processHermes(file, info)
+	case parser.AgentWorkBuddy:
+		res = e.processWorkBuddy(file, info)
 	case parser.AgentPositron:
 		res = e.processPositron(file, info)
+	case parser.AgentZed:
+		res = e.processZed(file, info)
+	case parser.AgentAntigravity:
+		res = e.processAntigravity(file, info)
+	case parser.AgentAntigravityCLI:
+		res = e.processAntigravityCLI(file, info)
 	default:
 		res = processResult{
 			err: fmt.Errorf(
@@ -2708,6 +3005,14 @@ func (e *Engine) shouldCacheSkip(
 			return false
 		}
 		if _, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+			return false
+		}
+	}
+	if file.Agent == parser.AgentZed {
+		if filepath.Base(file.Path) == "threads.db" {
+			return false
+		}
+		if _, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
 			return false
 		}
 	}
@@ -2864,6 +3169,7 @@ func (f fakeSnapshotInfo) IsDir() bool { return false }
 func (f fakeSnapshotInfo) Sys() any    { return nil }
 
 func (e *Engine) processClaude(
+	ctx context.Context,
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
 
@@ -2871,7 +3177,7 @@ func (e *Engine) processClaude(
 
 	if e.shouldSkipFile(sessionID, info) {
 		sess, _ := e.db.GetSession(
-			context.Background(), e.idPrefix+sessionID,
+			ctx, e.idPrefix+sessionID,
 		)
 		if sess != nil &&
 			sess.Project != "" &&
@@ -2900,14 +3206,14 @@ func (e *Engine) processClaude(
 		file.Path,
 	)
 	if cwd != "" {
-		if p := parser.ExtractProjectFromCwdWithBranch(
-			cwd, gitBranch,
+		if p := parser.ExtractProjectFromCwdWithBranchContext(
+			ctx, cwd, gitBranch,
 		); p != "" {
 			project = p
 		}
 	}
 
-	results, err := parser.ParseClaudeSession(
+	results, excludedIDs, err := parser.ParseClaudeSessionWithExclusions(
 		file.Path, project, e.machine,
 	)
 	if err != nil {
@@ -2929,7 +3235,11 @@ func (e *Engine) processClaude(
 
 	parser.InferRelationshipTypes(results)
 
-	return processResult{results: results, forceReplace: forceReplace}
+	return processResult{
+		results:            results,
+		excludedSessionIDs: excludedIDs,
+		forceReplace:       forceReplace,
+	}
 }
 
 // incrementalParseFunc reads new JSONL lines from a file
@@ -3308,7 +3618,7 @@ func (e *Engine) processCopilot(
 		return processResult{skip: true}
 	}
 
-	sess, msgs, err := parser.ParseCopilotSession(
+	sess, msgs, usageEvents, err := parser.ParseCopilotSession(
 		file.Path, e.machine,
 	)
 	if err != nil {
@@ -3329,7 +3639,7 @@ func (e *Engine) processCopilot(
 
 	return processResult{
 		results: []parser.ParseResult{
-			{Session: *sess, Messages: msgs},
+			{Session: *sess, Messages: msgs, UsageEvents: usageEvents},
 		},
 	}
 }
@@ -3525,6 +3835,35 @@ func (e *Engine) processOpenClaw(
 	}
 }
 
+func (e *Engine) processQClaw(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseQClawSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
 func (e *Engine) processKimi(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
@@ -3552,6 +3891,66 @@ func (e *Engine) processKimi(
 			{Session: *sess, Messages: msgs},
 		},
 	}
+}
+
+func (e *Engine) processZed(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if dbPath, sessionID, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
+		result, err := parser.ParseZedThreadDirect(
+			dbPath, sessionID, e.machine, info,
+		)
+		if err != nil {
+			return processResult{err: err}
+		}
+		if result == nil {
+			return processResult{}
+		}
+		if hash, err := ComputeFileHash(dbPath); err == nil {
+			result.Session.File.Hash = hash
+		}
+		return processResult{
+			results:      []parser.ParseResult{*result},
+			forceReplace: true,
+		}
+	}
+	conn, err := parser.OpenZedDB(file.Path)
+	if err != nil {
+		return processResult{err: err}
+	}
+	defer conn.Close()
+
+	metas, err := parser.ListZedThreadMetas(conn, file.Path)
+	if err != nil {
+		return processResult{err: err}
+	}
+
+	hash, _ := ComputeFileHash(file.Path)
+
+	var results []parser.ParseResult
+	for _, meta := range metas {
+		_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
+		if ok && storedMtime == meta.FileMtime &&
+			e.db.GetDataVersionByPath(meta.VirtualPath) >=
+				db.CurrentDataVersion() {
+			continue
+		}
+		result, err := parser.ParseZedThreadFromDB(
+			conn, file.Path, meta.RawID, e.machine, info,
+		)
+		if err != nil {
+			log.Printf("zed thread %s: %v", meta.RawID, err)
+			continue
+		}
+		if result == nil {
+			continue
+		}
+		if hash != "" {
+			result.Session.File.Hash = hash
+		}
+		results = append(results, *result)
+	}
+	return processResult{results: results, forceReplace: true}
 }
 
 func (e *Engine) processKiro(
@@ -3740,6 +4139,35 @@ func (e *Engine) processHermes(
 	}
 }
 
+func (e *Engine) processWorkBuddy(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseWorkBuddySession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
 func (e *Engine) processPositron(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
@@ -3765,6 +4193,70 @@ func (e *Engine) processPositron(
 	return processResult{
 		results: []parser.ParseResult{
 			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
+func (e *Engine) processAntigravity(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseAntigravitySession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
+func (e *Engine) processAntigravityCLI(
+	file parser.DiscoveredFile, effectiveInfo os.FileInfo,
+) processResult {
+	// processFile supplies AntigravityCLIFileInfo here, so .db WAL/SHM
+	// sidecars and .pb trajectory sidecars participate in skip checks.
+	if e.shouldSkipByPath(file.Path, effectiveInfo) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, parseStatus, err := parser.ParseAntigravityCLISessionWithStatus(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		needsRetry: parseStatus.NeedsRetry,
+		results: []parser.ParseResult{
+			{
+				Session:  *sess,
+				Messages: msgs,
+			},
 		},
 	}
 }
@@ -3944,6 +4436,7 @@ func validateCursorContainment(
 }
 
 func (e *Engine) processIflow(
+	ctx context.Context,
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
 	// Extract session ID from filename: session-<uuid>.jsonl
@@ -3951,7 +4444,7 @@ func (e *Engine) processIflow(
 
 	if e.shouldSkipFile(sessionID, info) {
 		sess, _ := e.db.GetSession(
-			context.Background(), e.idPrefix+sessionID,
+			ctx, e.idPrefix+sessionID,
 		)
 		if sess != nil &&
 			sess.Project != "" &&
@@ -3966,8 +4459,8 @@ func (e *Engine) processIflow(
 		file.Path,
 	)
 	if cwd != "" {
-		if p := parser.ExtractProjectFromCwdWithBranch(
-			cwd, gitBranch,
+		if p := parser.ExtractProjectFromCwdWithBranchContext(
+			ctx, cwd, gitBranch,
 		); p != "" {
 			project = p
 		}
@@ -4045,7 +4538,7 @@ func (e *Engine) recomputeSignalsFromDB(
 			"loading messages %s: %w", sessionID, err,
 		)
 	}
-	update := computeSignalsFromMessages(*sess, msgs)
+	update, findings := computeSignalsAndSecrets(*sess, msgs)
 	if err := e.db.UpdateSessionSignals(
 		sessionID, update,
 	); err != nil {
@@ -4055,6 +4548,12 @@ func (e *Engine) recomputeSignalsFromDB(
 		return fmt.Errorf(
 			"updating signals %s: %w", sessionID, err,
 		)
+	}
+	if err := e.db.ReplaceSessionSecretFindings(
+		sessionID, findings, update.SecretLeakCount, update.SecretsRulesVersion,
+	); err != nil {
+		log.Printf("secrets: persist %s: %v", sessionID, err)
+		return fmt.Errorf("persisting findings %s: %w", sessionID, err)
 	}
 	return nil
 }
@@ -4074,7 +4573,21 @@ type pendingWrite struct {
 	sess         parser.ParsedSession
 	msgs         []parser.ParsedMessage
 	usageEvents  []parser.ParsedUsageEvent
+	needsRetry   bool
 	forceReplace bool
+}
+
+func dataVersionForWrite(pw pendingWrite) int {
+	if !pw.needsRetry {
+		return db.CurrentDataVersion()
+	}
+	// Keep successfully written fallback content visible while
+	// forcing the next sync to retry the higher-resolution source.
+	v := db.CurrentDataVersion() - 1
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 type worktreeProjectResolver func(
@@ -4168,12 +4681,15 @@ func (e *Engine) writeBatch(
 			continue
 		}
 
-		replaceMessages := forceReplace || pw.forceReplace ||
-			stale || pw.sess.Agent == parser.AgentOpenCode
+		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
+			stale || pw.sess.Agent == parser.AgentOpenCode ||
+			pw.sess.Agent == parser.AgentAntigravityCLI
+
+		update, findings := computeSignalsAndSecrets(s, msgs)
 
 		var werr error
 		if replaceMessages {
-			werr = e.db.ReplaceSessionMessages(s.ID, msgs)
+			werr = e.db.ReplaceSessionContent(s.ID, msgs, update, findings)
 		} else {
 			werr = e.writeMessages(s.ID, msgs)
 		}
@@ -4202,20 +4718,22 @@ func (e *Engine) writeBatch(
 		// won't leave the session marked at the current
 		// parser version with stale messages.
 		if err := e.db.SetSessionDataVersion(
-			s.ID, db.CurrentDataVersion(),
+			s.ID, dataVersionForWrite(pw),
 		); err != nil {
 			log.Printf(
 				"set data_version for %s: %v", s.ID, err,
 			)
 		}
 
-		update := computeSignalsFromMessages(s, msgs)
-		if err := e.db.UpdateSessionSignals(
-			s.ID, update,
-		); err != nil {
-			log.Printf(
-				"signals: update %s: %v", s.ID, err,
-			)
+		if !replaceMessages {
+			if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
+				log.Printf("signals: update %s: %v", s.ID, err)
+			}
+			if err := e.db.ReplaceSessionSecretFindings(
+				s.ID, findings, update.SecretLeakCount,
+				update.SecretsRulesVersion); err != nil {
+				log.Printf("secrets: persist %s: %v", s.ID, err)
+			}
 		}
 		writtenSessions++
 		writtenMessages += len(msgs)
@@ -4263,20 +4781,27 @@ func (e *Engine) writeBatchBulk(
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 
 	for _, pw := range batch {
+		tPrep := time.Now()
 		s, msgs, ok := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
+		e.phaseStats.PrepNanos.Add(int64(time.Since(tPrep)))
 		if !ok {
 			continue
 		}
-		replaceMessages := forceReplace || pw.forceReplace ||
-			pw.sess.Agent == parser.AgentOpenCode
+		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
+			pw.sess.Agent == parser.AgentOpenCode ||
+			pw.sess.Agent == parser.AgentAntigravityCLI
+		tScan := time.Now()
+		update, findings := computeSignalsAndSecrets(s, msgs)
+		e.phaseStats.ScanNanos.Add(int64(time.Since(tScan)))
 		writes = append(writes, db.SessionBatchWrite{
 			Session:         s,
 			Messages:        msgs,
 			UsageEvents:     toDBUsageEvents(s.ID, pw.usageEvents),
-			Signals:         computeSignalsFromMessages(s, msgs),
-			DataVersion:     db.CurrentDataVersion(),
+			Signals:         update,
+			Findings:        findings,
+			DataVersion:     dataVersionForWrite(pw),
 			ReplaceMessages: replaceMessages,
 		})
 		if pw.sess.File.Path != "" {
@@ -4290,7 +4815,12 @@ func (e *Engine) writeBatchBulk(
 		return 0, 0, 0
 	}
 
+	tWrite := time.Now()
 	result, err := e.db.WriteSessionBatch(writes)
+	e.phaseStats.WriteNanos.Add(int64(time.Since(tWrite)))
+	e.phaseStats.Batches.Add(1)
+	e.phaseStats.WriteBatchSize.Add(int64(len(writes)))
+	e.phaseStats.BatchedWrites.Add(int64(result.WrittenSessions))
 	if err != nil {
 		log.Printf("write session batch: %v", err)
 		return 0, 0, len(writes)
@@ -4452,9 +4982,8 @@ func (e *Engine) writeSessionFullWithResolver(
 		log.Printf("upsert session %s: %v", s.ID, err)
 		return err
 	}
-	if err := e.db.ReplaceSessionMessages(
-		s.ID, msgs,
-	); err != nil {
+	update, findings := computeSignalsAndSecrets(s, msgs)
+	if err := e.db.ReplaceSessionContent(s.ID, msgs, update, findings); err != nil {
 		log.Printf(
 			"replace messages for %s: %v",
 			s.ID, err,
@@ -4474,17 +5003,10 @@ func (e *Engine) writeSessionFullWithResolver(
 	// See writeBatch for why data_version is bumped here
 	// rather than inside UpsertSession.
 	if err := e.db.SetSessionDataVersion(
-		s.ID, db.CurrentDataVersion(),
+		s.ID, dataVersionForWrite(pw),
 	); err != nil {
 		log.Printf(
 			"set data_version for %s: %v", s.ID, err,
-		)
-	}
-
-	update := computeSignalsFromMessages(s, msgs)
-	if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
-		log.Printf(
-			"signals: update %s: %v", s.ID, err,
 		)
 	}
 
@@ -4648,6 +5170,21 @@ func countToolResultEvents(calls []db.ToolCall) int {
 		total += len(call.ResultEvents)
 	}
 	return total
+}
+
+func (e *Engine) applyIDPrefixToSessionIDs(ids []string) []string {
+	if e.idPrefix == "" || len(ids) == 0 {
+		return ids
+	}
+	prefixed := make([]string, len(ids))
+	for i, id := range ids {
+		if id == "" || strings.HasPrefix(id, e.idPrefix) {
+			prefixed[i] = id
+			continue
+		}
+		prefixed[i] = e.idPrefix + id
+	}
+	return prefixed
 }
 
 // applyRemoteRewrites prefixes session IDs and rewrites
@@ -5021,6 +5558,22 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 			return mtime
 		}
 	}
+	if def.Type == parser.AgentZed {
+		if _, _, ok := parser.ParseZedSQLiteVirtualPath(path); ok {
+			mtime, err := parser.ZedSQLiteSourceMtime(path)
+			if err != nil {
+				return 0
+			}
+			return mtime
+		}
+	}
+	if def.Type == parser.AgentAntigravityCLI {
+		info, err := parser.AntigravityCLIFileInfo(path)
+		if err != nil {
+			return 0
+		}
+		return info.ModTime().UnixNano()
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -5032,6 +5585,14 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 // SyncSingleSession re-syncs a single session by its ID and
 // uses the existing DB project as fallback where applicable.
 func (e *Engine) SyncSingleSession(sessionID string) (err error) {
+	return e.SyncSingleSessionContext(context.Background(), sessionID)
+}
+
+// SyncSingleSessionContext re-syncs a single session by its ID using ctx for
+// cancellable git-backed project resolution and database reads on this path.
+func (e *Engine) SyncSingleSessionContext(
+	ctx context.Context, sessionID string,
+) (err error) {
 	e.syncMu.Lock()
 	preserved := false
 	// Defers run LIFO: unlock runs first (releasing syncMu), then
@@ -5073,6 +5634,15 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 		}
 	}
 
+	if def.Type == parser.AgentZed {
+		err = e.syncSingleZed(sessionID)
+		if errors.Is(err, errSessionPreserved) {
+			preserved = true
+			return nil
+		}
+		return err
+	}
+
 	path := e.FindSourceFile(sessionID)
 	if path == "" {
 		return fmt.Errorf(
@@ -5099,7 +5669,7 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 	}
 	if def.Type == parser.AgentHermes {
 		hermesProject := ""
-		if sess, _ := e.db.GetSession(context.Background(), sessionID); sess != nil &&
+		if sess, _ := e.db.GetSession(ctx, sessionID); sess != nil &&
 			sess.Project != "" && !parser.NeedsProjectReparse(sess.Project) {
 			hermesProject = sess.Project
 		}
@@ -5131,7 +5701,7 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 	switch agent {
 	case parser.AgentClaude:
 		// Try to preserve existing project from DB first
-		if sess, _ := e.db.GetSession(context.Background(), sessionID); sess != nil &&
+		if sess, _ := e.db.GetSession(ctx, sessionID); sess != nil &&
 			sess.Project != "" &&
 			!parser.NeedsProjectReparse(sess.Project) {
 			file.Project = sess.Project
@@ -5158,7 +5728,7 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 	case parser.AgentIflow:
 		// path is <iflowDir>/<project>/session-<uuid>.jsonl
 		// Extract project dir name from parent directory
-		if sess, _ := e.db.GetSession(context.Background(), sessionID); sess != nil &&
+		if sess, _ := e.db.GetSession(ctx, sessionID); sess != nil &&
 			sess.Project != "" &&
 			!parser.NeedsProjectReparse(sess.Project) {
 			file.Project = sess.Project
@@ -5174,9 +5744,21 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 		file.Project = parser.GetProjectName(
 			filepath.Base(filepath.Dir(filepath.Dir(path))),
 		)
+	case parser.AgentWorkBuddy:
+		for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
+			rel, ok := isUnder(workBuddyDir, path)
+			if !ok {
+				continue
+			}
+			parts := strings.Split(rel, string(filepath.Separator))
+			if len(parts) == 2 || len(parts) == 4 && parts[2] == "subagents" {
+				file.Project = parts[0]
+				break
+			}
+		}
 	}
 
-	res := e.processFile(file)
+	res := e.processFile(ctx, file)
 	if res.err != nil {
 		if res.cacheSkip && res.mtime != 0 {
 			e.cacheSkip(path, res.mtime)
@@ -5206,6 +5788,7 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 				sess:        pr.Session,
 				msgs:        pr.Messages,
 				usageEvents: pr.UsageEvents,
+				needsRetry:  res.needsRetry,
 			},
 		); err != nil &&
 			!isIntentionalSessionSkip(err) &&
@@ -5400,6 +5983,56 @@ func (e *Engine) syncSingleKiroSQLite(
 		)
 	}
 	return fmt.Errorf("kiro sqlite session %s not found", sessionID)
+}
+
+func (e *Engine) syncSingleZed(sessionID string) error {
+	rawID := strings.TrimPrefix(sessionID, "zed:")
+
+	var lastErr error
+	for _, dir := range e.agentDirs[parser.AgentZed] {
+		dbPath := filepath.Join(dir, parser.ZedThreadsDBRelPath)
+		if !parser.IsRegularFile(dbPath) {
+			continue
+		}
+		info, err := os.Stat(dbPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		result, err := parser.ParseZedThreadDirect(dbPath, rawID, e.machine, info)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if result == nil {
+			continue
+		}
+		if hash, err := ComputeFileHash(dbPath); err == nil {
+			result.Session.File.Hash = hash
+		}
+		pw := pendingWrite{
+			sess:         result.Session,
+			msgs:         result.Messages,
+			usageEvents:  result.UsageEvents,
+			forceReplace: true,
+		}
+		if err := e.writeSessionFull(pw); err != nil &&
+			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionPreserved) {
+			return fmt.Errorf("write session %s: %w", result.Session.ID, err)
+		} else if errors.Is(err, errSessionPreserved) {
+			return err
+		}
+		return nil
+	}
+
+	if len(e.agentDirs[parser.AgentZed]) == 0 {
+		return fmt.Errorf("zed dir not configured")
+	}
+	if lastErr != nil {
+		return fmt.Errorf("zed session %s: %w", sessionID, lastErr)
+	}
+	return fmt.Errorf("zed session %s not found", sessionID)
 }
 
 func isKiroSQLiteVirtualPath(path string) bool {
@@ -6061,4 +6694,118 @@ func (e *Engine) emit(scope string) {
 	if e.emitter != nil {
 		e.emitter.Emit(scope)
 	}
+}
+
+const scanProgressInterval = 50
+
+// SecretScanInput parameterises ScanSecrets.
+type SecretScanInput struct {
+	Backfill bool
+	Project  string
+	Agent    string
+	DateFrom string
+	DateTo   string
+}
+
+// SecretScanProgress is one progress tick.
+type SecretScanProgress struct {
+	Scanned int `json:"scanned"`
+	Total   int `json:"total"`
+}
+
+// SecretScanSummary is the final result of a scan.
+type SecretScanSummary struct {
+	Scanned int `json:"scanned"`
+	// WithSecrets counts sessions with ≥1 definite finding. It does NOT
+	// include sessions whose findings are all candidate-tier; the
+	// presence of those is implied by CandidateFindings > 0 when
+	// DefiniteFindings is 0.
+	WithSecrets       int `json:"with_secrets"`
+	TotalFindings     int `json:"total_findings"`
+	DefiniteFindings  int `json:"definite_findings"`
+	CandidateFindings int `json:"candidate_findings"`
+}
+
+// ScanSecrets scans candidate sessions and persists their findings, invoking
+// progress periodically. Resumable: each scanned session records the current
+// rules version, so an interrupted backfill resumes by skipping sessions
+// already at that version.
+func (e *Engine) ScanSecrets(
+	ctx context.Context, in SecretScanInput,
+	progress func(SecretScanProgress),
+) (SecretScanSummary, error) {
+	ver := secrets.RulesVersion()
+	ids, err := e.db.SecretScanCandidates(ctx, db.SecretScanCandidateFilter{
+		CurrentVersion: ver, OnlyStale: in.Backfill,
+		Project: in.Project, Agent: in.Agent,
+		DateFrom: in.DateFrom, DateTo: in.DateTo,
+	})
+	if err != nil {
+		return SecretScanSummary{}, err
+	}
+	var sum SecretScanSummary
+	total := len(ids)
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			return sum, ctx.Err()
+		}
+		nf, leak, ok := e.scanOneSession(ctx, id, ver)
+		// A cancellation during the scan must end the run with an error,
+		// not a partial success. This covers both a failed scan and a
+		// successful final session whose context was canceled mid-scan,
+		// since scanOneSession does CPU work and a non-context-aware
+		// persist after its context-aware reads.
+		if ctx.Err() != nil {
+			return sum, ctx.Err()
+		}
+		if !ok {
+			continue
+		}
+		sum.Scanned++
+		sum.TotalFindings += nf
+		sum.DefiniteFindings += leak
+		sum.CandidateFindings += nf - leak
+		if leak > 0 {
+			sum.WithSecrets++
+		}
+		if progress != nil && scanShouldReport(i, total) {
+			progress(SecretScanProgress{Scanned: sum.Scanned, Total: total})
+		}
+	}
+	return sum, nil
+}
+
+// scanOneSession scans one session and persists its findings at ver. Returns
+// the finding count, the definite-leak count, and ok=false when the session
+// could not be loaded or persisted (skipped, not fatal to the whole run).
+//
+// Holds syncMu so the read/compute/write path is atomic against a concurrent
+// sync replacing this session's messages: otherwise a sync could write fresh
+// findings for new messages and then have this scan overwrite them with
+// results from a stale snapshot while marking the session current. The lock is
+// taken per session, not for the whole scan, so a long backfill does not stall
+// the file watcher and periodic sync.
+func (e *Engine) scanOneSession(
+	ctx context.Context, id, ver string,
+) (int, int, bool) {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+	sess, err := e.db.GetSessionFull(ctx, id)
+	if err != nil || sess == nil {
+		return 0, 0, false
+	}
+	msgs, err := e.db.GetAllMessages(ctx, id)
+	if err != nil {
+		return 0, 0, false
+	}
+	findings, leak := scanSecretsFromMessages(*sess, msgs, secrets.Scan)
+	if err := e.db.ReplaceSessionSecretFindings(id, findings, leak, ver); err != nil {
+		log.Printf("secrets scan: persist %s: %v", id, err)
+		return 0, 0, false
+	}
+	return len(findings), leak, true
+}
+
+func scanShouldReport(i, total int) bool {
+	return (i+1)%scanProgressInterval == 0 || i+1 == total
 }

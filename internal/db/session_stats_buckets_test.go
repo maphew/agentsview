@@ -3,6 +3,9 @@ package db
 import (
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAssignBucketDurationEdges(t *testing.T) {
@@ -16,9 +19,7 @@ func TestAssignBucketDurationEdges(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := assignBucket(durationMinutesEdges, c.v)
-		if got != c.want {
-			t.Errorf("durationMinutes v=%v: got %d, want %d", c.v, got, c.want)
-		}
+		assert.Equal(t, c.want, got, "durationMinutes v=%v", c.v)
 	}
 }
 
@@ -36,24 +37,17 @@ func TestAssignBucketUserMessagesAll(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := assignBucket(userMessagesEdgesAll, c.v)
-		if got != c.want {
-			t.Errorf("user_messages scope_all v=%v: got %d, want %d", c.v, got, c.want)
-		}
+		assert.Equal(t, c.want, got, "user_messages scope_all v=%v", c.v)
 	}
 }
 
 func TestBuildEmptyBucketsTopIsUnbounded(t *testing.T) {
 	b := buildEmptyBuckets(durationMinutesEdges)
-	if len(b) != 6 {
-		t.Fatalf("want 6 buckets, got %d", len(b))
-	}
+	require.Len(t, b, 6)
 	top := b[len(b)-1]
-	if top.Edge[1] != nil {
-		t.Errorf("top bucket hi should be nil (JSON null), got %v", *top.Edge[1])
-	}
-	if math.IsInf(*top.Edge[0], 1) {
-		t.Errorf("top bucket lo should be finite, got +Inf")
-	}
+	assert.Nil(t, top.Edge[1], "top bucket hi should be nil (JSON null)")
+	assert.False(t, math.IsInf(*top.Edge[0], 1),
+		"top bucket lo should be finite, got +Inf")
 }
 
 // TestEdgeListsShape pins every v1 edge list to the spec's bucket counts
@@ -74,18 +68,13 @@ func TestEdgeListsShape(t *testing.T) {
 		{"cacheHitRatio", cacheHitRatioEdges, 5, false}, // inclusive of 1.0 via 1.000001
 	}
 	for _, c := range cases {
-		if got := len(c.edges) - 1; got != c.wantBuckets {
-			t.Errorf("%s: want %d buckets, got %d", c.name, c.wantBuckets, got)
-		}
+		assert.Equal(t, c.wantBuckets, len(c.edges)-1, "%s: buckets", c.name)
 		for i := 1; i < len(c.edges); i++ {
-			if !(c.edges[i] > c.edges[i-1]) {
-				t.Errorf("%s: edges must be strictly increasing; edges[%d]=%v <= edges[%d]=%v",
-					c.name, i, c.edges[i], i-1, c.edges[i-1])
-			}
+			assert.Greater(t, c.edges[i], c.edges[i-1],
+				"%s: edges must be strictly increasing; edges[%d]=%v <= edges[%d]=%v",
+				c.name, i, c.edges[i], i-1, c.edges[i-1])
 		}
 		topIsInf := math.IsInf(c.edges[len(c.edges)-1], 1)
-		if topIsInf != c.wantTopInf {
-			t.Errorf("%s: top edge +Inf = %v, want %v", c.name, topIsInf, c.wantTopInf)
-		}
+		assert.Equal(t, c.wantTopInf, topIsInf, "%s: top edge +Inf", c.name)
 	}
 }

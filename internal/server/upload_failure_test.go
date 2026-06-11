@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/server"
@@ -44,12 +47,8 @@ func TestUploadSession_SaveFailure(t *testing.T) {
 	// to force os.MkdirAll to fail
 	projectName := "failproj"
 	projectPath := filepath.Join(te.dataDir, "uploads", projectName)
-	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
-		t.Fatalf("creating uploads dir: %v", err)
-	}
-	if err := os.WriteFile(projectPath, nil, 0o644); err != nil {
-		t.Fatalf("creating conflict file: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(projectPath), 0o755))
+	require.NoError(t, os.WriteFile(projectPath, nil, 0o644))
 
 	w := te.upload(t, "test.jsonl", "{}", "project="+projectName)
 	assertStatus(t, w, http.StatusInternalServerError)
@@ -76,9 +75,7 @@ func TestUploadSession_CommitFailureDoesNotWriteDB(t *testing.T) {
 	finalPath := filepath.Join(
 		te.dataDir, "uploads", project, filename,
 	)
-	if err := os.MkdirAll(finalPath, 0o755); err != nil {
-		t.Fatalf("creating final path directory: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(finalPath, 0o755))
 
 	content := testjsonl.NewSessionBuilder().
 		AddClaudeUser("2024-01-01T10:00:00Z", "hello").
@@ -91,12 +88,8 @@ func TestUploadSession_CommitFailureDoesNotWriteDB(t *testing.T) {
 	sess, err := te.db.GetSessionFull(
 		context.Background(), "rename-fail",
 	)
-	if err != nil {
-		t.Fatalf("GetSessionFull: %v", err)
-	}
-	if sess != nil {
-		t.Fatalf("session persisted despite upload commit failure: %+v", sess)
-	}
+	require.NoError(t, err)
+	assert.Nil(t, sess, "session persisted despite upload commit failure")
 }
 
 func TestUploadSession_DBCommitFailureAfterFileCommitRollsBackUpload(
@@ -124,15 +117,10 @@ func TestUploadSession_DBCommitFailureAfterFileCommitRollsBackUpload(
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, err := mw.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatalf("creating form file: %v", err)
-	}
-	if _, err := fw.Write([]byte(content)); err != nil {
-		t.Fatalf("writing form file: %v", err)
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatalf("closing multipart writer: %v", err)
-	}
+	require.NoError(t, err)
+	_, err = fw.Write([]byte(content))
+	require.NoError(t, err)
+	require.NoError(t, mw.Close())
 
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/sessions/upload?project="+project+"&machine=remote", &buf)
@@ -145,9 +133,8 @@ func TestUploadSession_DBCommitFailureAfterFileCommitRollsBackUpload(
 
 	assertStatus(t, w, http.StatusInternalServerError)
 	assertErrorResponse(t, w, "failed to save session to database")
-	if _, err := os.Stat(finalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("upload file exists after DB commit failure: %v", err)
-	}
+	_, statErr := os.Stat(finalPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "upload file exists after DB commit failure")
 }
 
 func TestUploadSession_DBCommitFailureAfterReplacingFileRestoresPrevious(
@@ -159,13 +146,9 @@ func TestUploadSession_DBCommitFailureAfterReplacingFileRestoresPrevious(
 		filename = "replace-then-commit-fails.jsonl"
 	)
 	finalPath := filepath.Join(dir, "uploads", project, filename)
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		t.Fatalf("creating upload dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(finalPath), 0o755))
 	previous := []byte("previous file contents")
-	if err := os.WriteFile(finalPath, previous, 0o644); err != nil {
-		t.Fatalf("writing previous upload: %v", err)
-	}
+	require.NoError(t, os.WriteFile(finalPath, previous, 0o644))
 
 	srv := server.New(config.Config{
 		Host:         "127.0.0.1",
@@ -182,15 +165,10 @@ func TestUploadSession_DBCommitFailureAfterReplacingFileRestoresPrevious(
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, err := mw.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatalf("creating form file: %v", err)
-	}
-	if _, err := fw.Write([]byte(content)); err != nil {
-		t.Fatalf("writing form file: %v", err)
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatalf("closing multipart writer: %v", err)
-	}
+	require.NoError(t, err)
+	_, err = fw.Write([]byte(content))
+	require.NoError(t, err)
+	require.NoError(t, mw.Close())
 
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/sessions/upload?project="+project+"&machine=remote", &buf)
@@ -204,10 +182,6 @@ func TestUploadSession_DBCommitFailureAfterReplacingFileRestoresPrevious(
 	assertStatus(t, w, http.StatusInternalServerError)
 	assertErrorResponse(t, w, "failed to save session to database")
 	got, err := os.ReadFile(finalPath)
-	if err != nil {
-		t.Fatalf("reading restored upload: %v", err)
-	}
-	if !bytes.Equal(got, previous) {
-		t.Fatalf("restored file = %q, want %q", got, previous)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, previous, got, "restored file differs")
 }
