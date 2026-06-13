@@ -5,6 +5,7 @@
   import { sessions } from "../../stores/sessions.svelte.js";
   import { searchStore } from "../../stores/search.svelte.js";
   import { messages } from "../../stores/messages.svelte.js";
+  import { router } from "../../stores/router.svelte.js";
   import {
     formatRelativeTime,
     truncate,
@@ -101,11 +102,12 @@
 
   function selectSession(s: Session) {
     sessions.selectSession(s.id);
+    router.navigateToSession(s.id);
     close();
   }
 
   function selectSearchResult(r: SearchResult) {
-    sessions.selectSession(r.session_id);
+    void sessions.navigateToSession(r.session_id);
     if (r.ordinal !== -1) {
       ui.scrollToOrdinal(r.ordinal, r.session_id);
     } else {
@@ -113,6 +115,7 @@
       // previously highlighted ordinal is not left active.
       ui.clearScrollState();
     }
+    router.navigateToSession(r.session_id);
     close();
   }
 

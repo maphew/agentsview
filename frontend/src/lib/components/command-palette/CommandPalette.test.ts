@@ -8,7 +8,7 @@ import {
 } from "vitest";
 import { mount, unmount, tick } from "svelte";
 
-const { mockUi, mockSessions, mockSearchStore, mockCopyToClipboard } = vi.hoisted(
+const { mockUi, mockSessions, mockSearchStore, mockRouter, mockCopyToClipboard } = vi.hoisted(
   () => ({
     mockUi: {
       activeModal: "commandPalette" as
@@ -33,6 +33,7 @@ const { mockUi, mockSessions, mockSearchStore, mockCopyToClipboard } = vi.hoiste
       }>,
       filters: { project: "" },
       selectSession: vi.fn(),
+      navigateToSession: vi.fn(),
     },
     mockSearchStore: {
       results: [] as Array<unknown>,
@@ -42,6 +43,9 @@ const { mockUi, mockSessions, mockSearchStore, mockCopyToClipboard } = vi.hoiste
       clear: vi.fn(),
       resetSort: vi.fn(),
       setSort: vi.fn(),
+    },
+    mockRouter: {
+      navigateToSession: vi.fn(),
     },
     mockCopyToClipboard: vi.fn(),
   }),
@@ -57,6 +61,10 @@ vi.mock("../../stores/sessions.svelte.js", () => ({
 
 vi.mock("../../stores/search.svelte.js", () => ({
   searchStore: mockSearchStore,
+}));
+
+vi.mock("../../stores/router.svelte.js", () => ({
+  router: mockRouter,
 }));
 
 vi.mock("../../stores/messages.svelte.js", () => ({
@@ -216,7 +224,7 @@ describe("CommandPalette", () => {
     unmount(component);
   });
 
-  it("name-only result (ordinal === -1) selects session and clears selection without scrolling", async () => {
+  it("name-only result (ordinal === -1) hydrates session and clears selection without scrolling", async () => {
     mockSearchStore.results = [
       {
         session_id: "claude:nameonly123",
@@ -241,9 +249,43 @@ describe("CommandPalette", () => {
     item.click();
     await tick();
 
-    expect(mockSessions.selectSession).toHaveBeenCalledWith("claude:nameonly123");
+    expect(mockSessions.selectSession).not.toHaveBeenCalled();
+    expect(mockSessions.navigateToSession).toHaveBeenCalledWith("claude:nameonly123");
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("claude:nameonly123");
     expect(mockUi.scrollToOrdinal).not.toHaveBeenCalled();
     expect(mockUi.clearScrollState).toHaveBeenCalled();
+
+    unmount(component);
+  });
+
+  it("search result click navigates to the session route", async () => {
+    mockSearchStore.results = [
+      {
+        session_id: "codex:search123",
+        project: "proj-a",
+        agent: "codex",
+        ordinal: 7,
+        session_ended_at: "2026-01-01T00:00:00Z",
+        snippet: "matching content",
+        rank: 0,
+      },
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.value = "match";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const item = await tickUntil(".palette-item");
+    item.click();
+    await tick();
+
+    expect(mockSessions.selectSession).not.toHaveBeenCalled();
+    expect(mockSessions.navigateToSession).toHaveBeenCalledWith("codex:search123");
+    expect(mockUi.scrollToOrdinal).toHaveBeenCalledWith(7, "codex:search123");
+    expect(mockRouter.navigateToSession).toHaveBeenCalledWith("codex:search123");
 
     unmount(component);
   });
