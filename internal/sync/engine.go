@@ -1618,6 +1618,7 @@ func (e *Engine) ResyncAll(
 	} else {
 		oldFileSessions -= e.countRootOpenCodeSessions(origDB)
 		oldFileSessions -= e.countRootKiroSQLiteSessions(origDB)
+		oldFileSessions -= e.countRootKiloSQLiteSessions(origDB)
 		if oldFileSessions < 0 {
 			oldFileSessions = 0
 		}
@@ -1996,6 +1997,24 @@ func (e *Engine) countRootKiroSQLiteSessions(
 	`, string(parser.AgentKiro), "%data.sqlite3#%").Scan(&count)
 	if err != nil {
 		log.Printf("count root kiro sqlite sessions: %v", err)
+	}
+	return count
+}
+
+func (e *Engine) countRootKiloSQLiteSessions(
+	database *db.DB,
+) int {
+	var count int
+	err := database.Reader().QueryRow(`
+		SELECT COUNT(*) FROM sessions
+		WHERE agent = ?
+		  AND file_path LIKE ?
+		  AND message_count > 0
+		  AND relationship_type NOT IN ('subagent', 'fork')
+		  AND deleted_at IS NULL
+	`, string(parser.AgentKilo), "%kilo.db#%").Scan(&count)
+	if err != nil {
+		log.Printf("count root kilo sqlite sessions: %v", err)
 	}
 	return count
 }
@@ -5338,7 +5357,7 @@ func (e *Engine) writeBatch(
 		}
 
 		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
-			stale || pw.sess.Agent == parser.AgentOpenCode ||
+			stale || isOpenCodeFormatStorageAgent(pw.sess.Agent) ||
 			pw.sess.Agent == parser.AgentAntigravity ||
 			pw.sess.Agent == parser.AgentAntigravityCLI
 
@@ -5416,7 +5435,7 @@ func (e *Engine) prepareSessionWrite(
 	}
 	s.IsAutomated = isAutomatedFromSession(s)
 
-	if e.shouldPreserveOpenCodeArchive(
+	if e.shouldPreserveOpenCodeFormatArchive(
 		pw.sess.Agent, pw.sess.File.Path, s.ID,
 		pw.sess.File.Mtime, derefString(s.FileHash), msgs,
 	) {
@@ -5447,7 +5466,7 @@ func (e *Engine) writeBatchBulk(
 			continue
 		}
 		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
-			pw.sess.Agent == parser.AgentOpenCode ||
+			isOpenCodeFormatStorageAgent(pw.sess.Agent) ||
 			pw.sess.Agent == parser.AgentAntigravity ||
 			pw.sess.Agent == parser.AgentAntigravityCLI
 		tScan := time.Now()
@@ -5671,13 +5690,13 @@ func (e *Engine) writeSessionFullWithResolver(
 	return nil
 }
 
-func (e *Engine) shouldPreserveOpenCodeArchive(
+func (e *Engine) shouldPreserveOpenCodeFormatArchive(
 	agent parser.AgentType, path, sessionID string,
 	currentMtime int64,
 	currentHash string,
 	currentMsgs []db.Message,
 ) bool {
-	if agent != parser.AgentOpenCode {
+	if !isOpenCodeFormatStorageAgent(agent) {
 		return false
 	}
 	store := e.openCodeArchiveStore
@@ -5693,10 +5712,10 @@ func (e *Engine) shouldPreserveOpenCodeArchive(
 	storedHash := derefString(stored.FileHash)
 	storedPath := derefString(stored.FilePath)
 	storedMtime := derefInt64(stored.FileMtime)
-	storedIsStorageArchive := parser.HasOpenCodeStorageFingerprint(
-		storedHash,
-	) || isOpenCodeStoragePath(storedPath)
-	if isOpenCodeSQLiteVirtualPath(path) &&
+	storedIsStorageArchive := hasOpenCodeFormatStorageFingerprint(
+		agent, storedHash,
+	) || isOpenCodeFormatStoragePath(agent, storedPath)
+	if isOpenCodeFormatSQLiteVirtualPath(agent, path) &&
 		!storedIsStorageArchive {
 		return false
 	}
@@ -5711,41 +5730,78 @@ func (e *Engine) shouldPreserveOpenCodeArchive(
 	// live child files in place, so we only preserve when the
 	// newly parsed transcript also looks incomplete relative
 	// to what is already archived.
-	if parser.HasOpenCodeStorageFingerprint(storedHash) &&
-		parser.HasOpenCodeStorageFingerprint(currentHash) &&
+	if hasOpenCodeFormatStorageFingerprint(agent, storedHash) &&
+		hasOpenCodeFormatStorageFingerprint(agent, currentHash) &&
 		!parser.OpenCodeStorageFingerprintMissing(
 			storedHash, currentHash,
 		) {
 		return false
 	}
 	if storedIsStorageArchive &&
-		isOpenCodeSQLiteVirtualPath(path) &&
+		isOpenCodeFormatSQLiteVirtualPath(agent, path) &&
 		currentMtime != 0 &&
 		storedMtime != 0 &&
 		currentMtime <= storedMtime {
 		log.Printf(
-			"skip opencode session %s: sqlite fallback is not newer than preserved storage archive",
-			sessionID,
+			"skip %s session %s: sqlite fallback is not newer than preserved storage archive",
+			agent, sessionID,
 		)
 		return true
 	}
 	if openCodeLegacyArchiveLooksIncomplete(
 		currentMsgs, storedMsgs,
 	) {
-		if parser.HasOpenCodeStorageFingerprint(storedHash) {
+		if hasOpenCodeFormatStorageFingerprint(agent, storedHash) {
 			log.Printf(
-				"skip opencode session %s: storage fingerprint changed but update looks incomplete relative to archive",
-				sessionID,
+				"skip %s session %s: storage fingerprint changed but update looks incomplete relative to archive",
+				agent, sessionID,
 			)
 		} else {
 			log.Printf(
-				"skip opencode session %s: storage update looks incomplete relative to legacy archive",
-				sessionID,
+				"skip %s session %s: storage update looks incomplete relative to legacy archive",
+				agent, sessionID,
 			)
 		}
 		return true
 	}
 	return false
+}
+
+func isOpenCodeFormatStorageAgent(agent parser.AgentType) bool {
+	return agent == parser.AgentOpenCode || agent == parser.AgentKilo
+}
+
+func hasOpenCodeFormatStorageFingerprint(
+	agent parser.AgentType, hash string,
+) bool {
+	switch agent {
+	case parser.AgentOpenCode:
+		return parser.HasOpenCodeStorageFingerprint(hash)
+	case parser.AgentKilo:
+		return parser.HasKiloStorageFingerprint(hash)
+	default:
+		return false
+	}
+}
+
+func isOpenCodeFormatStoragePath(
+	agent parser.AgentType, path string,
+) bool {
+	return strings.HasSuffix(path, ".json") &&
+		!isOpenCodeFormatSQLiteVirtualPath(agent, path)
+}
+
+func isOpenCodeFormatSQLiteVirtualPath(
+	agent parser.AgentType, path string,
+) bool {
+	switch agent {
+	case parser.AgentOpenCode:
+		return isOpenCodeSQLiteVirtualPath(path)
+	case parser.AgentKilo:
+		return isKiloSQLiteVirtualPath(path)
+	default:
+		return false
+	}
 }
 
 func isOpenCodeStoragePath(path string) bool {

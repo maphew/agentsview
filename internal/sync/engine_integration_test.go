@@ -29,6 +29,7 @@ type testEnv struct {
 	cursorDir         string
 	geminiDir         string
 	opencodeDir       string
+	kiloDir           string
 	forgeDir          string
 	piebaldDir        string
 	iflowDir          string
@@ -45,6 +46,7 @@ type testEnvOpts struct {
 	codexDirs    []string
 	cursorDirs   []string
 	opencodeDirs []string
+	kiloDirs     []string
 	kiroDirs     []string
 	emitter      sync.Emitter
 }
@@ -72,6 +74,12 @@ func WithCursorDirs(dirs []string) TestEnvOption {
 func WithOpenCodeDirs(dirs []string) TestEnvOption {
 	return func(o *testEnvOpts) {
 		o.opencodeDirs = dirs
+	}
+}
+
+func WithKiloDirs(dirs []string) TestEnvOption {
+	return func(o *testEnvOpts) {
+		o.kiloDirs = dirs
 	}
 }
 
@@ -141,6 +149,14 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 		env.opencodeDir = opencodeDirs[0]
 	}
 
+	kiloDirs := options.kiloDirs
+	if len(kiloDirs) == 0 {
+		env.kiloDir = t.TempDir()
+		kiloDirs = []string{env.kiloDir}
+	} else {
+		env.kiloDir = kiloDirs[0]
+	}
+
 	kiroDirs := options.kiroDirs
 	if len(kiroDirs) == 0 {
 		env.kiroDir = t.TempDir()
@@ -156,6 +172,7 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 			parser.AgentCursor:         cursorDirs,
 			parser.AgentGemini:         {env.geminiDir},
 			parser.AgentOpenCode:       opencodeDirs,
+			parser.AgentKilo:           kiloDirs,
 			parser.AgentForge:          {env.forgeDir},
 			parser.AgentPiebald:        {env.piebaldDir},
 			parser.AgentIflow:          {env.iflowDir},
@@ -3396,6 +3413,129 @@ func TestOpenCodeHybridRootStorageWinsOnDuplicateID(t *testing.T) {
 	assertMessageContent(
 		t, env.db, "opencode:"+sessionID,
 		"canonical storage reply",
+	)
+}
+
+func TestKiloStorageRewriteReplacesMessages(t *testing.T) {
+	env := setupTestEnv(t)
+	storage := createOpenCodeStorageFixture(t, env.kiloDir)
+	const sessionID = "kilo-storage-rewrite"
+	storage.addSession(
+		t, "global", sessionID,
+		"/home/user/code/kilo-app", "Kilo Rewrite",
+		1704067200000, 1704067205000,
+	)
+	storage.addMessage(
+		t, sessionID, "msg-a1", "assistant",
+		1704067201000, nil,
+	)
+	partPath := storage.addTextPart(
+		t, sessionID, "msg-a1", "part-a1",
+		"initial kilo reply", 1704067201000,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1,
+		Synced:        1,
+	})
+	assertMessageContent(
+		t, env.db, "kilo:"+sessionID, "initial kilo reply",
+	)
+
+	storage.addTextPart(
+		t, sessionID, "msg-a1", "part-a1",
+		"rewritten kilo reply", 1704067201000,
+	)
+	changed := time.Unix(1804067200, 0)
+	require.NoError(t, os.Chtimes(partPath, changed, changed))
+	env.engine.SyncPaths([]string{partPath})
+
+	assertMessageContent(
+		t, env.db, "kilo:"+sessionID, "rewritten kilo reply",
+	)
+}
+
+func TestKiloPreservesStorageArchiveAgainstSQLiteFallback(t *testing.T) {
+	env := setupTestEnv(t)
+	storage := createOpenCodeStorageFixture(t, env.kiloDir)
+	const sessionID = "kilo-hybrid-preserve"
+	storage.addSession(
+		t, "global", sessionID,
+		"/home/user/code/kilo-app", "Kilo Preserve",
+		1704067200000, 1704067205000,
+	)
+	storage.addMessage(
+		t, sessionID, "msg-storage-a1", "assistant",
+		1704067201000, nil,
+	)
+	storage.addTextPart(
+		t, sessionID, "msg-storage-a1", "part-storage-a1",
+		"canonical kilo storage reply", 1704067201000,
+	)
+
+	sqlite := createKiloDB(t, env.kiloDir)
+	sqlite.addProject(t, "proj-1", "/home/user/code/kilo-app")
+	sqlite.addSession(
+		t, sessionID, "proj-1",
+		1704067200000, 1704067201000,
+	)
+	sqlite.addMessage(
+		t, "sqlite-msg-a1", sessionID, "assistant",
+		1704067201000,
+	)
+	sqlite.addTextPart(
+		t, "sqlite-part-a1", sessionID, "sqlite-msg-a1",
+		"older sqlite fallback reply", 1704067201000,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1,
+		Synced:        1,
+	})
+	assertMessageContent(
+		t, env.db, "kilo:"+sessionID,
+		"canonical kilo storage reply",
+	)
+
+	storageSessionPath := filepath.Join(
+		env.kiloDir, "storage", "session", "global",
+		sessionID+".json",
+	)
+	require.NoError(t, os.Remove(storageSessionPath))
+	env.engine.SyncPaths([]string{sqlite.path})
+
+	assertMessageContent(
+		t, env.db, "kilo:"+sessionID,
+		"canonical kilo storage reply",
+	)
+}
+
+func TestResyncAllAllowsKiloSQLiteOnlySessions(t *testing.T) {
+	env := setupTestEnv(t)
+	sqlite := createKiloDB(t, env.kiloDir)
+	sqlite.addProject(t, "proj-1", "/home/user/code/kilo-app")
+	sqlite.addSession(
+		t, "sqlite-only", "proj-1",
+		1704067200000, 1704067205000,
+	)
+	sqlite.addMessage(
+		t, "sqlite-msg-a1", "sqlite-only", "assistant",
+		1704067201000,
+	)
+	sqlite.addTextPart(
+		t, "sqlite-part-a1", "sqlite-only", "sqlite-msg-a1",
+		"sqlite-only kilo reply", 1704067201000,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1,
+		Synced:        1,
+	})
+	stats := env.engine.ResyncAll(context.Background(), nil)
+
+	assert.False(t, stats.Aborted)
+	assertMessageContent(
+		t, env.db, "kilo:sqlite-only", "sqlite-only kilo reply",
 	)
 }
 
