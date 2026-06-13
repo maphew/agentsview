@@ -267,6 +267,7 @@ agentsview auto-discovers sessions from all of these:
 | Copilot CLI        | `~/.copilot/`                                          |
 | Gemini CLI         | `~/.gemini/`                                           |
 | OpenCode           | `~/.local/share/opencode/`                             |
+| Kilo               | `~/.local/share/kilo/`                                 |
 | OpenHands CLI      | `~/.openhands/conversations/`                          |
 | Cursor             | `~/.cursor/projects/`                                  |
 | Amp                | `~/.local/share/amp/threads/`                          |
