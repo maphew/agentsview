@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,7 +16,8 @@ import (
 const (
 	selectMessageCols = `id, session_id, ordinal, role, content,
 		thinking_text,
-		timestamp, has_thinking, has_tool_use, content_length,
+		COALESCE(timestamp, '') AS timestamp,
+		has_thinking, has_tool_use, content_length,
 		is_system,
 		model, token_usage, context_tokens, output_tokens,
 		has_context_tokens, has_output_tokens,
@@ -1045,6 +1047,183 @@ func (db *DB) MessageTokenFingerprint(sessionID string) (string, error) {
 			len(srcUUID), srcUUID,
 			len(srcParentUUID), srcParentUUID,
 			isSidechain, isCompactBoundary,
+		)
+	}
+	return b.String(), rows.Err()
+}
+
+// MessageContentHashFingerprint returns an exact ordered fingerprint
+// of per-message body content: ordinal, the stored content_length
+// column, and a SHA-256 over the sanitized content. The parse-diff
+// comparator uses it instead of the aggregate
+// MessageContentFingerprint (sum/max/min of content_length, kept for
+// the PG push fast-path), which cannot see equal-length body rewrites
+// or per-message length changes whose aggregates collide.
+func (db *DB) MessageContentHashFingerprint(sessionID string) (string, error) {
+	rows, err := db.getReader().Query(
+		`SELECT ordinal, content, content_length
+		 FROM messages
+		 WHERE session_id = ?
+		 ORDER BY ordinal ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var b strings.Builder
+	for rows.Next() {
+		var ordinal, contentLength int
+		var content string
+		if err := rows.Scan(
+			&ordinal, &content, &contentLength,
+		); err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256([]byte(SanitizeUTF8(content)))
+		fmt.Fprintf(&b, "%d|%d|%x;", ordinal, contentLength, sum)
+	}
+	return b.String(), rows.Err()
+}
+
+// MessageRoleTimeFingerprint returns an exact ordered fingerprint of
+// per-message role and timestamp for a session's messages. The
+// parse-diff comparator uses it as a tier-1 fast path alongside
+// MessageTokenFingerprint, which deliberately excludes these two
+// columns; without it, role-only or timestamp-only parser drift would
+// never trigger the tier-2 row comparison. Role is sanitized to mirror
+// the tier-2 compare in messageMetadataDiff; timestamp is compared raw
+// there, so it stays raw here. timestamp is nullable, so a NULL is
+// coalesced to the empty string to match both the in-memory twin (which
+// emits "" for a zero-value Go timestamp) and the tier-2 read path
+// (selectMessageCols coalesces the same way); without it a single
+// imported NULL row would error here and abort the whole parse-diff run.
+func (db *DB) MessageRoleTimeFingerprint(sessionID string) (string, error) {
+	rows, err := db.getReader().Query(
+		`SELECT ordinal, role, COALESCE(timestamp, '')
+		 FROM messages
+		 WHERE session_id = ?
+		 ORDER BY ordinal ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var b strings.Builder
+	for rows.Next() {
+		var ordinal int
+		var role, timestamp string
+		if err := rows.Scan(&ordinal, &role, &timestamp); err != nil {
+			return "", err
+		}
+		role = SanitizeUTF8(role)
+		fmt.Fprintf(&b, "%d|%d:%s|%d:%s;",
+			ordinal, len(role), role, len(timestamp), timestamp)
+	}
+	return b.String(), rows.Err()
+}
+
+// MessageFlagsFingerprint returns an exact ordered fingerprint of the
+// per-message flag and thinking columns that the token, role/time, and
+// content fingerprints do not cover: is_system, has_thinking,
+// has_tool_use, and a SHA-256 over the sanitized thinking_text. The
+// parse-diff comparator uses it as a tier-1 fast path so a parser change
+// confined to these columns still triggers the tier-2 row comparison.
+// Not used by the PG push fast-path.
+func (db *DB) MessageFlagsFingerprint(sessionID string) (string, error) {
+	rows, err := db.getReader().Query(
+		`SELECT ordinal, is_system, has_thinking, has_tool_use,
+			thinking_text
+		 FROM messages
+		 WHERE session_id = ?
+		 ORDER BY ordinal ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var b strings.Builder
+	for rows.Next() {
+		var ordinal int
+		var isSystem, hasThinking, hasToolUse bool
+		var thinkingText string
+		if err := rows.Scan(
+			&ordinal, &isSystem, &hasThinking, &hasToolUse, &thinkingText,
+		); err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256([]byte(SanitizeUTF8(thinkingText)))
+		fmt.Fprintf(&b, "%d|%t|%t|%t|%x;",
+			ordinal, isSystem, hasThinking, hasToolUse, sum)
+	}
+	return b.String(), rows.Err()
+}
+
+// ToolCallParseDiffFingerprint returns an exact ordered fingerprint of a
+// session's parser-owned tool_call columns: tool_name, category,
+// tool_use_id, a SHA-256 over input_json, skill_name,
+// subagent_session_id, and result_content_length. The database-assigned
+// id/message_id/session_id columns are excluded, and result_content (the
+// possibly blocked body) is represented only by its length, mirroring
+// the sizes-not-bodies rule the message content fingerprint follows. The
+// sibling tool_result_events rows are not fingerprinted: the
+// blocked-category config clears them wholesale, so comparing them would
+// be config-sensitive; result_content_length already captures their
+// summarized size.
+// Rows are ordered by the owning message's ordinal then tool_calls.id
+// (insertion order within a message). The parse-diff comparator uses it
+// as a tier-1 fast path so tool-call drift that moves none of the
+// message fingerprints still triggers the tier-2 comparison. Not used by
+// the PG push fast-path.
+func (db *DB) ToolCallParseDiffFingerprint(sessionID string) (string, error) {
+	rows, err := db.getReader().Query(
+		`SELECT m.ordinal, tc.tool_name, tc.category, tc.tool_use_id,
+			tc.input_json, tc.skill_name, tc.subagent_session_id,
+			tc.result_content_length
+		 FROM tool_calls tc
+		 JOIN messages m ON m.id = tc.message_id
+		 WHERE tc.session_id = ?
+		 ORDER BY m.ordinal ASC, tc.id ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var b strings.Builder
+	for rows.Next() {
+		var ordinal int
+		var resultLen sql.NullInt64
+		var toolName, category string
+		var toolUseID, inputJSON, skillName, subagentSessionID sql.NullString
+		if err := rows.Scan(
+			&ordinal, &toolName, &category, &toolUseID,
+			&inputJSON, &skillName, &subagentSessionID, &resultLen,
+		); err != nil {
+			return "", err
+		}
+		toolName = SanitizeUTF8(toolName)
+		category = SanitizeUTF8(category)
+		tu := SanitizeUTF8(toolUseID.String)
+		skill := SanitizeUTF8(skillName.String)
+		sub := SanitizeUTF8(subagentSessionID.String)
+		sum := sha256.Sum256([]byte(SanitizeUTF8(inputJSON.String)))
+		fmt.Fprintf(&b,
+			"%d|%d:%s|%d:%s|%d:%s|%x|%d:%s|%d:%s|%d;",
+			ordinal,
+			len(toolName), toolName,
+			len(category), category,
+			len(tu), tu,
+			sum,
+			len(skill), skill,
+			len(sub), sub,
+			int(resultLen.Int64),
 		)
 	}
 	return b.String(), rows.Err()

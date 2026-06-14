@@ -454,7 +454,7 @@ Requires Go 1.26+ (CGO), Node.js 22+.
 
 ```bash
 make dev            # Go server (dev mode)
-make frontend-dev   # Vite dev server (run alongside make dev)
+make frontend-dev   # Vite+ dev server (run alongside make dev)
 make build          # build binary with embedded frontend
 make install        # install to ~/.local/bin
 ```
@@ -483,7 +483,7 @@ and `make install-hooks` after cloning (requires `prek` and `uv`).
 ```
 cmd/agentsview/     CLI entrypoint
 internal/           Go packages (config, db, parser, server, sync, postgres)
-frontend/           Svelte 5 SPA (Vite, TypeScript)
+frontend/           Svelte 5 SPA (Vite+, TypeScript)
 desktop/            Tauri desktop wrapper
 ```
 

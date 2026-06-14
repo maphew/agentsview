@@ -103,6 +103,12 @@ type Engine struct {
 	pathRewriter func(string) string
 	emitter      Emitter
 
+	// forceParse disables every stored-state skip (skip cache,
+	// size/mtime/data_version checks, incremental JSONL deltas) so
+	// parse-diff fully re-parses every discovered file. Normal sync
+	// never sets it; behavior must be identical when false.
+	forceParse bool
+
 	// phaseStats accumulates per-phase wall-clock time inside the bulk
 	// write path. Exposed via PhaseStats() so a CLI driver can log the
 	// totals after a sync pass completes.
@@ -3327,15 +3333,30 @@ type incrementalUpdate struct {
 	hasPeakContextTokens bool
 }
 
+// sessionParseError is a per-session parse failure inside a shared
+// SQLite store (OpenCode, Zed, Kiro), where one file path fans out to
+// many sessions and a single bad payload must not fail the whole db.
+type sessionParseError struct {
+	sessionID   string // raw parser-side ID, no engine prefix
+	virtualPath string // dbPath#rawID source path
+	err         error
+}
+
 type processResult struct {
 	results            []parser.ParseResult
 	excludedSessionIDs []string
-	skip               bool
-	mtime              int64
-	err                error
-	incremental        *incrementalUpdate
-	cacheSkip          bool
-	needsRetry         bool
+	// sessionErrs carries per-session parse failures from the
+	// shared-db fan-out loops. Normal sync logs and skips these;
+	// parse-diff (forceParse) surfaces them as DiffParseError report
+	// entries so --fail-on-change cannot pass over a session the
+	// current binary failed to parse.
+	sessionErrs []sessionParseError
+	skip        bool
+	mtime       int64
+	err         error
+	incremental *incrementalUpdate
+	cacheSkip   bool
+	needsRetry  bool
 	// forceReplace requests full message replacement on write,
 	// even when the existing rows would otherwise be left in
 	// place. Set when a fall-through to full parse is recovering
@@ -3395,7 +3416,7 @@ func (e *Engine) processFile(
 	// migrateLegacyCodexExecSkips, so this check can treat
 	// the skip cache as authoritative without per-file
 	// re-validation.
-	if cacheSkip {
+	if cacheSkip && !e.forceParse { // parse-diff: ignore the skip cache
 		e.skipMu.RLock()
 		cachedMtime, cached := e.skipCache[file.Path]
 		e.skipMu.RUnlock()
@@ -3585,6 +3606,9 @@ func (e *Engine) persistSkipCache() int {
 func (e *Engine) shouldSkipFile(
 	sessionID string, info os.FileInfo,
 ) bool {
+	if e.forceParse { // parse-diff: always re-parse
+		return false
+	}
 	fullID := e.idPrefix + sessionID
 	storedSize, storedMtime, ok := e.db.GetSessionFileInfo(
 		fullID,
@@ -3609,6 +3633,9 @@ func (e *Engine) shouldSkipFile(
 func (e *Engine) shouldSkipByPath(
 	path string, info os.FileInfo,
 ) bool {
+	if e.forceParse { // parse-diff: always re-parse
+		return false
+	}
 	lookupPath := path
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(path)
@@ -3743,6 +3770,9 @@ func (e *Engine) tryIncrementalJSONL(
 	agent parser.AgentType,
 	parseFn incrementalParseFunc,
 ) (processResult, bool) {
+	if e.forceParse { // parse-diff: never produce append deltas
+		return processResult{}, false
+	}
 	lookupPath := file.Path
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(file.Path)
@@ -4002,12 +4032,14 @@ func (e *Engine) processOpenCode(
 			filepath.Dir(file.Path),
 		)
 		var results []parser.ParseResult
+		var sessionErrs []sessionParseError
 		for _, meta := range metas {
 			if _, ok := storageIDs[meta.SessionID]; ok {
 				continue
 			}
 			_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
-			if ok && storedMtime == meta.FileMtime &&
+			// parse-diff: !e.forceParse disables the stored-state skip.
+			if !e.forceParse && ok && storedMtime == meta.FileMtime &&
 				e.db.GetDataVersionByPath(meta.VirtualPath) >=
 					db.CurrentDataVersion() {
 				continue
@@ -4016,10 +4048,18 @@ func (e *Engine) processOpenCode(
 				file.Path, meta.SessionID, e.machine,
 			)
 			if err != nil {
-				log.Printf(
-					"opencode sqlite watch session %s: %v",
-					meta.SessionID, err,
-				)
+				if e.forceParse {
+					sessionErrs = append(sessionErrs, sessionParseError{
+						sessionID:   meta.SessionID,
+						virtualPath: meta.VirtualPath,
+						err:         err,
+					})
+				} else {
+					log.Printf(
+						"opencode sqlite watch session %s: %v",
+						meta.SessionID, err,
+					)
+				}
 				continue
 			}
 			if sess == nil {
@@ -4030,7 +4070,11 @@ func (e *Engine) processOpenCode(
 				Messages: msgs,
 			})
 		}
-		return processResult{results: results, forceReplace: true}
+		return processResult{
+			results:      results,
+			sessionErrs:  sessionErrs,
+			forceReplace: true,
+		}
 	}
 	if e.shouldSkipOpenCodeByPath(file.Path) {
 		return processResult{skip: true}
@@ -4172,6 +4216,9 @@ func (e *Engine) shouldSkipKiloByPath(path string) bool {
 }
 
 func (e *Engine) shouldSkipOpenCodeByPath(path string) bool {
+	if e.forceParse { // parse-diff: always re-parse
+		return false
+	}
 	lookupPath := path
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(path)
@@ -4260,6 +4307,9 @@ func copilotEffectiveMtime(eventsPath string, info os.FileInfo) int64 {
 func (e *Engine) shouldSkipCopilot(
 	path string, info os.FileInfo, effectiveMtime int64,
 ) bool {
+	if e.forceParse { // parse-diff: always re-parse
+		return false
+	}
 	lookupPath := path
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(path)
@@ -4518,9 +4568,11 @@ func (e *Engine) processZed(
 	hash, _ := ComputeFileHash(file.Path)
 
 	var results []parser.ParseResult
+	var sessionErrs []sessionParseError
 	for _, meta := range metas {
 		_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
-		if ok && storedMtime == meta.FileMtime &&
+		// parse-diff: !e.forceParse disables the stored-state skip.
+		if !e.forceParse && ok && storedMtime == meta.FileMtime &&
 			e.db.GetDataVersionByPath(meta.VirtualPath) >=
 				db.CurrentDataVersion() {
 			continue
@@ -4529,7 +4581,15 @@ func (e *Engine) processZed(
 			conn, file.Path, meta.RawID, e.machine, info,
 		)
 		if err != nil {
-			log.Printf("zed thread %s: %v", meta.RawID, err)
+			if e.forceParse {
+				sessionErrs = append(sessionErrs, sessionParseError{
+					sessionID:   meta.RawID,
+					virtualPath: meta.VirtualPath,
+					err:         err,
+				})
+			} else {
+				log.Printf("zed thread %s: %v", meta.RawID, err)
+			}
 			continue
 		}
 		if result == nil {
@@ -4540,7 +4600,11 @@ func (e *Engine) processZed(
 		}
 		results = append(results, *result)
 	}
-	return processResult{results: results, forceReplace: true}
+	return processResult{
+		results:      results,
+		sessionErrs:  sessionErrs,
+		forceReplace: true,
+	}
 }
 
 func (e *Engine) processKiro(
@@ -4574,11 +4638,13 @@ func (e *Engine) processKiro(
 			return processResult{err: err}
 		}
 		var results []parser.ParseResult
+		var sessionErrs []sessionParseError
 		for _, meta := range metas {
 			_, storedMtime, ok := e.db.GetFileInfoByPath(
 				meta.VirtualPath,
 			)
-			if ok && storedMtime == meta.FileMtime &&
+			// parse-diff: !e.forceParse disables the stored-state skip.
+			if !e.forceParse && ok && storedMtime == meta.FileMtime &&
 				e.db.GetDataVersionByPath(meta.VirtualPath) >=
 					db.CurrentDataVersion() {
 				continue
@@ -4587,10 +4653,18 @@ func (e *Engine) processKiro(
 				meta.SessionID, e.machine,
 			)
 			if err != nil {
-				log.Printf(
-					"kiro sqlite watch session %s: %v",
-					meta.SessionID, err,
-				)
+				if e.forceParse {
+					sessionErrs = append(sessionErrs, sessionParseError{
+						sessionID:   meta.SessionID,
+						virtualPath: meta.VirtualPath,
+						err:         err,
+					})
+				} else {
+					log.Printf(
+						"kiro sqlite watch session %s: %v",
+						meta.SessionID, err,
+					)
+				}
 				continue
 			}
 			if sess == nil {
@@ -4601,7 +4675,11 @@ func (e *Engine) processKiro(
 				Messages: msgs,
 			})
 		}
-		return processResult{results: results, forceReplace: true}
+		return processResult{
+			results:      results,
+			sessionErrs:  sessionErrs,
+			forceReplace: true,
+		}
 	}
 	if e.isShadowedLegacyKiroPath(file.Path) {
 		return processResult{skip: true}
