@@ -5442,6 +5442,66 @@ func TestResyncAllOpenCodeStorageArchivePreservesStaleSQLiteFallback(
 	)
 }
 
+func TestResyncAllKiloStorageArchivePreservesStaleSQLiteFallback(
+	t *testing.T,
+) {
+	env := setupTestEnv(t)
+	storage := createOpenCodeStorageFixture(t, env.kiloDir)
+
+	sessionID := "kilo-storage-to-sqlite"
+	storage.addSession(
+		t, "global", sessionID,
+		"/home/user/code/kilo-app", "Storage Then SQLite",
+		1704067200000, 1704067205000,
+	)
+	storage.addMessage(
+		t, sessionID, "msg-u1", "user",
+		1704067200000, nil,
+	)
+	storage.addTextPart(
+		t, sessionID, "msg-u1", "part-u1",
+		"hello kilo storage", 1704067200000,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1,
+		Synced:        1,
+		Skipped:       0,
+	})
+
+	err := os.RemoveAll(
+		filepath.Join(env.kiloDir, "storage"),
+	)
+	require.NoError(t, err, "remove storage tree")
+
+	sqlite := createKiloDB(t, env.kiloDir)
+	sqlite.addProject(t, "proj-1", "/home/user/code/kilo-app")
+	sqlite.addSession(
+		t, sessionID, "proj-1",
+		1704067200000, 1704067209000,
+	)
+	sqlite.addMessage(
+		t, "msg-u1", sessionID, "user",
+		1704067200000,
+	)
+	sqlite.addTextPart(
+		t, "part-u1", sessionID, "msg-u1",
+		"hello kilo sqlite fallback", 1704067200000,
+	)
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted for Kilo storage archive")
+	for _, w := range stats.Warnings {
+		require.False(t, strings.Contains(w, "resync aborted"), "ResyncAll aborted for Kilo storage->sqlite fallback: %s", w)
+	}
+	require.Equal(t, 0, stats.Synced, "stats.Synced = %d, want 0", stats.Synced)
+
+	assertMessageContent(
+		t, env.db, "kilo:"+sessionID,
+		"hello kilo storage",
+	)
+}
+
 func TestResyncAllOpenCodeStorageArchiveAllowsNewerSQLiteFallback(
 	t *testing.T,
 ) {
