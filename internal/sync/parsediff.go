@@ -280,29 +280,18 @@ func (e *Engine) parseDiffDatabaseSources(
 					})
 				}
 			}
-		case parser.AgentOpenCode:
+		case parser.AgentOpenCode, parser.AgentKilo:
 			for _, dir := range e.agentDirs[def.Type] {
 				if dir == "" {
 					continue
 				}
-				dbPath := filepath.Join(dir, "opencode.db")
+				dbPath := filepath.Join(
+					dir, openCodeFormatDBName(def.Type),
+				)
 				if info, err := os.Stat(dbPath); err == nil &&
 					!info.IsDir() {
 					extra = append(extra, parser.DiscoveredFile{
-						Path: dbPath, Agent: parser.AgentOpenCode,
-					})
-				}
-			}
-		case parser.AgentKilo:
-			for _, dir := range e.agentDirs[def.Type] {
-				if dir == "" {
-					continue
-				}
-				dbPath := filepath.Join(dir, "kilo.db")
-				if info, err := os.Stat(dbPath); err == nil &&
-					!info.IsDir() {
-					extra = append(extra, parser.DiscoveredFile{
-						Path: dbPath, Agent: parser.AgentKilo,
+						Path: dbPath, Agent: def.Type,
 					})
 				}
 			}

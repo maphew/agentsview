@@ -5557,17 +5557,14 @@ func openCodeFormatSourceMtime(
 	}
 }
 
+// hasOpenCodeFormatStorageFingerprint reports whether hash is an
+// OpenCode storage fingerprint. Kilo reuses OpenCode's storage format
+// verbatim, so the same check applies to both agents.
 func hasOpenCodeFormatStorageFingerprint(
 	agent parser.AgentType, hash string,
 ) bool {
-	switch agent {
-	case parser.AgentOpenCode:
-		return parser.HasOpenCodeStorageFingerprint(hash)
-	case parser.AgentKilo:
-		return parser.HasKiloStorageFingerprint(hash)
-	default:
-		return false
-	}
+	return isOpenCodeFormatStorageAgent(agent) &&
+		parser.HasOpenCodeStorageFingerprint(hash)
 }
 
 func isOpenCodeFormatStoragePath(
@@ -5580,23 +5577,10 @@ func isOpenCodeFormatStoragePath(
 func isOpenCodeFormatSQLiteVirtualPath(
 	agent parser.AgentType, path string,
 ) bool {
-	switch agent {
-	case parser.AgentOpenCode:
-		return isOpenCodeSQLiteVirtualPath(path)
-	case parser.AgentKilo:
-		return isKiloSQLiteVirtualPath(path)
-	default:
+	if !isOpenCodeFormatStorageAgent(agent) {
 		return false
 	}
-}
-
-func isOpenCodeSQLiteVirtualPath(path string) bool {
-	_, _, ok := parser.ParseOpenCodeSQLiteVirtualPath(path)
-	return ok
-}
-
-func isKiloSQLiteVirtualPath(path string) bool {
-	_, _, ok := parser.ParseKiloSQLiteVirtualPath(path)
+	_, _, ok := parseOpenCodeFormatSQLiteVirtualPath(agent, path)
 	return ok
 }
 

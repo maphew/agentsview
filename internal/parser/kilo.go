@@ -49,10 +49,6 @@ func KiloSourceMtime(sourcePath string) (int64, error) {
 	return openCodeStorageSessionMtime(sourcePath)
 }
 
-func HasKiloStorageFingerprint(hash string) bool {
-	return HasOpenCodeStorageFingerprint(hash)
-}
-
 func relabelOpenCodeSessionAsKilo(sess *ParsedSession) {
 	sess.ID = strings.Replace(sess.ID, "opencode:", "kilo:", 1)
 	if sess.ParentSessionID != "" {
