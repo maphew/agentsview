@@ -1028,6 +1028,55 @@ func TestParseDiffKiroSQLitePerSessionError(t *testing.T) {
 	})
 }
 
+// TestParseDiffKiloSQLitePerSessionError proves a malformed session
+// inside the shared Kilo store surfaces as DiffParseError instead of
+// being silently dropped, so --fail-on-change stays trustworthy even
+// for a session that was never stored.
+func TestParseDiffKiloSQLitePerSessionError(t *testing.T) {
+	env := setupTestEnv(t)
+	ks := createKiloDB(t, env.kiloDir)
+	ks.addProject(t, "proj-1", "/home/user/code/kilo-app")
+	const goodID = "good-session"
+	good := int64(1779012000000)
+	ks.addSession(t, goodID, "proj-1", good, good+30000)
+	ks.addMessage(t, "g-msg-u1", goodID, "user", good)
+	ks.addMessage(t, "g-msg-a1", goodID, "assistant", good+1)
+	ks.addTextPart(t, "g-part-u1", goodID, "g-msg-u1", "good question", good)
+	ks.addTextPart(t, "g-part-a1", goodID, "g-msg-a1", "good answer", good+1)
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1,
+	})
+
+	// Never synced: a session row whose non-integer time_created is
+	// listed for fan-out but fails the per-session parse afterward.
+	const badID = "bad-session"
+	ks.mustExec(t, "insert malformed session",
+		`INSERT INTO session
+			(id, project_id, time_created, time_updated)
+		 VALUES (?, ?, ?, ?)`,
+		badID, "proj-1", "not-a-number", good+40000,
+	)
+
+	report := runParseDiff(t, env, sync.ParseDiffOptions{
+		Agents: []parser.AgentType{parser.AgentKilo},
+	})
+	assert.Equal(t, sync.ParseDiffTotals{
+		Examined: 1, Identical: 1, ParseErrors: 1,
+	}, report.Totals,
+		"good session compared; malformed session is a parse error")
+
+	var errEntry *sync.SessionDiff
+	for i := range report.Sessions {
+		if report.Sessions[i].Class == sync.DiffParseError {
+			errEntry = &report.Sessions[i]
+		}
+	}
+	require.NotNil(t, errEntry, "parse error entry listed")
+	assert.Contains(t, errEntry.FilePath, "kilo.db#bad-session",
+		"error attributed to the per-session virtual path")
+	assert.True(t, report.HasFailures(), "HasFailures")
+}
+
 func TestParseDiffPresenceSweep(t *testing.T) {
 	t.Run("current-version row no longer emitted", func(t *testing.T) {
 		env := setupTestEnv(t)

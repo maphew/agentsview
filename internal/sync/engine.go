@@ -4167,6 +4167,7 @@ func (e *Engine) processKilo(
 			filepath.Dir(file.Path),
 		)
 		var results []parser.ParseResult
+		var sessionErrs []sessionParseError
 		for _, meta := range metas {
 			if _, ok := storageIDs[meta.SessionID]; ok {
 				continue
@@ -4181,10 +4182,18 @@ func (e *Engine) processKilo(
 				file.Path, meta.SessionID, e.machine,
 			)
 			if err != nil {
-				log.Printf(
-					"kilo sqlite watch session %s: %v",
-					meta.SessionID, err,
-				)
+				if e.forceParse {
+					sessionErrs = append(sessionErrs, sessionParseError{
+						sessionID:   meta.SessionID,
+						virtualPath: meta.VirtualPath,
+						err:         err,
+					})
+				} else {
+					log.Printf(
+						"kilo sqlite watch session %s: %v",
+						meta.SessionID, err,
+					)
+				}
 				continue
 			}
 			if sess == nil {
@@ -4195,7 +4204,11 @@ func (e *Engine) processKilo(
 				Messages: msgs,
 			})
 		}
-		return processResult{results: results, forceReplace: true}
+		return processResult{
+			results:      results,
+			sessionErrs:  sessionErrs,
+			forceReplace: true,
+		}
 	}
 	if e.shouldSkipKiloByPath(file.Path) {
 		return processResult{skip: true}
