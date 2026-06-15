@@ -292,6 +292,24 @@ func (e *Engine) parseDiffDatabaseSources(
 					})
 				}
 			}
+		case parser.AgentKilo:
+			// Kilo reuses OpenCode's hybrid storage format, so a
+			// kilo.db can hold DB-only sessions even in a storage-mode
+			// root. Add it whenever it exists; processKilo's storage-ID
+			// filtering keeps file-backed sessions from being compared
+			// twice (mirrors the OpenCode case above).
+			for _, dir := range e.agentDirs[def.Type] {
+				if dir == "" {
+					continue
+				}
+				dbPath := filepath.Join(dir, "kilo.db")
+				if info, err := os.Stat(dbPath); err == nil &&
+					!info.IsDir() {
+					extra = append(extra, parser.DiscoveredFile{
+						Path: dbPath, Agent: parser.AgentKilo,
+					})
+				}
+			}
 		}
 	}
 	return extra
@@ -333,8 +351,8 @@ func sortAndLimitParseDiffFiles(
 }
 
 // stripVirtualSourceSuffix maps a stored file_path to its on-disk
-// base file by removing the "#rawID" suffix Kiro, Zed, and OpenCode
-// SQLite-backed sessions append to their shared database path.
+// base file by removing the "#rawID" suffix Kiro, Zed, OpenCode, and
+// Kilo SQLite-backed sessions append to their shared database path.
 func stripVirtualSourceSuffix(path string) string {
 	if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(path); ok {
 		return dbPath
@@ -343,6 +361,9 @@ func stripVirtualSourceSuffix(path string) string {
 		return dbPath
 	}
 	if dbPath, _, ok := parser.ParseOpenCodeSQLiteVirtualPath(path); ok {
+		return dbPath
+	}
+	if dbPath, _, ok := parser.ParseKiloSQLiteVirtualPath(path); ok {
 		return dbPath
 	}
 	return path

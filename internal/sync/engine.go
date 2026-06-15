@@ -4137,7 +4137,10 @@ func (e *Engine) processKilo(
 				continue
 			}
 			_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
-			if ok && storedMtime == meta.FileMtime &&
+			// parse-diff: !e.forceParse disables the stored-state skip
+			// so every kilo.db session is re-parsed (mirrors
+			// processOpenCode).
+			if !e.forceParse && ok && storedMtime == meta.FileMtime &&
 				e.db.GetDataVersionByPath(meta.VirtualPath) >=
 					db.CurrentDataVersion() {
 				continue
@@ -4191,6 +4194,9 @@ func (e *Engine) processKilo(
 }
 
 func (e *Engine) shouldSkipKiloByPath(path string) bool {
+	if e.forceParse { // parse-diff: always re-parse
+		return false
+	}
 	lookupPath := path
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(path)
