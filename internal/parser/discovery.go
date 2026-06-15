@@ -70,9 +70,24 @@ type OpenCodeSource struct {
 	DBPath      string
 }
 
-// ResolveOpenCodeSource detects whether an OpenCode root is using
-// file-backed storage or legacy SQLite storage.
-func ResolveOpenCodeSource(root string) OpenCodeSource {
+// openCodeFormat parameterizes the shared OpenCode storage format by
+// the per-agent SQLite filename and the agent label stamped on
+// discovered sessions. Kilo is a fork of OpenCode with an identical
+// on-disk layout, so both agents share one implementation and differ
+// only in these two values.
+type openCodeFormat struct {
+	agent  AgentType
+	dbName string
+}
+
+var (
+	openCodeFmt = openCodeFormat{agent: AgentOpenCode, dbName: "opencode.db"}
+	kiloFmt     = openCodeFormat{agent: AgentKilo, dbName: "kilo.db"}
+)
+
+func resolveOpenCodeFormatSource(
+	f openCodeFormat, root string,
+) OpenCodeSource {
 	if root == "" {
 		return OpenCodeSource{}
 	}
@@ -83,7 +98,7 @@ func ResolveOpenCodeSource(root string) OpenCodeSource {
 			Mode:        OpenCodeSourceStorage,
 			Root:        root,
 			SessionRoot: sessionRoot,
-			DBPath:      filepath.Join(root, "opencode.db"),
+			DBPath:      filepath.Join(root, f.dbName),
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		storageRoot := filepath.Join(root, "storage")
@@ -92,12 +107,12 @@ func ResolveOpenCodeSource(root string) OpenCodeSource {
 				Mode:        OpenCodeSourceStorage,
 				Root:        root,
 				SessionRoot: sessionRoot,
-				DBPath:      filepath.Join(root, "opencode.db"),
+				DBPath:      filepath.Join(root, f.dbName),
 			}
 		}
 	}
 
-	dbPath := filepath.Join(root, "opencode.db")
+	dbPath := filepath.Join(root, f.dbName)
 	if info, err := os.Stat(dbPath); err == nil && !info.IsDir() {
 		return OpenCodeSource{
 			Mode:   OpenCodeSourceSQLite,
@@ -109,10 +124,10 @@ func ResolveOpenCodeSource(root string) OpenCodeSource {
 	return OpenCodeSource{Root: root}
 }
 
-// DiscoverOpenCodeSessions finds all file-backed OpenCode session
-// JSON files under storage/session.
-func DiscoverOpenCodeSessions(root string) []DiscoveredFile {
-	src := ResolveOpenCodeSource(root)
+func discoverOpenCodeFormatSessions(
+	f openCodeFormat, root string,
+) []DiscoveredFile {
+	src := resolveOpenCodeFormatSource(f, root)
 	if src.Mode != OpenCodeSourceStorage {
 		return nil
 	}
@@ -140,7 +155,7 @@ func DiscoverOpenCodeSessions(root string) []DiscoveredFile {
 			files = append(files, DiscoveredFile{
 				Path:    path,
 				Project: openCodeSessionProject(path),
-				Agent:   AgentOpenCode,
+				Agent:   f.agent,
 			})
 		}
 	}
@@ -151,18 +166,14 @@ func DiscoverOpenCodeSessions(root string) []DiscoveredFile {
 	return files
 }
 
-// FindOpenCodeSourceFile locates a single OpenCode session source
-// path or SQLite backing file by raw session ID. Returns "" when
-// the session is not present under this root so the caller
-// (Engine.FindSourceFile) can continue searching later configured
-// roots — important when an early hybrid root with an unrelated
-// opencode.db could otherwise shadow a session in a later root.
-func FindOpenCodeSourceFile(root, sessionID string) string {
+func findOpenCodeFormatSourceFile(
+	f openCodeFormat, root, sessionID string,
+) string {
 	if !IsValidSessionID(sessionID) {
 		return ""
 	}
 
-	src := ResolveOpenCodeSource(root)
+	src := resolveOpenCodeFormatSource(f, root)
 	switch src.Mode {
 	case OpenCodeSourceStorage:
 		if entries, err := os.ReadDir(src.SessionRoot); err == nil {
@@ -181,16 +192,12 @@ func FindOpenCodeSourceFile(root, sessionID string) string {
 			}
 		}
 		if OpenCodeSQLiteSessionExists(src.DBPath, sessionID) {
-			return OpenCodeSQLiteVirtualPath(
-				src.DBPath, sessionID,
-			)
+			return OpenCodeSQLiteVirtualPath(src.DBPath, sessionID)
 		}
 		return ""
 	case OpenCodeSourceSQLite:
 		if OpenCodeSQLiteSessionExists(src.DBPath, sessionID) {
-			return OpenCodeSQLiteVirtualPath(
-				src.DBPath, sessionID,
-			)
+			return OpenCodeSQLiteVirtualPath(src.DBPath, sessionID)
 		}
 		return ""
 	default:
@@ -198,13 +205,10 @@ func FindOpenCodeSourceFile(root, sessionID string) string {
 	}
 }
 
-// OpenCodeStorageSessionIDs returns the set of session IDs that
-// have a JSON file under storage/session/*/ in the given root.
-// Returns nil for non-storage roots. In hybrid roots (storage and
-// SQLite both present) the storage transcript is canonical, so
-// callers use this to skip duplicate SQLite metas during sync.
-func OpenCodeStorageSessionIDs(root string) map[string]struct{} {
-	src := ResolveOpenCodeSource(root)
+func openCodeFormatStorageSessionIDs(
+	f openCodeFormat, root string,
+) map[string]struct{} {
+	src := resolveOpenCodeFormatSource(f, root)
 	if src.Mode != OpenCodeSourceStorage {
 		return nil
 	}
@@ -238,20 +242,13 @@ func OpenCodeStorageSessionIDs(root string) map[string]struct{} {
 	return ids
 }
 
-// ResolveOpenCodeWatchRoots returns the directories that should be
-// watched for live OpenCode updates under a configured root. Pure
-// storage mode targets the storage/ subtree so fsnotify does not
-// recurse over unrelated opencode state (binaries, logs, caches),
-// while still covering the session/message/part subdirs — including
-// ones that OpenCode creates lazily after the watcher starts, since
-// the watcher auto-adds new subdirectories on Create events. Hybrid
-// storage+SQLite roots and pure SQLite mode watch the root so DB/WAL
-// updates are observed too.
-func ResolveOpenCodeWatchRoots(root string) []string {
+func resolveOpenCodeFormatWatchRoots(
+	f openCodeFormat, root string,
+) []string {
 	if root == "" {
 		return nil
 	}
-	src := ResolveOpenCodeSource(root)
+	src := resolveOpenCodeFormatSource(f, root)
 	switch src.Mode {
 	case OpenCodeSourceStorage:
 		if info, err := os.Stat(src.DBPath); err == nil &&
@@ -268,6 +265,65 @@ func ResolveOpenCodeWatchRoots(root string) []string {
 	return nil
 }
 
+func parseOpenCodeFormatVirtualPath(
+	dbName, sourcePath string,
+) (dbPath, sessionID string, ok bool) {
+	idx := strings.LastIndex(sourcePath, "#")
+	if idx <= 0 || idx >= len(sourcePath)-1 {
+		return "", "", false
+	}
+	dbPath = sourcePath[:idx]
+	sessionID = sourcePath[idx+1:]
+	if filepath.Base(dbPath) != dbName {
+		return "", "", false
+	}
+	return dbPath, sessionID, true
+}
+
+// ResolveOpenCodeSource detects whether an OpenCode root is using
+// file-backed storage or legacy SQLite storage.
+func ResolveOpenCodeSource(root string) OpenCodeSource {
+	return resolveOpenCodeFormatSource(openCodeFmt, root)
+}
+
+// DiscoverOpenCodeSessions finds all file-backed OpenCode session
+// JSON files under storage/session.
+func DiscoverOpenCodeSessions(root string) []DiscoveredFile {
+	return discoverOpenCodeFormatSessions(openCodeFmt, root)
+}
+
+// FindOpenCodeSourceFile locates a single OpenCode session source
+// path or SQLite backing file by raw session ID. Returns "" when
+// the session is not present under this root so the caller
+// (Engine.FindSourceFile) can continue searching later configured
+// roots — important when an early hybrid root with an unrelated
+// opencode.db could otherwise shadow a session in a later root.
+func FindOpenCodeSourceFile(root, sessionID string) string {
+	return findOpenCodeFormatSourceFile(openCodeFmt, root, sessionID)
+}
+
+// OpenCodeStorageSessionIDs returns the set of session IDs that
+// have a JSON file under storage/session/*/ in the given root.
+// Returns nil for non-storage roots. In hybrid roots (storage and
+// SQLite both present) the storage transcript is canonical, so
+// callers use this to skip duplicate SQLite metas during sync.
+func OpenCodeStorageSessionIDs(root string) map[string]struct{} {
+	return openCodeFormatStorageSessionIDs(openCodeFmt, root)
+}
+
+// ResolveOpenCodeWatchRoots returns the directories that should be
+// watched for live OpenCode updates under a configured root. Pure
+// storage mode targets the storage/ subtree so fsnotify does not
+// recurse over unrelated opencode state (binaries, logs, caches),
+// while still covering the session/message/part subdirs — including
+// ones that OpenCode creates lazily after the watcher starts, since
+// the watcher auto-adds new subdirectories on Create events. Hybrid
+// storage+SQLite roots and pure SQLite mode watch the root so DB/WAL
+// updates are observed too.
+func ResolveOpenCodeWatchRoots(root string) []string {
+	return resolveOpenCodeFormatWatchRoots(openCodeFmt, root)
+}
+
 func OpenCodeSQLiteVirtualPath(
 	dbPath, sessionID string,
 ) string {
@@ -277,16 +333,7 @@ func OpenCodeSQLiteVirtualPath(
 func ParseOpenCodeSQLiteVirtualPath(
 	sourcePath string,
 ) (dbPath, sessionID string, ok bool) {
-	idx := strings.LastIndex(sourcePath, "#")
-	if idx <= 0 || idx >= len(sourcePath)-1 {
-		return "", "", false
-	}
-	dbPath = sourcePath[:idx]
-	sessionID = sourcePath[idx+1:]
-	if filepath.Base(dbPath) != "opencode.db" {
-		return "", "", false
-	}
-	return dbPath, sessionID, true
+	return parseOpenCodeFormatVirtualPath(openCodeFmt.dbName, sourcePath)
 }
 
 func openCodeSessionProject(path string) string {
@@ -308,198 +355,33 @@ func openCodeSessionProject(path string) string {
 // ResolveKiloSource detects whether a Kilo root is using file-backed
 // storage or legacy SQLite storage.
 func ResolveKiloSource(root string) OpenCodeSource {
-	if root == "" {
-		return OpenCodeSource{}
-	}
-
-	sessionRoot := filepath.Join(root, "storage", "session")
-	if info, err := os.Stat(sessionRoot); err == nil && info.IsDir() {
-		return OpenCodeSource{
-			Mode:        OpenCodeSourceStorage,
-			Root:        root,
-			SessionRoot: sessionRoot,
-			DBPath:      filepath.Join(root, "kilo.db"),
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		storageRoot := filepath.Join(root, "storage")
-		if info, serr := os.Stat(storageRoot); serr == nil && info.IsDir() {
-			return OpenCodeSource{
-				Mode:        OpenCodeSourceStorage,
-				Root:        root,
-				SessionRoot: sessionRoot,
-				DBPath:      filepath.Join(root, "kilo.db"),
-			}
-		}
-	}
-
-	dbPath := filepath.Join(root, "kilo.db")
-	if info, err := os.Stat(dbPath); err == nil && !info.IsDir() {
-		return OpenCodeSource{
-			Mode:   OpenCodeSourceSQLite,
-			Root:   root,
-			DBPath: dbPath,
-		}
-	}
-
-	return OpenCodeSource{Root: root}
+	return resolveOpenCodeFormatSource(kiloFmt, root)
 }
 
 func DiscoverKiloSessions(root string) []DiscoveredFile {
-	src := ResolveKiloSource(root)
-	if src.Mode != OpenCodeSourceStorage {
-		return nil
-	}
-
-	var files []DiscoveredFile
-	entries, err := os.ReadDir(src.SessionRoot)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		if !isDirOrSymlink(entry, src.SessionRoot) {
-			continue
-		}
-		projectDir := filepath.Join(src.SessionRoot, entry.Name())
-		sessionEntries, err := os.ReadDir(projectDir)
-		if err != nil {
-			continue
-		}
-		for _, sessionEntry := range sessionEntries {
-			if sessionEntry.IsDir() ||
-				!strings.HasSuffix(sessionEntry.Name(), ".json") {
-				continue
-			}
-			path := filepath.Join(projectDir, sessionEntry.Name())
-			files = append(files, DiscoveredFile{
-				Path:    path,
-				Project: kiloSessionProject(path),
-				Agent:   AgentKilo,
-			})
-		}
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Path < files[j].Path
-	})
-	return files
+	return discoverOpenCodeFormatSessions(kiloFmt, root)
 }
 
 func FindKiloSourceFile(root, sessionID string) string {
-	if !IsValidSessionID(sessionID) {
-		return ""
-	}
-
-	src := ResolveKiloSource(root)
-	switch src.Mode {
-	case OpenCodeSourceStorage:
-		if entries, err := os.ReadDir(src.SessionRoot); err == nil {
-			for _, entry := range entries {
-				if !isDirOrSymlink(entry, src.SessionRoot) {
-					continue
-				}
-				path := filepath.Join(
-					src.SessionRoot, entry.Name(),
-					sessionID+".json",
-				)
-				if info, err := os.Stat(path); err == nil &&
-					!info.IsDir() {
-					return path
-				}
-			}
-		}
-		if KiloSQLiteSessionExists(src.DBPath, sessionID) {
-			return KiloSQLiteVirtualPath(src.DBPath, sessionID)
-		}
-		return ""
-	case OpenCodeSourceSQLite:
-		if KiloSQLiteSessionExists(src.DBPath, sessionID) {
-			return KiloSQLiteVirtualPath(src.DBPath, sessionID)
-		}
-		return ""
-	default:
-		return ""
-	}
+	return findOpenCodeFormatSourceFile(kiloFmt, root, sessionID)
 }
 
 func KiloStorageSessionIDs(root string) map[string]struct{} {
-	src := ResolveKiloSource(root)
-	if src.Mode != OpenCodeSourceStorage {
-		return nil
-	}
-	entries, err := os.ReadDir(src.SessionRoot)
-	if err != nil {
-		return nil
-	}
-	ids := make(map[string]struct{})
-	for _, entry := range entries {
-		if !isDirOrSymlink(entry, src.SessionRoot) {
-			continue
-		}
-		projectDir := filepath.Join(src.SessionRoot, entry.Name())
-		sessionEntries, err := os.ReadDir(projectDir)
-		if err != nil {
-			continue
-		}
-		for _, sessionEntry := range sessionEntries {
-			name := sessionEntry.Name()
-			if sessionEntry.IsDir() ||
-				!strings.HasSuffix(name, ".json") {
-				continue
-			}
-			id := strings.TrimSuffix(name, ".json")
-			if id == "" {
-				continue
-			}
-			ids[id] = struct{}{}
-		}
-	}
-	return ids
+	return openCodeFormatStorageSessionIDs(kiloFmt, root)
 }
 
 func ResolveKiloWatchRoots(root string) []string {
-	if root == "" {
-		return nil
-	}
-	src := ResolveKiloSource(root)
-	switch src.Mode {
-	case OpenCodeSourceStorage:
-		if info, err := os.Stat(src.DBPath); err == nil &&
-			!info.IsDir() {
-			return []string{root}
-		}
-		return []string{filepath.Join(root, "storage")}
-	case OpenCodeSourceSQLite:
-		return []string{root}
-	}
-	if info, err := os.Stat(root); err == nil && info.IsDir() {
-		return []string{root}
-	}
-	return nil
+	return resolveOpenCodeFormatWatchRoots(kiloFmt, root)
 }
 
-func KiloSQLiteVirtualPath(
-	dbPath, sessionID string,
-) string {
-	return dbPath + "#" + sessionID
+func KiloSQLiteVirtualPath(dbPath, sessionID string) string {
+	return OpenCodeSQLiteVirtualPath(dbPath, sessionID)
 }
 
 func ParseKiloSQLiteVirtualPath(
 	sourcePath string,
 ) (dbPath, sessionID string, ok bool) {
-	idx := strings.LastIndex(sourcePath, "#")
-	if idx <= 0 || idx >= len(sourcePath)-1 {
-		return "", "", false
-	}
-	dbPath = sourcePath[:idx]
-	sessionID = sourcePath[idx+1:]
-	if filepath.Base(dbPath) != "kilo.db" {
-		return "", "", false
-	}
-	return dbPath, sessionID, true
-}
-
-func kiloSessionProject(path string) string {
-	return openCodeSessionProject(path)
+	return parseOpenCodeFormatVirtualPath(kiloFmt.dbName, sourcePath)
 }
 
 // DiscoverClaudeProjects finds all project directories under the

@@ -39,10 +39,6 @@ func ListKiloSessionMeta(dbPath string) ([]OpenCodeSessionMeta, error) {
 	return metas, nil
 }
 
-func KiloSQLiteSessionExists(dbPath, sessionID string) bool {
-	return OpenCodeSQLiteSessionExists(dbPath, sessionID)
-}
-
 func KiloSourceMtime(sourcePath string) (int64, error) {
 	if sourcePath == "" {
 		return 0, nil
