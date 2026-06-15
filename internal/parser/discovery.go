@@ -305,6 +305,203 @@ func openCodeSessionProject(path string) string {
 	return "unknown"
 }
 
+// ResolveKiloSource detects whether a Kilo root is using file-backed
+// storage or legacy SQLite storage.
+func ResolveKiloSource(root string) OpenCodeSource {
+	if root == "" {
+		return OpenCodeSource{}
+	}
+
+	sessionRoot := filepath.Join(root, "storage", "session")
+	if info, err := os.Stat(sessionRoot); err == nil && info.IsDir() {
+		return OpenCodeSource{
+			Mode:        OpenCodeSourceStorage,
+			Root:        root,
+			SessionRoot: sessionRoot,
+			DBPath:      filepath.Join(root, "kilo.db"),
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		storageRoot := filepath.Join(root, "storage")
+		if info, serr := os.Stat(storageRoot); serr == nil && info.IsDir() {
+			return OpenCodeSource{
+				Mode:        OpenCodeSourceStorage,
+				Root:        root,
+				SessionRoot: sessionRoot,
+				DBPath:      filepath.Join(root, "kilo.db"),
+			}
+		}
+	}
+
+	dbPath := filepath.Join(root, "kilo.db")
+	if info, err := os.Stat(dbPath); err == nil && !info.IsDir() {
+		return OpenCodeSource{
+			Mode:   OpenCodeSourceSQLite,
+			Root:   root,
+			DBPath: dbPath,
+		}
+	}
+
+	return OpenCodeSource{Root: root}
+}
+
+func DiscoverKiloSessions(root string) []DiscoveredFile {
+	src := ResolveKiloSource(root)
+	if src.Mode != OpenCodeSourceStorage {
+		return nil
+	}
+
+	var files []DiscoveredFile
+	entries, err := os.ReadDir(src.SessionRoot)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if !isDirOrSymlink(entry, src.SessionRoot) {
+			continue
+		}
+		projectDir := filepath.Join(src.SessionRoot, entry.Name())
+		sessionEntries, err := os.ReadDir(projectDir)
+		if err != nil {
+			continue
+		}
+		for _, sessionEntry := range sessionEntries {
+			if sessionEntry.IsDir() ||
+				!strings.HasSuffix(sessionEntry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(projectDir, sessionEntry.Name())
+			files = append(files, DiscoveredFile{
+				Path:    path,
+				Project: kiloSessionProject(path),
+				Agent:   AgentKilo,
+			})
+		}
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+	return files
+}
+
+func FindKiloSourceFile(root, sessionID string) string {
+	if !IsValidSessionID(sessionID) {
+		return ""
+	}
+
+	src := ResolveKiloSource(root)
+	switch src.Mode {
+	case OpenCodeSourceStorage:
+		if entries, err := os.ReadDir(src.SessionRoot); err == nil {
+			for _, entry := range entries {
+				if !isDirOrSymlink(entry, src.SessionRoot) {
+					continue
+				}
+				path := filepath.Join(
+					src.SessionRoot, entry.Name(),
+					sessionID+".json",
+				)
+				if info, err := os.Stat(path); err == nil &&
+					!info.IsDir() {
+					return path
+				}
+			}
+		}
+		if KiloSQLiteSessionExists(src.DBPath, sessionID) {
+			return KiloSQLiteVirtualPath(src.DBPath, sessionID)
+		}
+		return ""
+	case OpenCodeSourceSQLite:
+		if KiloSQLiteSessionExists(src.DBPath, sessionID) {
+			return KiloSQLiteVirtualPath(src.DBPath, sessionID)
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func KiloStorageSessionIDs(root string) map[string]struct{} {
+	src := ResolveKiloSource(root)
+	if src.Mode != OpenCodeSourceStorage {
+		return nil
+	}
+	entries, err := os.ReadDir(src.SessionRoot)
+	if err != nil {
+		return nil
+	}
+	ids := make(map[string]struct{})
+	for _, entry := range entries {
+		if !isDirOrSymlink(entry, src.SessionRoot) {
+			continue
+		}
+		projectDir := filepath.Join(src.SessionRoot, entry.Name())
+		sessionEntries, err := os.ReadDir(projectDir)
+		if err != nil {
+			continue
+		}
+		for _, sessionEntry := range sessionEntries {
+			name := sessionEntry.Name()
+			if sessionEntry.IsDir() ||
+				!strings.HasSuffix(name, ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".json")
+			if id == "" {
+				continue
+			}
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func ResolveKiloWatchRoots(root string) []string {
+	if root == "" {
+		return nil
+	}
+	src := ResolveKiloSource(root)
+	switch src.Mode {
+	case OpenCodeSourceStorage:
+		if info, err := os.Stat(src.DBPath); err == nil &&
+			!info.IsDir() {
+			return []string{root}
+		}
+		return []string{filepath.Join(root, "storage")}
+	case OpenCodeSourceSQLite:
+		return []string{root}
+	}
+	if info, err := os.Stat(root); err == nil && info.IsDir() {
+		return []string{root}
+	}
+	return nil
+}
+
+func KiloSQLiteVirtualPath(
+	dbPath, sessionID string,
+) string {
+	return dbPath + "#" + sessionID
+}
+
+func ParseKiloSQLiteVirtualPath(
+	sourcePath string,
+) (dbPath, sessionID string, ok bool) {
+	idx := strings.LastIndex(sourcePath, "#")
+	if idx <= 0 || idx >= len(sourcePath)-1 {
+		return "", "", false
+	}
+	dbPath = sourcePath[:idx]
+	sessionID = sourcePath[idx+1:]
+	if filepath.Base(dbPath) != "kilo.db" {
+		return "", "", false
+	}
+	return dbPath, sessionID, true
+}
+
+func kiloSessionProject(path string) string {
+	return openCodeSessionProject(path)
+}
+
 // DiscoverClaudeProjects finds all project directories under the
 // Claude projects dir and returns their JSONL session files.
 func DiscoverClaudeProjects(projectsDir string) []DiscoveredFile {

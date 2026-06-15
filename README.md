@@ -275,6 +275,7 @@ agentsview auto-discovers sessions from all of these:
 | gptme              | `~/.local/share/gptme/logs/`                           |
 | Hermes Agent       | `~/.hermes/sessions/`                                  |
 | iFlow              | `~/.iflow/projects/`                                   |
+| Kilo               | `~/.local/share/kilo/`                                 |
 | Kimi               | `~/.kimi/sessions/`                                    |
 | Kiro CLI           | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`    |
 | Kiro IDE           | `~/Library/Application Support/Kiro/` (macOS)          |
