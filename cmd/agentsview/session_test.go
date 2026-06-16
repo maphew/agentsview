@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -37,6 +38,8 @@ func TestSessionHelp_ShowsSubcommands(t *testing.T) {
 	}
 	assert.Contains(t, help, "--format",
 		"expected --format persistent flag in help")
+	assert.Contains(t, help, "--pg",
+		"expected --pg persistent flag in help")
 }
 
 // seedSession opens the SQLite DB at dataDir/sessions.db, inserts
@@ -179,6 +182,158 @@ func TestSessionList_FilterByProject(t *testing.T) {
 		"stdout should be valid JSON: %q", out)
 	require.Len(t, got.Sessions, 1)
 	assert.Equal(t, "s-a", got.Sessions[0]["id"])
+}
+
+func TestSessionList_PGFlagUsesPGReadStore(t *testing.T) {
+	localDir := t.TempDir()
+	remoteDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", localDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+	t.Setenv("AGENTSVIEW_PG_SCHEMA", "custom_schema")
+
+	seedSession(t, localDir, "local-session", "local")
+	seedSession(t, remoteDir, "pg-session", "remote")
+
+	remoteDB, err := db.Open(filepath.Join(remoteDir, "sessions.db"))
+	require.NoError(t, err)
+	var gotPG config.PGConfig
+	cleanupCalled := false
+	orig := openPGReadStore
+	openPGReadStore = func(
+		_ config.Config, pgCfg config.PGConfig,
+	) (db.Store, func(), error) {
+		gotPG = pgCfg
+		return remoteDB, func() {
+			cleanupCalled = true
+			require.NoError(t, remoteDB.Close())
+		}, nil
+	}
+	t.Cleanup(func() {
+		openPGReadStore = orig
+	})
+
+	out, err := executeCommand(newRootCommand(),
+		"session", "list", "--pg", "--format", "json")
+	require.NoError(t, err)
+
+	var got struct {
+		Sessions []map[string]any `json:"sessions"`
+		Total    int              `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got),
+		"stdout should be valid JSON: %q", out)
+	assert.Equal(t, 1, got.Total)
+	require.Len(t, got.Sessions, 1)
+	assert.Equal(t, "pg-session", got.Sessions[0]["id"])
+	assert.Equal(t, "postgres://example.test/agentsview", gotPG.URL)
+	assert.Equal(t, "custom_schema", gotPG.Schema)
+	assert.True(t, cleanupCalled, "expected PG store cleanup")
+}
+
+func TestSessionList_PGEnvUsesPGReadStore(t *testing.T) {
+	localDir := t.TempDir()
+	remoteDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", localDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/from-env")
+
+	seedSession(t, localDir, "local-session", "local")
+	seedSession(t, remoteDir, "pg-session", "remote")
+
+	remoteDB, err := db.Open(filepath.Join(remoteDir, "sessions.db"))
+	require.NoError(t, err)
+	var gotPG config.PGConfig
+	orig := openPGReadStore
+	openPGReadStore = func(
+		_ config.Config, pgCfg config.PGConfig,
+	) (db.Store, func(), error) {
+		gotPG = pgCfg
+		return remoteDB, func() { require.NoError(t, remoteDB.Close()) }, nil
+	}
+	t.Cleanup(func() {
+		openPGReadStore = orig
+	})
+
+	out, err := executeCommand(newRootCommand(),
+		"session", "list", "--format", "json")
+	require.NoError(t, err)
+
+	var got struct {
+		Sessions []map[string]any `json:"sessions"`
+		Total    int              `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got),
+		"stdout should be valid JSON: %q", out)
+	assert.Equal(t, 1, got.Total)
+	require.Len(t, got.Sessions, 1)
+	assert.Equal(t, "pg-session", got.Sessions[0]["id"])
+	assert.Equal(t, "postgres://example.test/from-env", gotPG.URL)
+	assert.Equal(t, "agentsview", gotPG.Schema)
+}
+
+func TestSessionList_PGFlagRequiresURL(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "")
+
+	_, err := executeCommand(newRootCommand(),
+		"session", "list", "--pg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pg url not configured")
+	assert.Contains(t, err.Error(), "AGENTSVIEW_PG_URL")
+}
+
+func TestSessionList_DefaultDoesNotOpenPGStore(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "")
+	seedSession(t, dataDir, "local-session", "local")
+
+	orig := openPGReadStore
+	openPGReadStore = func(
+		config.Config, config.PGConfig,
+	) (db.Store, func(), error) {
+		t.Fatal("openPGReadStore should not be called without --pg or PG URL")
+		return nil, nil, nil
+	}
+	t.Cleanup(func() {
+		openPGReadStore = orig
+	})
+
+	out, err := executeCommand(newRootCommand(),
+		"session", "list", "--format", "json")
+	require.NoError(t, err)
+
+	var got struct {
+		Sessions []map[string]any `json:"sessions"`
+		Total    int              `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got),
+		"stdout should be valid JSON: %q", out)
+	assert.Equal(t, 1, got.Total)
+	require.Len(t, got.Sessions, 1)
+	assert.Equal(t, "local-session", got.Sessions[0]["id"])
+}
+
+func TestPGReadServiceClosesStoreWhenOpenFailsAfterCleanupProvided(t *testing.T) {
+	closed := false
+	orig := openPGReadStore
+	openPGReadStore = func(
+		config.Config, config.PGConfig,
+	) (db.Store, func(), error) {
+		return nil, func() { closed = true },
+			errors.New("schema check failed")
+	}
+	t.Cleanup(func() {
+		openPGReadStore = orig
+	})
+
+	_, _, err := newPGReadService(config.Config{}, config.PGConfig{
+		URL:    "postgres://example.test/agentsview",
+		Schema: "agentsview",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "opening pg store")
+	assert.True(t, closed, "expected cleanup on error-after-open path")
 }
 
 // TestSessionList_MinToolFailuresZero verifies that passing
@@ -437,6 +592,18 @@ func TestSessionExport_RejectsFormatFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "--format not supported")
 }
 
+func TestSessionExport_RejectsPGFlag(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+
+	_, err := executeCommand(newRootCommand(),
+		"session", "export", "some-id", "--pg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local-only command")
+	assert.Contains(t, err.Error(), "--pg not supported")
+}
+
 // TestSessionUsage_RejectsServerFlag verifies that `session usage`
 // rejects the inherited --server flag instead of silently querying
 // the local SQLite archive. usage uses the direct token-use path
@@ -452,6 +619,141 @@ func TestSessionUsage_RejectsServerFlag(t *testing.T) {
 		"--server", "http://localhost:9999")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--server not yet implemented")
+}
+
+func TestSessionUsage_PGEnvUsesPGStore(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+
+	pgDB, err := db.Open(filepath.Join(dataDir, "pg.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { pgDB.Close() })
+	require.NoError(t, pgDB.UpsertSession(db.Session{
+		ID:                   "pg-session",
+		Project:              "pg-project",
+		Machine:              "pg-host",
+		Agent:                "codex",
+		MessageCount:         2,
+		UserMessageCount:     2,
+		TotalOutputTokens:    42,
+		HasTotalOutputTokens: true,
+	}))
+
+	opened := false
+	orig := openPGReadStore
+	openPGReadStore = func(
+		_ config.Config, pgCfg config.PGConfig,
+	) (db.Store, func(), error) {
+		opened = true
+		assert.Equal(t, "postgres://example.test/agentsview", pgCfg.URL)
+		return pgDB, func() {}, nil
+	}
+	t.Cleanup(func() { openPGReadStore = orig })
+
+	root := newRootCommand()
+	args := []string{"session", "usage", "pg-session"}
+	cmd, _, err := root.Find(args)
+	require.NoError(t, err)
+	require.NoError(t, cmd.ParseFlags(nil))
+
+	out, code, err := sessionUsageDataForCommand(cmd, "pg-session")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, opened, "expected session usage to open PG store")
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, "pg-session", out.SessionID)
+	assert.Equal(t, "pg-project", out.Project)
+	assert.Equal(t, 42, out.TotalOutputTokens)
+	assert.False(t, out.ServerRunning)
+}
+
+func TestSessionUsage_PGEnvResolvesBareSessionID(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+
+	bareID := "019da6a6-8c67-7c23-b102-ef48502852d0"
+	storedID := "codex:" + bareID
+	pgDB, err := db.Open(filepath.Join(dataDir, "pg.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { pgDB.Close() })
+	require.NoError(t, pgDB.UpsertSession(db.Session{
+		ID:                   storedID,
+		Project:              "pg-project",
+		Machine:              "pg-host",
+		Agent:                "codex",
+		MessageCount:         2,
+		UserMessageCount:     2,
+		TotalOutputTokens:    42,
+		HasTotalOutputTokens: true,
+	}))
+
+	orig := openPGReadStore
+	openPGReadStore = func(
+		_ config.Config, _ config.PGConfig,
+	) (db.Store, func(), error) {
+		return pgDB, func() {}, nil
+	}
+	t.Cleanup(func() { openPGReadStore = orig })
+
+	root := newRootCommand()
+	args := []string{"session", "usage", bareID}
+	cmd, _, err := root.Find(args)
+	require.NoError(t, err)
+	require.NoError(t, cmd.ParseFlags(nil))
+
+	out, code, err := sessionUsageDataForCommand(cmd, bareID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, storedID, out.SessionID)
+	assert.Equal(t, "pg-project", out.Project)
+	assert.Equal(t, 42, out.TotalOutputTokens)
+}
+
+func TestSessionUsage_PGEnvResolvesColonBearingRawSessionID(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+
+	rawID := "project-hash:session-uuid"
+	storedID := "kimi:" + rawID
+	pgDB, err := db.Open(filepath.Join(dataDir, "pg.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { pgDB.Close() })
+	require.NoError(t, pgDB.UpsertSession(db.Session{
+		ID:                   storedID,
+		Project:              "pg-project",
+		Machine:              "pg-host",
+		Agent:                "kimi",
+		MessageCount:         2,
+		UserMessageCount:     2,
+		TotalOutputTokens:    84,
+		HasTotalOutputTokens: true,
+	}))
+
+	orig := openPGReadStore
+	openPGReadStore = func(
+		_ config.Config, _ config.PGConfig,
+	) (db.Store, func(), error) {
+		return pgDB, func() {}, nil
+	}
+	t.Cleanup(func() { openPGReadStore = orig })
+
+	root := newRootCommand()
+	args := []string{"session", "usage", rawID}
+	cmd, _, err := root.Find(args)
+	require.NoError(t, err)
+	require.NoError(t, cmd.ParseFlags(nil))
+
+	out, code, err := sessionUsageDataForCommand(cmd, rawID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, storedID, out.SessionID)
+	assert.Equal(t, "pg-project", out.Project)
+	assert.Equal(t, 84, out.TotalOutputTokens)
 }
 
 // TestSessionSync_UnknownID_ReportsNoFilePath verifies that the
@@ -473,6 +775,18 @@ func TestSessionSync_UnknownID_ReportsNoFilePath(t *testing.T) {
 		"error should come from directBackend.Sync validation, not ErrReadOnly")
 	assert.NotContains(t, err.Error(), "read-only",
 		"engine must be plumbed; got ErrReadOnly-style message: %v", err)
+}
+
+func TestSessionSync_PGFlagRefusesWrite(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	t.Setenv("AGENTSVIEW_PG_URL", "postgres://example.test/agentsview")
+
+	_, err := executeCommand(newRootCommand(),
+		"session", "sync", "--pg", "some-id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--pg is read-only")
+	assert.Contains(t, err.Error(), "write commands")
 }
 
 // TestSessionSync_AgainstReadOnlyDaemon_Refuses verifies the CLI
