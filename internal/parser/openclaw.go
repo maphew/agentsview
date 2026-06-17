@@ -181,6 +181,7 @@ func ParseOpenClawSession(
 				ToolResults: []ParsedToolResult{{
 					ToolUseID:     toolCallID,
 					ContentLength: contentLen,
+					ContentRaw:    content.Raw,
 				}},
 			})
 			ordinal++
@@ -324,7 +325,12 @@ func extractToolResultText(content gjson.Result) string {
 
 	var parts []string
 	content.ForEach(func(_, block gjson.Result) bool {
-		if block.Get("type").Str == "text" {
+		// OpenClaw tool-result content blocks (type "toolResult") carry
+		// the rendered text inline under "text", the same field plain
+		// "text" blocks use. This matches what DecodeContent reads, so
+		// the measured length and the stored/decoded content agree.
+		switch block.Get("type").Str {
+		case "text", "toolResult":
 			if t := block.Get("text").Str; t != "" {
 				parts = append(parts, t)
 			}
