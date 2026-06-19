@@ -631,6 +631,41 @@ func TestExtractProjectFromCwdWithBranch(t *testing.T) {
 			branch: "fix-exited-agent-session-cleanup",
 			want:   "middleman",
 		},
+		{
+			name: "RoborevCIWorktree",
+			cwd: filepath.FromSlash(
+				"/data/.roborev/ci-worktrees/widget/roborev-ci-101-1001",
+			),
+			branch: "",
+			want:   "widget",
+		},
+		{
+			name: "RoborevCIWorktreeDashRepoNormalized",
+			cwd: filepath.FromSlash(
+				"/data/.roborev/ci-worktrees/data-pipeline/roborev-ci-102-1002",
+			),
+			branch: "",
+			want:   "data_pipeline",
+		},
+		{
+			name: "RoborevCIWorktreeSubdir",
+			cwd: filepath.FromSlash(
+				"/data/.roborev/ci-worktrees/service/roborev-ci-103-1003/internal/foo",
+			),
+			branch: "",
+			want:   "service",
+		},
+		{
+			// A bare "ci-worktrees" directory NOT under .roborev is not a
+			// roborev CI worktree: the anchored marker must not fire, so the
+			// name falls back to the path basename instead of the repo part.
+			name: "CIWorktreesDirNotUnderRoborevNotMatched",
+			cwd: filepath.FromSlash(
+				"/data/work/ci-worktrees/widget/build-123",
+			),
+			branch: "",
+			want:   "build_123",
+		},
 	}
 
 	for _, tt := range tests {

@@ -31,8 +31,19 @@ func queryChunked(
 	ids []string,
 	fn func(chunk []string) error,
 ) error {
-	for i := 0; i < len(ids); i += maxSQLVars {
-		end := min(i+maxSQLVars, len(ids))
+	return queryChunkedSize(ids, maxSQLVars, fn)
+}
+
+// queryChunkedSize is queryChunked with an explicit per-chunk size, for
+// queries that bind each ID more than once (and so need a smaller chunk to
+// keep the total bind count within SQLite's variable limit).
+func queryChunkedSize(
+	ids []string,
+	size int,
+	fn func(chunk []string) error,
+) error {
+	for i := 0; i < len(ids); i += size {
+		end := min(i+size, len(ids))
 		if err := fn(ids[i:end]); err != nil {
 			return err
 		}
@@ -53,8 +64,12 @@ type AnalyticsFilter struct {
 	MinUserMessages  int    // user_message_count >= N
 	ExcludeOneShot   bool   // exclude sessions with user_message_count <= 1
 	ExcludeAutomated bool   // exclude automated (roborev) sessions
-	ActiveSince      string // ISO timestamp cutoff
-	Termination      string // "", "clean", or "unclean"
+	// ExcludeInteractive is the mirror of ExcludeAutomated: it keeps only
+	// automated sessions. The two are never set together (that would match
+	// nothing); the activity report uses them for its automation filter.
+	ExcludeInteractive bool
+	ActiveSince        string // ISO timestamp cutoff
+	Termination        string // "", "clean", or "unclean"
 }
 
 // location loads the timezone or returns UTC on error.
@@ -220,6 +235,9 @@ func (f AnalyticsFilter) buildWhereWithDate(
 	}
 	if f.ExcludeAutomated {
 		preds = append(preds, "is_automated = 0")
+	}
+	if f.ExcludeInteractive {
+		preds = append(preds, "is_automated = 1")
 	}
 
 	if f.ActiveSince != "" {

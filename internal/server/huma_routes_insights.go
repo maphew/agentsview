@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"go.kenn.io/agentsview/internal/activity"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/timeutil"
@@ -27,8 +28,10 @@ func (s *Server) registerInsightsRoutes() {
 type insightType string
 
 type insightsInput struct {
-	Type    insightType `query:"type" enum:"daily_activity,agent_analysis" doc:"Insight type"`
-	Project string      `query:"project" doc:"Filter by project"`
+	Type     insightType `query:"type" enum:"daily_activity,agent_analysis" doc:"Insight type"`
+	Project  string      `query:"project" doc:"Filter by project"`
+	DateFrom string      `query:"date_from" format:"date" doc:"Filter date_from >= (YYYY-MM-DD)"`
+	DateTo   string      `query:"date_to" format:"date" doc:"Filter date_to <= (YYYY-MM-DD)"`
 }
 
 type insightsResponse struct {
@@ -43,9 +46,14 @@ func (s *Server) humaListInsights(
 	ctx context.Context,
 	in *insightsInput,
 ) (*jsonOutput[insightsResponse], error) {
+	if err := validateDateFilterValues("", in.DateFrom, in.DateTo, ""); err != nil {
+		return nil, err
+	}
 	insights, err := s.db.ListInsights(ctx, db.InsightFilter{
-		Type:    string(in.Type),
-		Project: in.Project,
+		Type:     string(in.Type),
+		Project:  in.Project,
+		DateFrom: in.DateFrom,
+		DateTo:   in.DateTo,
 	})
 	if err != nil {
 		return nil, serverError(err)
@@ -141,13 +149,26 @@ func (s *Server) humaGenerateInsight(
 		if !sendJSON("status", map[string]string{"phase": "generating"}) {
 			return
 		}
-		prompt, err := insight.BuildPrompt(hctx.Context(), s.db, insight.GenerateRequest{
+		genReq := insight.GenerateRequest{
 			Type:     req.Type,
 			DateFrom: req.DateFrom,
 			DateTo:   req.DateTo,
 			Project:  req.Project,
 			Prompt:   req.Prompt,
-		})
+		}
+		// Attach the activity summary for any valid range, single day
+		// included: daily_activity insights are commonly one day and the
+		// summary (concurrency, peak, breakdowns) is exactly that day's
+		// overview. The validator above guarantees DateTo >= DateFrom.
+		if req.DateTo >= req.DateFrom {
+			summary, err := s.activityRangeSummary(hctx.Context(), req)
+			if err != nil {
+				log.Printf("insight activity summary error: %v", err)
+			} else {
+				genReq.Summary = summary
+			}
+		}
+		prompt, err := insight.BuildPrompt(hctx.Context(), s.db, genReq)
 		if err != nil {
 			log.Printf("insight prompt error: %v", err)
 			sendJSON("error", map[string]string{"message": "failed to build prompt"})
@@ -311,4 +332,59 @@ func (s *Server) humaGenerateInsight(
 		}
 		sendJSON("done", saved)
 	}}, nil
+}
+
+// activityRangeSummary resolves the requested range into an activity report and
+// condenses it into a RangeSummary for the insight prompt. The range spans the
+// local days [DateFrom, DateTo] in req.Timezone (empty means UTC): the bounds
+// are that zone's midnights, matching the activity dashboard the dates were
+// derived from, so a non-UTC viewer's summary covers the window the dashboard
+// shows rather than a UTC-shifted one. It excludes automated sessions so the
+// summary reflects the same interactive-only work BuildPrompt's prompt focuses
+// on; the two otherwise select sessions differently (this uses the activity
+// report's half-open window with an ended_at fallback, BuildPrompt uses
+// ListSessions' calendar-date match on the start date), so the summary is a
+// range-level overview, not a row-for-row mirror of BuildPrompt's session list.
+func (s *Server) activityRangeSummary(
+	ctx context.Context, req generateInsightRequest,
+) (*insight.RangeSummary, error) {
+	tz := req.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, fmt.Errorf("loading timezone %q: %w", tz, err)
+	}
+	// Local midnights of DateFrom and the day after DateTo bound the half-open
+	// window, expressed as absolute instants so ResolveQuery's custom-range
+	// parse keeps them exact; Timezone drives only the bucket calendar.
+	from, err := time.ParseInLocation("2006-01-02", req.DateFrom, loc)
+	if err != nil {
+		return nil, fmt.Errorf("parsing date_from %q: %w", req.DateFrom, err)
+	}
+	toDay, err := time.ParseInLocation("2006-01-02", req.DateTo, loc)
+	if err != nil {
+		return nil, fmt.Errorf("parsing date_to %q: %w", req.DateTo, err)
+	}
+	to := toDay.AddDate(0, 0, 1)
+	q, err := activity.ResolveQuery(activity.QueryInput{
+		Preset:   "custom",
+		From:     from.UTC().Format(time.RFC3339),
+		To:       to.UTC().Format(time.RFC3339),
+		Timezone: tz,
+	}, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("resolving activity range: %w", err)
+	}
+	r, err := s.db.GetActivityReport(ctx, db.AnalyticsFilter{
+		Timezone:         tz,
+		Project:          req.Project,
+		ExcludeAutomated: true,
+	}, q)
+	if err != nil {
+		return nil, fmt.Errorf("activity report: %w", err)
+	}
+	summary := insight.SummarizeReport(r, 10)
+	return &summary, nil
 }
