@@ -434,7 +434,9 @@ func (e *Engine) classifyPaths(
 			files = append(files, df)
 		}
 	}
-	return dedupeDiscoveredFiles(files)
+	files = e.expandClaudeDuplicateCandidates(files)
+	files = dedupeDiscoveredFiles(files)
+	return e.dedupeClaudeDiscoveredFiles(files)
 }
 
 func dedupeDiscoveredFiles(
@@ -489,6 +491,44 @@ func preferDiscoveredFile(
 		}
 	}
 	return false
+}
+
+func (e *Engine) expandClaudeDuplicateCandidates(
+	files []parser.DiscoveredFile,
+) []parser.DiscoveredFile {
+	sessionIDs := make(map[string]struct{})
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		seen[string(file.Agent)+"\x00"+file.Path] = struct{}{}
+		if file.Agent != parser.AgentClaude {
+			continue
+		}
+		sessionID := claudeSessionIDFromPath(file.Path)
+		if sessionID == "" {
+			continue
+		}
+		sessionIDs[sessionID] = struct{}{}
+	}
+	if len(sessionIDs) == 0 {
+		return files
+	}
+
+	out := files
+	for _, claudeDir := range e.agentDirs[parser.AgentClaude] {
+		for _, candidate := range parser.DiscoverClaudeProjects(claudeDir) {
+			sessionID := claudeSessionIDFromPath(candidate.Path)
+			if _, ok := sessionIDs[sessionID]; !ok {
+				continue
+			}
+			key := string(candidate.Agent) + "\x00" + candidate.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 func codexLayoutForPath(path string) parser.CodexLayout {
@@ -2376,10 +2416,12 @@ func (e *Engine) syncAllLocked(
 	}
 
 	if !since.IsZero() {
+		all = e.dedupeClaudeDiscoveredFiles(all)
 		all = e.filterFilesByMtime(all, since)
 	}
 
 	all = dedupeDiscoveredFiles(all)
+	all = e.dedupeClaudeDiscoveredFiles(all)
 	all = e.filterShadowedLegacyKiroFiles(all)
 
 	verbose := onProgress == nil
@@ -2899,6 +2941,157 @@ func discoveredFileMtime(
 	}
 
 	return info.ModTime().UnixNano(), nil
+}
+
+func (e *Engine) dedupeClaudeDiscoveredFiles(
+	files []parser.DiscoveredFile,
+) []parser.DiscoveredFile {
+	bySessionID := make(map[string][]parser.DiscoveredFile)
+	for _, file := range files {
+		if file.Agent != parser.AgentClaude {
+			continue
+		}
+		sessionID := claudeSessionIDFromPath(file.Path)
+		if sessionID == "" {
+			continue
+		}
+		bySessionID[sessionID] = append(bySessionID[sessionID], file)
+	}
+	if len(bySessionID) == 0 {
+		return files
+	}
+
+	preferred := make(map[string]parser.DiscoveredFile, len(bySessionID))
+	for sessionID, candidates := range bySessionID {
+		preferred[sessionID] = e.pickPreferredClaudeDiscoveredFile(
+			sessionID, candidates,
+		)
+	}
+
+	out := files[:0]
+	seen := make(map[string]struct{}, len(preferred))
+	for _, file := range files {
+		if file.Agent != parser.AgentClaude {
+			out = append(out, file)
+			continue
+		}
+		sessionID := claudeSessionIDFromPath(file.Path)
+		if sessionID == "" {
+			out = append(out, file)
+			continue
+		}
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		out = append(out, preferred[sessionID])
+	}
+	return out
+}
+
+func claudeSessionIDFromPath(path string) string {
+	name := filepath.Base(path)
+	sessionID, ok := strings.CutSuffix(name, ".jsonl")
+	if !ok {
+		return ""
+	}
+	return sessionID
+}
+
+func (e *Engine) pickPreferredClaudeDiscoveredFile(
+	sessionID string, candidates []parser.DiscoveredFile,
+) parser.DiscoveredFile {
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+
+	fullID := e.idPrefix + sessionID
+	storedPath := e.db.GetSessionFilePath(fullID)
+	if storedPath != "" {
+		for _, candidate := range candidates {
+			if e.effectiveSourcePath(candidate.Path) != storedPath {
+				continue
+			}
+			if e.claudeSourceMatchesStored(fullID, candidate.Path) {
+				best := candidate
+				for _, competing := range candidates {
+					if e.effectiveSourcePath(competing.Path) == storedPath ||
+						!claudeCandidateHasAppendProgress(competing, candidate) {
+						continue
+					}
+					if preferClaudeDiscoveredFile(competing, best) {
+						best = competing
+					}
+				}
+				return best
+			}
+		}
+	}
+
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if preferClaudeDiscoveredFile(candidate, best) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func (e *Engine) claudeSourceMatchesStored(
+	sessionID, path string,
+) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	storedSize, storedMtime, ok := e.db.GetSessionFileInfo(sessionID)
+	if !ok {
+		return false
+	}
+	if storedSize != info.Size() ||
+		storedMtime != info.ModTime().UnixNano() {
+		return false
+	}
+	return e.db.GetSessionDataVersion(sessionID) >= db.CurrentDataVersion()
+}
+
+func (e *Engine) effectiveSourcePath(path string) string {
+	if e.pathRewriter != nil {
+		return e.pathRewriter(path)
+	}
+	return path
+}
+
+func claudeCandidateHasAppendProgress(
+	candidate, current parser.DiscoveredFile,
+) bool {
+	candidateInfo, candidateErr := os.Stat(candidate.Path)
+	currentInfo, currentErr := os.Stat(current.Path)
+	if candidateErr != nil || currentErr != nil {
+		return false
+	}
+	return candidateInfo.Size() > currentInfo.Size()
+}
+
+func preferClaudeDiscoveredFile(
+	candidate, current parser.DiscoveredFile,
+) bool {
+	candidateInfo, candidateErr := os.Stat(candidate.Path)
+	currentInfo, currentErr := os.Stat(current.Path)
+	switch {
+	case candidateErr == nil && currentErr != nil:
+		return true
+	case candidateErr != nil && currentErr == nil:
+		return false
+	case candidateErr == nil && currentErr == nil:
+		if candidateInfo.Size() != currentInfo.Size() {
+			return candidateInfo.Size() > currentInfo.Size()
+		}
+		if !candidateInfo.ModTime().Equal(currentInfo.ModTime()) {
+			return candidateInfo.ModTime().After(currentInfo.ModTime())
+		}
+	}
+	return candidate.Path < current.Path
 }
 
 // zedDBCompositeMtime returns the maximum mtime across the Zed
