@@ -1106,10 +1106,32 @@ func (db *DB) HasTrashedSessionByFilePath(path, agent string) bool {
 func (db *DB) PurgeExcludedSessions() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.getWriter().Exec(
-		"DELETE FROM sessions WHERE id IN (SELECT id FROM excluded_sessions)",
+	tx, err := db.getWriter().Begin()
+	if err != nil {
+		return fmt.Errorf("begin purge excluded tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ids, err := sessionIDsTx(
+		tx, "id IN (SELECT id FROM excluded_sessions)",
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := deleteSessionMessagesTx(tx, id); err != nil {
+			return fmt.Errorf(
+				"pre-deleting excluded session %s messages: %w",
+				id, err,
+			)
+		}
+	}
+	if _, err := tx.Exec(
+		"DELETE FROM sessions WHERE id IN (SELECT id FROM excluded_sessions)",
+	); err != nil {
+		return fmt.Errorf("purging excluded sessions: %w", err)
+	}
+	return tx.Commit()
 }
 
 // DeleteParserExcludedSessions removes rows that the current parser
@@ -1133,6 +1155,12 @@ func (db *DB) DeleteParserExcludedSessions(ids []string) (int, error) {
 	for _, id := range ids {
 		if id == "" {
 			continue
+		}
+		if err := deleteSessionMessagesTx(tx, id); err != nil {
+			return 0, fmt.Errorf(
+				"pre-deleting parser-excluded session %s messages: %w",
+				id, err,
+			)
 		}
 		res, err := tx.Exec(
 			"DELETE FROM sessions WHERE id = ?", id,
@@ -1893,6 +1921,12 @@ func (db *DB) DeleteSession(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := deleteSessionMessagesTx(tx, id); err != nil {
+		return fmt.Errorf(
+			"pre-deleting session %s messages: %w",
+			id, err,
+		)
+	}
 
 	res, err := tx.Exec(
 		"DELETE FROM sessions WHERE id = ?", id,
@@ -1951,6 +1985,30 @@ func sessionAliasIDsTx(tx *sql.Tx, where string, args ...any) ([]string, error) 
 	return aliases, nil
 }
 
+func sessionIDsTx(tx *sql.Tx, where string, args ...any) ([]string, error) {
+	rows, err := tx.Query(
+		"SELECT id FROM sessions WHERE "+where,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading session ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning session id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session ids: %w", err)
+	}
+	return ids, nil
+}
+
 func vibeFallbackAliasID(id, agent string, filePath sql.NullString) string {
 	if agent != "vibe" || !filePath.Valid || filePath.String == "" {
 		return ""
@@ -1984,15 +2042,35 @@ func (db *DB) DeleteSessionIfTrashed(id string) (int64, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	res, err := tx.Exec(
+		`UPDATE sessions
+		 SET deleted_at = deleted_at
+		 WHERE id = ? AND deleted_at IS NOT NULL`,
+		id,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"locking trashed session %s: %w", id, err,
+		)
+	}
+	locked, _ := res.RowsAffected()
+	if locked == 0 {
+		return 0, nil
+	}
 	aliasIDs, err := sessionAliasIDsTx(
 		tx, "id = ? AND deleted_at IS NOT NULL", id,
 	)
 	if err != nil {
 		return 0, err
 	}
+	if err := deleteSessionMessagesTx(tx, id); err != nil {
+		return 0, fmt.Errorf(
+			"pre-deleting trashed session %s messages: %w",
+			id, err,
+		)
+	}
 
-	// Only delete if the session is currently trashed.
-	res, err := tx.Exec(
+	res, err = tx.Exec(
 		"DELETE FROM sessions WHERE id = ? AND deleted_at IS NOT NULL",
 		id,
 	)
@@ -2000,9 +2078,6 @@ func (db *DB) DeleteSessionIfTrashed(id string) (int64, error) {
 		return 0, fmt.Errorf("deleting trashed session %s: %w", id, err)
 	}
 	n, _ := res.RowsAffected()
-	if n == 0 {
-		return 0, nil
-	}
 
 	// Record in exclusion list so sync doesn't re-import.
 	if err := excludeSessionIDTx(tx, id); err != nil {
@@ -2351,7 +2426,19 @@ func (db *DB) EmptyTrash() (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if _, err := tx.Exec(
+		`UPDATE sessions
+		 SET deleted_at = deleted_at
+		 WHERE deleted_at IS NOT NULL`,
+	); err != nil {
+		return 0, fmt.Errorf("locking trashed sessions: %w", err)
+	}
+
 	aliasIDs, err := sessionAliasIDsTx(tx, "deleted_at IS NOT NULL")
+	if err != nil {
+		return 0, err
+	}
+	ids, err := sessionIDsTx(tx, "deleted_at IS NOT NULL")
 	if err != nil {
 		return 0, err
 	}
@@ -2367,6 +2454,14 @@ func (db *DB) EmptyTrash() (int, error) {
 		if err := excludeSessionIDTx(tx, aliasID); err != nil {
 			return 0, fmt.Errorf(
 				"excluding trashed session alias %s: %w", aliasID, err,
+			)
+		}
+	}
+	for _, id := range ids {
+		if err := deleteSessionMessagesTx(tx, id); err != nil {
+			return 0, fmt.Errorf(
+				"pre-deleting trashed session %s messages: %w",
+				id, err,
 			)
 		}
 	}
@@ -2433,6 +2528,14 @@ func (db *DB) DeleteSessions(ids []string) (int, error) {
 			if err := excludeSessionIDTx(tx, aliasID); err != nil {
 				return 0, fmt.Errorf(
 					"excluding batch session alias %s: %w", aliasID, err,
+				)
+			}
+		}
+		for _, id := range batch {
+			if err := deleteSessionMessagesTx(tx, id); err != nil {
+				return 0, fmt.Errorf(
+					"pre-deleting batch session %s messages: %w",
+					id, err,
 				)
 			}
 		}
