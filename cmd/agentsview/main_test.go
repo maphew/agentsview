@@ -3,17 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
-	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/ssh"
+	agentsync "go.kenn.io/agentsview/internal/sync"
 )
 
 func TestMustLoadConfig(t *testing.T) {
@@ -192,14 +198,14 @@ type fakeUnwatchedPollSyncer struct {
 
 func (f *fakeUnwatchedPollSyncer) SyncRootsSince(
 	ctx context.Context, roots []string, since time.Time,
-	onProgress sync.ProgressFunc,
-) sync.SyncStats {
+	onProgress agentsync.ProgressFunc,
+) agentsync.SyncStats {
 	f.calls++
 	f.roots = append([]string(nil), roots...)
 	f.since = since
 	f.callRoots = append(f.callRoots, append([]string(nil), roots...))
 	f.callSince = append(f.callSince, since)
-	return sync.SyncStats{}
+	return agentsync.SyncStats{}
 }
 
 func TestPollUnwatchedRootsOnceUsesScopedFullSync(t *testing.T) {
@@ -236,21 +242,348 @@ func TestCollectWatchRootsPreservesDirsSharingWatchRoot(t *testing.T) {
 	assert.ElementsMatch(t, []string{sessionsDir, archivedDir}, roots[0].dirs)
 }
 
+// fakeEmitter records Emit calls; safe for concurrent use.
+type fakeEmitter struct {
+	count atomic.Int64
+}
+
+func (f *fakeEmitter) Emit(_ string) { f.count.Add(1) }
+
+func TestStartRemoteHostSync_EmitsAfterSuccess(t *testing.T) {
+	em := &fakeEmitter{}
+	syncFn := func() (int, error) { return 3, nil }
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interval := 10 * time.Millisecond
+	go func() {
+		runRemoteHostSyncLoop(context.Background(), "test-host", interval, syncFn, em, nil, done)
+		close(exited)
+	}()
+
+	time.Sleep(3 * interval)
+	close(done)
+	<-exited
+
+	assert.Positive(t, em.count.Load(), "emitter should have been called at least once")
+}
+
+func TestRemoteHostSyncFuncSerializesWithEngineExclusiveLock(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	engine := agentsync.NewEngine(database, agentsync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{},
+		Machine:   "local",
+	})
+
+	remoteEntered := make(chan struct{})
+	releaseRemote := make(chan struct{})
+	syncFn := remoteHostSyncFunc(
+		context.Background(),
+		config.Config{},
+		database,
+		engine,
+		config.RemoteHost{Host: "test-host"},
+		func(context.Context, *ssh.RemoteSync) (ssh.SyncStats, error) {
+			close(remoteEntered)
+			<-releaseRemote
+			return ssh.SyncStats{}, nil
+		},
+	)
+
+	syncErr := make(chan error, 1)
+	go func() {
+		_, err := syncFn()
+		syncErr <- err
+	}()
+
+	select {
+	case <-remoteEntered:
+	case <-time.After(time.Second):
+		require.FailNow(t, "remote sync did not enter")
+	}
+
+	exclusiveEntered := make(chan struct{})
+	exclusiveErr := make(chan error, 1)
+	go func() {
+		exclusiveErr <- engine.RunExclusive(func() error {
+			close(exclusiveEntered)
+			return nil
+		})
+	}()
+
+	select {
+	case <-exclusiveEntered:
+		assert.Fail(t, "exclusive operation overlapped scheduled remote sync")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseRemote)
+
+	select {
+	case err := <-syncErr:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		require.FailNow(t, "scheduled remote sync did not finish")
+	}
+	select {
+	case err := <-exclusiveErr:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		require.FailNow(t, "exclusive operation did not finish")
+	}
+}
+
+func TestRemoteHostSyncFuncUsesCallerContext(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	engine := agentsync.NewEngine(database, agentsync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{},
+		Machine:   "local",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	syncFn := remoteHostSyncFunc(
+		ctx,
+		config.Config{},
+		database,
+		engine,
+		config.RemoteHost{Host: "test-host"},
+		func(runCtx context.Context, _ *ssh.RemoteSync) (ssh.SyncStats, error) {
+			return ssh.SyncStats{}, runCtx.Err()
+		},
+	)
+
+	_, err = syncFn()
+
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestRemoteHostSyncFuncForcesFullWhenDatabaseNeedsResync(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	raw, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = raw.Exec("PRAGMA user_version = 0")
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	database, err = db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	require.True(t, database.NeedsResync())
+	engine := agentsync.NewEngine(database, agentsync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{},
+		Machine:   "local",
+	})
+
+	var gotFull bool
+	syncFn := remoteHostSyncFunc(
+		context.Background(),
+		config.Config{},
+		database,
+		engine,
+		config.RemoteHost{Host: "test-host"},
+		func(_ context.Context, rs *ssh.RemoteSync) (ssh.SyncStats, error) {
+			gotFull = rs.Full
+			return ssh.SyncStats{}, nil
+		},
+	)
+
+	_, err = syncFn()
+
+	require.NoError(t, err)
+	assert.True(t, gotFull, "scheduled remote sync should force full when DB needs resync")
+}
+
+func TestStartRemoteHostSync_TracksRemoteWorkForIdleReaper(t *testing.T) {
+	idleFired := make(chan struct{})
+	idleTracker := server.NewIdleTracker(20*time.Millisecond, func() {
+		close(idleFired)
+	})
+	ctx := t.Context()
+
+	syncEntered := make(chan struct{}, 1)
+	releaseSync := make(chan struct{})
+	syncFn := func() (int, error) {
+		select {
+		case syncEntered <- struct{}{}:
+		default:
+		}
+		<-releaseSync
+		return 1, nil
+	}
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		runRemoteHostSyncLoop(ctx, "test-host", time.Millisecond, syncFn, nil, idleTracker, done)
+		close(exited)
+	}()
+
+	select {
+	case <-syncEntered:
+	case <-time.After(time.Second):
+		require.FailNow(t, "remote sync did not enter")
+	}
+	go idleTracker.Run(ctx)
+
+	select {
+	case <-idleFired:
+		require.FailNow(t, "idle tracker fired while remote sync was active")
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	close(releaseSync)
+	close(done)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		require.FailNow(t, "remote sync loop did not exit")
+	}
+}
+
+func TestStartRemoteHostSync_ExitsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	exited := make(chan struct{})
+	syncCalled := make(chan struct{}, 1)
+	go func() {
+		runRemoteHostSyncLoop(
+			ctx,
+			"test-host",
+			time.Hour,
+			func() (int, error) {
+				syncCalled <- struct{}{}
+				return 0, nil
+			},
+			nil,
+			nil,
+			nil,
+		)
+		close(exited)
+	}()
+
+	cancel()
+
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		require.FailNow(t, "remote sync loop did not exit after context cancel")
+	}
+	select {
+	case <-syncCalled:
+		require.FailNow(t, "sync ran before context cancel")
+	default:
+	}
+}
+
+type scopedEmitter struct {
+	scopes chan string
+}
+
+func (e *scopedEmitter) Emit(scope string) {
+	select {
+	case e.scopes <- scope:
+	default:
+	}
+}
+
+func TestStartRemoteHostSync_EmitsSessionsScopeAfterSuccess(t *testing.T) {
+	em := &scopedEmitter{scopes: make(chan string, 1)}
+	syncFn := func() (int, error) { return 3, nil }
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interval := 10 * time.Millisecond
+	go func() {
+		runRemoteHostSyncLoop(context.Background(), "test-host", interval, syncFn, em, nil, done)
+		close(exited)
+	}()
+
+	select {
+	case scope := <-em.scopes:
+		assert.Equal(t, "sessions", scope)
+	case <-time.After(3 * interval):
+		require.FailNow(t, "timed out waiting for remote sync event")
+	}
+	close(done)
+	<-exited
+}
+
+func TestStartRemoteHostSync_NoEmitOnZeroSynced(t *testing.T) {
+	em := &fakeEmitter{}
+	syncFn := func() (int, error) { return 0, nil }
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interval := 10 * time.Millisecond
+	go func() {
+		runRemoteHostSyncLoop(context.Background(), "test-host", interval, syncFn, em, nil, done)
+		close(exited)
+	}()
+
+	time.Sleep(3 * interval)
+	close(done)
+	<-exited
+
+	assert.Zero(t, em.count.Load(), "emitter should not fire when no sessions synced")
+}
+
+func TestStartRemoteHostSync_NoEmitOnError(t *testing.T) {
+	em := &fakeEmitter{}
+	syncFn := func() (int, error) { return 0, errors.New("ssh failure") }
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interval := 10 * time.Millisecond
+	go func() {
+		runRemoteHostSyncLoop(context.Background(), "test-host", interval, syncFn, em, nil, done)
+		close(exited)
+	}()
+
+	time.Sleep(3 * interval)
+	close(done)
+	<-exited
+
+	assert.Zero(t, em.count.Load(), "emitter should not fire when sync fails")
+}
+
+func TestStartRemoteHostSync_NilEmitterSafe(t *testing.T) {
+	syncFn := func() (int, error) { return 1, nil }
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interval := 10 * time.Millisecond
+	go func() {
+		runRemoteHostSyncLoop(context.Background(), "test-host", interval, syncFn, nil, nil, done)
+		close(exited)
+	}()
+
+	time.Sleep(2 * interval)
+	close(done)
+	<-exited
+}
+
 func TestResyncCoversSignals(t *testing.T) {
 	tests := []struct {
 		name     string
-		stats    sync.SyncStats
+		stats    agentsync.SyncStats
 		fellBack bool
 		want     bool
 	}{
 		{
 			name:  "clean resync no orphans covers signals",
-			stats: sync.SyncStats{Synced: 5},
+			stats: agentsync.SyncStats{Synced: 5},
 			want:  true,
 		},
 		{
 			name: "fell back to incremental sync needs backfill",
-			stats: sync.SyncStats{
+			stats: agentsync.SyncStats{
 				Synced: 2, Aborted: true,
 			},
 			fellBack: true,
@@ -258,14 +591,14 @@ func TestResyncCoversSignals(t *testing.T) {
 		},
 		{
 			name: "orphans copied need backfill",
-			stats: sync.SyncStats{
+			stats: agentsync.SyncStats{
 				Synced: 5, OrphanedCopied: 3,
 			},
 			want: false,
 		},
 		{
 			name: "orphans copied even with fallback false",
-			stats: sync.SyncStats{
+			stats: agentsync.SyncStats{
 				Synced: 0, OrphanedCopied: 1,
 			},
 			want: false,

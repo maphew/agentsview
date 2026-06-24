@@ -23,6 +23,7 @@ import (
 	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/ssh"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/telemetry"
 )
@@ -194,7 +195,12 @@ func runServe(cfg config.Config) {
 			}
 		})
 
-		go startPeriodicSync(engine, database, idleTracker)
+		validRemotes := true
+		if err := cfg.ValidateRemoteHosts(); err != nil {
+			log.Printf("warning: remote_hosts config invalid, skipping periodic remote sync: %v", err)
+			validRemotes = false
+		}
+		go startPeriodicSync(ctx, cfg, engine, database, idleTracker, validRemotes, broadcaster)
 	}
 
 	// Seed model_pricing after any resync swap so the new DB
@@ -908,16 +914,134 @@ func collectWatchRoots(cfg config.Config) (roots []watchRoot, unwatchedDirs []st
 }
 
 func startPeriodicSync(
-	engine *sync.Engine, database *db.DB, idleTracker *server.IdleTracker,
+	ctx context.Context,
+	cfg config.Config,
+	engine *sync.Engine,
+	database *db.DB,
+	idleTracker *server.IdleTracker,
+	validRemotes bool,
+	emitter sync.Emitter,
 ) {
+	if validRemotes {
+		for _, rh := range cfg.RemoteHosts {
+			if rh.Interval > 0 {
+				go startRemoteHostSync(
+					ctx, cfg, database, engine, rh, emitter, idleTracker,
+				)
+			}
+		}
+	}
 	ticker := time.NewTicker(periodicSyncInterval)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		log.Println("Running scheduled sync...")
 		idleTracker.Do(func() {
-			engine.SyncAll(context.Background(), nil)
+			engine.SyncAll(ctx, nil)
 			recomputePendingSessions(engine, database)
 		})
+	}
+}
+
+func startRemoteHostSync(
+	ctx context.Context,
+	cfg config.Config,
+	database *db.DB,
+	engine *sync.Engine,
+	rh config.RemoteHost,
+	emitter sync.Emitter,
+	idleTracker *server.IdleTracker,
+) {
+	syncFn := remoteHostSyncFunc(
+		ctx, cfg, database, engine, rh,
+		func(ctx context.Context, rs *ssh.RemoteSync) (ssh.SyncStats, error) {
+			return rs.Run(ctx)
+		},
+	)
+	runRemoteHostSyncLoop(ctx, rh.Host, rh.Interval, syncFn, emitter, idleTracker, nil)
+}
+
+type remoteSyncExclusiveRunner interface {
+	RunExclusive(func() error) error
+}
+
+type remoteSyncRunner func(context.Context, *ssh.RemoteSync) (ssh.SyncStats, error)
+
+func remoteHostSyncFunc(
+	ctx context.Context,
+	cfg config.Config,
+	database *db.DB,
+	runner remoteSyncExclusiveRunner,
+	rh config.RemoteHost,
+	runRemote remoteSyncRunner,
+) func() (int, error) {
+	return func() (int, error) {
+		if runner == nil {
+			return 0, fmt.Errorf("scheduled remote sync missing exclusive runner")
+		}
+		var stats ssh.SyncStats
+		err := runner.RunExclusive(func() error {
+			rs := &ssh.RemoteSync{
+				Host:                    rh.Host,
+				User:                    rh.User,
+				Port:                    rh.Port,
+				Full:                    database.NeedsResync(),
+				DB:                      database,
+				BlockedResultCategories: cfg.ResultContentBlockedCategories,
+			}
+			var err error
+			stats, err = runRemote(ctx, rs)
+			return err
+		})
+		return stats.SessionsSynced, err
+	}
+}
+
+// runRemoteHostSyncLoop drives the per-host sync ticker. syncFn returns
+// the number of sessions synced so we only emit when data changed.
+// When done is non-nil, closing it stops the loop.
+func runRemoteHostSyncLoop(
+	ctx context.Context,
+	host string,
+	interval time.Duration,
+	syncFn func() (int, error),
+	emitter sync.Emitter,
+	idleTracker *server.IdleTracker,
+	done <-chan struct{},
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+		}
+		log.Printf("Running scheduled remote sync for %s...", host)
+		finishWork, ok := idleTracker.BeginWork()
+		if !ok {
+			log.Printf("scheduled remote sync %s skipped: daemon is shutting down", host)
+			continue
+		}
+		var synced int
+		var err error
+		func() {
+			defer finishWork()
+			synced, err = syncFn()
+		}()
+		if err != nil {
+			log.Printf("scheduled remote sync %s: %v", host, err)
+			continue
+		}
+		if synced > 0 && emitter != nil {
+			emitter.Emit("sessions")
+		}
 	}
 }
 
