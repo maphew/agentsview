@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"net/http"
+
+	"go.kenn.io/agentsview/internal/artifact"
 )
 
 func (s *Server) registerStarredRoutes() {
@@ -39,7 +41,7 @@ func (s *Server) humaListStarred(
 }
 
 func (s *Server) humaStarSession(
-	_ context.Context,
+	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
 	ok, err := s.db.StarSession(in.ID)
@@ -52,11 +54,17 @@ func (s *Server) humaStarSession(
 	if !ok {
 		return nil, apiError(http.StatusNotFound, "session not found")
 	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpStar,
+	}); err != nil {
+		return nil, internalError("star session metadata event", err)
+	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
 func (s *Server) humaUnstarSession(
-	_ context.Context,
+	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
 	if err := s.db.UnstarSession(in.ID); err != nil {
@@ -65,21 +73,38 @@ func (s *Server) humaUnstarSession(
 		}
 		return nil, internalError("unstar session", err)
 	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpUnstar,
+	}); err != nil {
+		return nil, internalError("unstar session metadata event", err)
+	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
 func (s *Server) humaBulkStar(
-	_ context.Context,
+	ctx context.Context,
 	in *bulkStarInput,
 ) (*noContentOutput, error) {
 	if len(in.Body.SessionIDs) == 0 {
 		return &noContentOutput{Status: http.StatusNoContent}, nil
 	}
-	if err := s.db.BulkStarSessions(in.Body.SessionIDs); err != nil {
+	starred, err := s.db.BulkStarSessions(in.Body.SessionIDs)
+	if err != nil {
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("bulk star", err)
+	}
+	// Emit one star event per session actually starred so localStorage star
+	// migration converges through artifact sync, matching single-session star.
+	for _, id := range starred {
+		if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+			SessionID: id,
+			Op:        artifact.MetadataOpStar,
+		}); err != nil {
+			return nil, internalError("bulk star metadata event", err)
+		}
 	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }

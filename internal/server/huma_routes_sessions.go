@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"go.kenn.io/agentsview/internal/artifact"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/service"
@@ -33,6 +34,7 @@ func (s *Server) registerSessionRoutes() {
 	get(s, group, "/sessions/{id}/activity", "Get session activity", s.humaGetSessionActivity)
 	get(s, group, "/sessions/{id}/timing", "Get session timing", s.humaSessionTiming)
 	get(s, group, "/sessions/{id}/usage", "Get session usage", s.humaSessionUsage)
+	get(s, group, "/sessions/{id}/metadata-conflicts", "List session metadata conflicts", s.humaListMetadataConflicts)
 	stream(s, group, http.MethodGet, "/sessions/{id}/watch", "Watch session events", s.humaWatchSession)
 	stream(s, group, http.MethodGet, "/events", "Watch server events", s.humaEvents)
 	raw(s, group, http.MethodGet, "/sessions/{id}/export", "Export session as HTML", s.humaExportSession)
@@ -439,6 +441,43 @@ type emptyTrashResponse struct {
 	Deleted int `json:"deleted"`
 }
 
+type metadataConflictsResponse struct {
+	Conflicts []db.MetadataConflict `json:"conflicts"`
+}
+
+func (s *Server) humaListMetadataConflicts(
+	ctx context.Context,
+	in *idPathInput,
+) (*jsonOutput[metadataConflictsResponse], error) {
+	session, err := s.db.GetSessionFull(ctx, in.ID)
+	if err != nil {
+		return nil, internalError("metadata conflict session lookup", err)
+	}
+	if session == nil {
+		return nil, apiError(http.StatusNotFound, "session not found")
+	}
+	gids := []string{in.ID}
+	if localDB, ok := s.db.(*db.DB); ok && !strings.Contains(in.ID, "~") {
+		origin, err := artifact.StoredOrigin(localDB)
+		if err != nil {
+			return nil, internalError("read artifact origin", err)
+		}
+		if origin != "" {
+			gids = append(gids, artifact.MetadataSessionGID(origin, in.ID))
+		}
+	}
+	conflicts, err := s.db.ListMetadataConflicts(ctx, gids)
+	if err != nil {
+		return nil, internalError("list metadata conflicts", err)
+	}
+	if conflicts == nil {
+		conflicts = []db.MetadataConflict{}
+	}
+	return &jsonOutput[metadataConflictsResponse]{
+		Body: metadataConflictsResponse{Conflicts: conflicts},
+	}, nil
+}
+
 func (s *Server) humaGetSessionDir(
 	ctx context.Context,
 	in *idPathInput,
@@ -566,6 +605,17 @@ func (s *Server) humaRenameSession(
 		}
 		return nil, internalError("rename session", err)
 	}
+	value, err := renameMetadataValue(displayName)
+	if err != nil {
+		return nil, internalError("rename session metadata value", err)
+	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpRename,
+		Value:     value,
+	}); err != nil {
+		return nil, internalError("rename session metadata event", err)
+	}
 
 	updated, err := s.db.GetSession(ctx, in.ID)
 	if err != nil {
@@ -594,6 +644,12 @@ func (s *Server) humaDeleteSession(
 		}
 		return nil, internalError("soft delete session", err)
 	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpSoftDelete,
+	}); err != nil {
+		return nil, internalError("soft delete session metadata event", err)
+	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
@@ -603,24 +659,46 @@ type batchDeleteInput struct {
 	}
 }
 
+type trashedSessionIDStore interface {
+	TrashedSessionIDs(ids []string) ([]string, error)
+}
+
 func (s *Server) humaBatchDeleteSessions(
-	_ context.Context,
+	ctx context.Context,
 	in *batchDeleteInput,
 ) (*noContentOutput, error) {
 	if len(in.Body.SessionIDs) == 0 {
 		return &noContentOutput{Status: http.StatusNoContent}, nil
 	}
-	if _, err := s.db.SoftDeleteSessions(in.Body.SessionIDs); err != nil {
+	deletedIDs, err := s.db.SoftDeleteSessionsReturningIDs(in.Body.SessionIDs)
+	if err != nil {
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("batch delete sessions", err)
 	}
+	eventIDs := deletedIDs
+	if len(eventIDs) == 0 {
+		if store, ok := s.db.(trashedSessionIDStore); ok {
+			eventIDs, err = store.TrashedSessionIDs(in.Body.SessionIDs)
+			if err != nil {
+				return nil, internalError("batch delete retry lookup", err)
+			}
+		}
+	}
+	for _, id := range eventIDs {
+		if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+			SessionID: id,
+			Op:        artifact.MetadataOpSoftDelete,
+		}); err != nil {
+			return nil, internalError("batch delete session metadata event", err)
+		}
+	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
 func (s *Server) humaRestoreSession(
-	_ context.Context,
+	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
 	n, err := s.db.RestoreSession(in.ID)
@@ -633,11 +711,17 @@ func (s *Server) humaRestoreSession(
 	if n == 0 {
 		return nil, apiError(http.StatusNotFound, "session not found or not in trash")
 	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpRestore,
+	}); err != nil {
+		return nil, internalError("restore session metadata event", err)
+	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
 func (s *Server) humaPermanentDeleteSession(
-	_ context.Context,
+	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
 	n, err := s.db.DeleteSessionIfTrashed(in.ID)
@@ -649,6 +733,12 @@ func (s *Server) humaPermanentDeleteSession(
 	}
 	if n == 0 {
 		return nil, apiError(http.StatusConflict, "session not found or not in trash")
+	}
+	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpPurge,
+	}); err != nil {
+		return nil, internalError("permanent delete session metadata event", err)
 	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }

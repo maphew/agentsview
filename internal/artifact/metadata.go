@@ -1,0 +1,229 @@
+package artifact
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+)
+
+const metadataEventExtension = ".json"
+
+type metadataSuppressionKey struct{}
+
+// Metadata operation names written into the metadata event ledger.
+const (
+	MetadataOpRename     = "rename"
+	MetadataOpSoftDelete = "soft_delete"
+	MetadataOpRestore    = "restore"
+	MetadataOpStar       = "star"
+	MetadataOpUnstar     = "unstar"
+	MetadataOpPin        = "pin"
+	MetadataOpUnpin      = "unpin"
+	MetadataOpPurge      = "purge"
+)
+
+// MetadataPin identifies a pinned message with stable source coordinates.
+type MetadataPin struct {
+	SourceUUID string  `json:"source_uuid,omitempty"`
+	Ordinal    int     `json:"ordinal"`
+	Note       *string `json:"note,omitempty"`
+}
+
+// MetadataEventInput describes a local user metadata mutation to append.
+type MetadataEventInput struct {
+	SessionID string
+	Op        string
+	Value     json.RawMessage
+	Pin       *MetadataPin
+}
+
+// MetadataRecord describes a metadata artifact written to disk.
+type MetadataRecord struct {
+	HLC        string
+	Origin     string
+	SessionGID string
+	Op         string
+	Hash       string
+	Path       string
+}
+
+// MetadataRecorderOptions configures metadata event artifact writes.
+type MetadataRecorderOptions struct {
+	DataDir  string
+	Origin   string
+	Now      func() time.Time
+	MaxDrift time.Duration
+}
+
+// MetadataRecorder appends canonical metadata event artifacts.
+type MetadataRecorder struct {
+	mu       sync.Mutex
+	database *db.DB
+	root     string
+	origin   string
+	clock    *HLCClock
+}
+
+// NewMetadataRecorder creates a metadata event recorder for the local artifact store.
+func NewMetadataRecorder(database *db.DB, opts MetadataRecorderOptions) *MetadataRecorder {
+	root := ""
+	if strings.TrimSpace(opts.DataDir) != "" {
+		root = filepath.Join(opts.DataDir, "artifacts")
+	}
+	return &MetadataRecorder{
+		database: database,
+		root:     root,
+		origin:   strings.TrimSpace(opts.Origin),
+		clock: NewHLCClock(database, HLCClockOptions{
+			Now:      opts.Now,
+			MaxDrift: opts.MaxDrift,
+		}),
+	}
+}
+
+// WithMetadataEventSuppression marks a context as replaying metadata events.
+func WithMetadataEventSuppression(ctx context.Context) context.Context {
+	return context.WithValue(ctx, metadataSuppressionKey{}, true)
+}
+
+// MetadataEventsSuppressed reports whether local metadata event writes are disabled.
+func MetadataEventsSuppressed(ctx context.Context) bool {
+	suppressed, _ := ctx.Value(metadataSuppressionKey{}).(bool)
+	return suppressed
+}
+
+// Append writes one metadata event artifact unless ctx is replay-suppressed.
+func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput) (MetadataRecord, error) {
+	if MetadataEventsSuppressed(ctx) {
+		return MetadataRecord{}, nil
+	}
+	if r == nil {
+		return MetadataRecord{}, nil
+	}
+	if r.database == nil {
+		return MetadataRecord{}, errors.New("metadata recorder database is required")
+	}
+	if r.root == "" {
+		return MetadataRecord{}, errors.New("metadata recorder data dir is required")
+	}
+	if input.SessionID == "" {
+		return MetadataRecord{}, errors.New("metadata event session id is required")
+	}
+	if err := validateMetadataOp(input.Op); err != nil {
+		return MetadataRecord{}, err
+	}
+	origin, err := r.ensureOrigin()
+	if err != nil {
+		return MetadataRecord{}, err
+	}
+	stamp, err := r.clock.Next()
+	if err != nil {
+		return MetadataRecord{}, err
+	}
+	event := metadataEvent{
+		Version:    formatVersion,
+		HLC:        stamp.String(),
+		Origin:     origin,
+		SessionGID: MetadataSessionGID(origin, input.SessionID),
+		Op:         input.Op,
+		Value:      input.Value,
+		Pin:        input.Pin,
+	}
+	data, err := canonicalJSON(event)
+	if err != nil {
+		return MetadataRecord{}, err
+	}
+	hash := hashHex(data)
+	orderKey := stamp.OrderingKey(hash)
+	// Record the local event in the LWW replay register before publishing the
+	// artifact so a later peer event with a lower order key cannot win against
+	// this newer local edit. The handler has already applied the mutation, so
+	// only the bookkeeping is recorded here.
+	projection, err := metadataProjection(metadataArtifact{
+		orderKey: orderKey,
+		hash:     hash,
+		hlc:      event.HLC,
+		event:    event,
+	}, origin)
+	if err != nil {
+		return MetadataRecord{}, err
+	}
+	if _, err := r.database.RecordLocalMetadataProjection(ctx, projection); err != nil {
+		return MetadataRecord{}, fmt.Errorf("recording local metadata replay state: %w", err)
+	}
+	path := filepath.Join(r.root, origin, "meta", orderKey+metadataEventExtension)
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
+		return MetadataRecord{}, fmt.Errorf("writing metadata event: %w", err)
+	}
+	return MetadataRecord{
+		HLC:        event.HLC,
+		Origin:     origin,
+		SessionGID: event.SessionGID,
+		Op:         event.Op,
+		Hash:       hash,
+		Path:       path,
+	}, nil
+}
+
+// Import reads every foreign origin under root and imports referenced sessions
+// plus metadata events, advancing this recorder's HLC clock past observed
+// remote HLCs so later local edits stay causally ahead of imported peers.
+func (r *MetadataRecorder) Import(ctx context.Context, root string) (ImportResult, error) {
+	if r == nil || r.database == nil {
+		return ImportResult{}, errors.New("metadata recorder database is required")
+	}
+	origin, err := r.ensureOrigin()
+	if err != nil {
+		return ImportResult{}, err
+	}
+	return importDetailed(ctx, r.database, r.clock, root, origin)
+}
+
+// MetadataSessionGID returns the global metadata target ID for a session.
+func MetadataSessionGID(origin, sessionID string) string {
+	if host, _ := parser.StripHostPrefix(sessionID); host != "" {
+		return sessionID
+	}
+	return origin + "~" + sessionID
+}
+
+func (r *MetadataRecorder) ensureOrigin() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.origin != "" {
+		if err := validateOriginID(r.origin); err != nil {
+			return "", fmt.Errorf("metadata recorder origin: %w", err)
+		}
+		return r.origin, nil
+	}
+	origin, err := EnsureOrigin(r.database)
+	if err != nil {
+		return "", err
+	}
+	r.origin = origin
+	return origin, nil
+}
+
+func validateMetadataOp(op string) error {
+	switch op {
+	case MetadataOpRename,
+		MetadataOpSoftDelete,
+		MetadataOpRestore,
+		MetadataOpStar,
+		MetadataOpUnstar,
+		MetadataOpPin,
+		MetadataOpUnpin,
+		MetadataOpPurge:
+		return nil
+	default:
+		return fmt.Errorf("unsupported metadata event op %q", op)
+	}
+}
