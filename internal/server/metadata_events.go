@@ -19,6 +19,16 @@ func (s *Server) appendMetadataEvent(
 	return err
 }
 
+func (s *Server) repairLocalMetadataEvent(
+	ctx context.Context,
+	input artifact.MetadataEventInput,
+) (int, error) {
+	if s.metadata == nil {
+		return 0, nil
+	}
+	return s.metadata.RepairLocalSessionMetadata(ctx, input.SessionID, input.Op)
+}
+
 func renameMetadataValue(displayName *string) (json.RawMessage, error) {
 	data, err := json.Marshal(struct {
 		DisplayName *string `json:"display_name"`

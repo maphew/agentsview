@@ -260,6 +260,93 @@ END;
 	assert.Equal(t, "desk-a1b2c3~s1", events[0].SessionGID)
 }
 
+func TestMetadataEventsNoopUnstarRepairsPublishedArtifactState(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+
+	w := te.put(t, "/api/v1/sessions/s1/star", `{}`)
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpStar,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "starred"))
+
+	_, err := te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w = te.del(t, "/api/v1/sessions/s1/star")
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpStar,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "starred"))
+	unstarOrderKey := metadataEventOrderKey(t, te, artifact.MetadataOpUnstar)
+
+	_, err = te.db.Reader().Exec(`DROP TRIGGER fail_metadata_replay_state_insert`)
+	require.NoError(t, err)
+	w = te.del(t, "/api/v1/sessions/s1/star")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpUnstar,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "starred"))
+
+	remoteHLC, remoteHash := splitMetadataOrderKey(t, unstarOrderKey)
+	_, err = te.db.ApplyMetadataProjection(context.Background(), db.MetadataProjection{
+		EventOrigin:    "peer-b2c3d4",
+		OrderKey:       unstarOrderKey,
+		HLC:            remoteHLC,
+		ArtifactHash:   remoteHash,
+		SessionGID:     "desk-a1b2c3~s1",
+		LocalSessionID: "s1",
+		Field:          "starred",
+		Op:             artifact.MetadataOpStar,
+		Value:          artifact.MetadataOpStar,
+	})
+	require.NoError(t, err)
+	ids, err := te.db.ListStarredSessionIDs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+}
+
+func TestMetadataEventsPermanentDeleteRetriesExcludedSession(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+
+	w := te.del(t, "/api/v1/sessions/s1")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+
+	_, err := te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w = te.del(t, "/api/v1/sessions/s1/permanent")
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	got, err := te.db.GetSessionFull(context.Background(), "s1")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	assert.True(t, te.db.IsSessionExcluded("s1"))
+	deleteMetadataEventsByOp(t, te, artifact.MetadataOpPurge)
+
+	_, err = te.db.Reader().Exec(`DROP TRIGGER fail_metadata_replay_state_insert`)
+	require.NoError(t, err)
+	w = te.del(t, "/api/v1/sessions/s1/permanent")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+
+	events := readMetadataEvents(t, te)
+	assert.Equal(t, []string{
+		artifact.MetadataOpSoftDelete,
+		artifact.MetadataOpPurge,
+	}, metadataOps(events))
+	assert.Equal(t, artifact.MetadataOpPurge,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "purge"))
+}
+
 func TestMetadataEventsSuppressedDuringReplay(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
 	te.seedSession(t, "s1", "alpha", 2)
@@ -300,12 +387,63 @@ func readMetadataEvents(t *testing.T, te *testEnv) []recordedMetadataEvent {
 	return events
 }
 
+func metadataEventOrderKey(t *testing.T, te *testEnv, op string) string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(te.dataDir, "artifacts", "*", "meta", "*.json"))
+	require.NoError(t, err)
+	sort.Strings(paths)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var event recordedMetadataEvent
+		require.NoError(t, json.Unmarshal(data, &event))
+		if event.Op == op {
+			return strings.TrimSuffix(filepath.Base(path), ".json")
+		}
+	}
+	require.FailNowf(t, "metadata event not found", "op %s", op)
+	return ""
+}
+
+func splitMetadataOrderKey(t *testing.T, orderKey string) (string, string) {
+	t.Helper()
+	idx := strings.LastIndex(orderKey, "-")
+	require.NotEqual(t, -1, idx, "order key %q missing hash suffix", orderKey)
+	return orderKey[:idx], orderKey[idx+1:]
+}
+
+func deleteMetadataEventsByOp(t *testing.T, te *testEnv, op string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(te.dataDir, "artifacts", "*", "meta", "*.json"))
+	require.NoError(t, err)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var event recordedMetadataEvent
+		require.NoError(t, json.Unmarshal(data, &event))
+		if event.Op == op {
+			require.NoError(t, os.Remove(path))
+		}
+	}
+}
+
 func metadataOps(events []recordedMetadataEvent) []string {
 	ops := make([]string, len(events))
 	for i, event := range events {
 		ops[i] = event.Op
 	}
 	return ops
+}
+
+func serverMetadataReplayOp(t *testing.T, te *testEnv, sessionGID, field string) string {
+	t.Helper()
+	var op string
+	err := te.db.Reader().QueryRow(
+		`SELECT op FROM metadata_replay_state WHERE session_gid = ? AND field = ?`,
+		sessionGID, field,
+	).Scan(&op)
+	require.NoError(t, err)
+	return op
 }
 
 func serverMetadataTableCount(t *testing.T, te *testEnv, table, where string) int {

@@ -663,6 +663,10 @@ type trashedSessionIDStore interface {
 	TrashedSessionIDs(ids []string) ([]string, error)
 }
 
+type excludedSessionStore interface {
+	IsSessionExcluded(id string) bool
+}
+
 func (s *Server) humaBatchDeleteSessions(
 	ctx context.Context,
 	in *batchDeleteInput,
@@ -724,6 +728,10 @@ func (s *Server) humaPermanentDeleteSession(
 	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
+	metadataInput := artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpPurge,
+	}
 	n, err := s.db.DeleteSessionIfTrashed(in.ID)
 	if err != nil {
 		if handled := handleHumaReadOnly(err); handled != nil {
@@ -732,12 +740,21 @@ func (s *Server) humaPermanentDeleteSession(
 		return nil, internalError("permanent delete session", err)
 	}
 	if n == 0 {
+		if store, ok := s.db.(excludedSessionStore); ok && store.IsSessionExcluded(in.ID) {
+			repaired, err := s.repairLocalMetadataEvent(ctx, metadataInput)
+			if err != nil {
+				return nil, internalError("permanent delete session metadata repair", err)
+			}
+			if repaired == 0 {
+				if err := s.appendMetadataEvent(ctx, metadataInput); err != nil {
+					return nil, internalError("permanent delete session metadata event", err)
+				}
+			}
+			return &noContentOutput{Status: http.StatusNoContent}, nil
+		}
 		return nil, apiError(http.StatusConflict, "session not found or not in trash")
 	}
-	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
-		SessionID: in.ID,
-		Op:        artifact.MetadataOpPurge,
-	}); err != nil {
+	if err := s.appendMetadataEvent(ctx, metadataInput); err != nil {
 		return nil, internalError("permanent delete session metadata event", err)
 	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil

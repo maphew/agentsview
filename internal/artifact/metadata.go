@@ -191,6 +191,76 @@ func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput)
 	return record, nil
 }
 
+// RepairLocalSessionMetadata rebuilds local replay bookkeeping for already
+// published local metadata artifacts without re-applying their visible
+// mutations.
+func (r *MetadataRecorder) RepairLocalSessionMetadata(
+	ctx context.Context,
+	sessionID string,
+	ops ...string,
+) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+	if r.database == nil {
+		return 0, errors.New("metadata recorder database is required")
+	}
+	if r.root == "" {
+		return 0, errors.New("metadata recorder data dir is required")
+	}
+	if sessionID == "" {
+		return 0, errors.New("metadata event session id is required")
+	}
+	opSet := make(map[string]struct{}, len(ops))
+	for _, op := range ops {
+		if err := validateMetadataOp(op); err != nil {
+			return 0, err
+		}
+		opSet[op] = struct{}{}
+	}
+	origin, err := r.ensureOrigin()
+	if err != nil {
+		return 0, err
+	}
+	events, err := readMetadataArtifacts(filepath.Join(r.root, origin), origin)
+	if err != nil {
+		return 0, err
+	}
+	sessionGID := MetadataSessionGID(origin, sessionID)
+	repaired := 0
+	for _, art := range events {
+		if err := ctx.Err(); err != nil {
+			return repaired, err
+		}
+		if art.event.SessionGID != sessionGID {
+			continue
+		}
+		if len(opSet) > 0 {
+			if _, ok := opSet[art.event.Op]; !ok {
+				continue
+			}
+		}
+		if err := validateMetadataArtifactEvent(art, origin); err != nil {
+			if errors.Is(err, errFutureArtifactVersion) {
+				continue
+			}
+			return repaired, err
+		}
+		if err := validateMetadataOp(art.event.Op); err != nil {
+			return repaired, err
+		}
+		projection, err := metadataProjection(art, origin)
+		if err != nil {
+			return repaired, err
+		}
+		if _, err := r.database.RecordLocalMetadataProjection(ctx, projection); err != nil {
+			return repaired, fmt.Errorf("repairing local metadata replay state: %w", err)
+		}
+		repaired++
+	}
+	return repaired, nil
+}
+
 // Import reads every foreign origin under root and imports referenced sessions
 // plus metadata events, advancing this recorder's HLC clock past observed
 // remote HLCs so later local edits stay causally ahead of imported peers.

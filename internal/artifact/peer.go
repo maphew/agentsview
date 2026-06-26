@@ -546,6 +546,19 @@ func validateManifestArtifactData(data []byte, origin, hash string) error {
 	if got := hashHex(decoded); got != hash {
 		return fmt.Errorf("%w: manifest hash mismatch: got %s", ErrArtifactInvalid, got)
 	}
+	var header struct {
+		Version int    `json:"v"`
+		Origin  string `json:"origin"`
+	}
+	if err := json.Unmarshal(decoded, &header); err != nil {
+		return fmt.Errorf("%w: decoding manifest: %v", ErrArtifactInvalid, err)
+	}
+	if header.Version > formatVersion {
+		if header.Origin != origin {
+			return fmt.Errorf("%w: manifest origin mismatch for %s: got %q", ErrArtifactInvalid, origin, header.Origin)
+		}
+		return nil
+	}
 	var m manifest
 	if err := json.Unmarshal(decoded, &m); err != nil {
 		return fmt.Errorf("%w: decoding manifest: %v", ErrArtifactInvalid, err)

@@ -77,6 +77,12 @@ func (s *Server) humaUnstarSession(
 		return nil, internalError("unstar session", err)
 	}
 	if !removed {
+		if _, err := s.repairLocalMetadataEvent(ctx, artifact.MetadataEventInput{
+			SessionID: in.ID,
+			Op:        artifact.MetadataOpUnstar,
+		}); err != nil {
+			return nil, internalError("unstar session metadata repair", err)
+		}
 		return &noContentOutput{Status: http.StatusNoContent}, nil
 	}
 	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{

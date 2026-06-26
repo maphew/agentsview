@@ -142,6 +142,25 @@ func TestPeerArtifactStoresFutureVersionArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, compressedSegment, got.Data)
 
+	futureManifestData, err := canonicalJSON(struct {
+		Version int    `json:"v"`
+		Origin  string `json:"origin"`
+		Future  string `json:"future"`
+	}{
+		Version: formatVersion + 1,
+		Origin:  origin,
+		Future:  "schema-owned-by-newer-peer",
+	})
+	require.NoError(t, err)
+	compressedManifest := compressPeerTestData(t, futureManifestData)
+	manifestHash := hashHex(futureManifestData)
+	res, err = WriteArtifact(root, origin, KindManifests, manifestHash, compressedManifest)
+	require.NoError(t, err)
+	assert.Equal(t, manifestHash+manifestExtension, res.Name)
+	got, err = ReadArtifact(root, origin, KindManifests, manifestHash)
+	require.NoError(t, err)
+	assert.Equal(t, compressedManifest, got.Data)
+
 	hlc := "2026-06-14T010203.000000001Z-peer-a1b2c3"
 	metadataData, err := canonicalJSON(metadataEvent{
 		Version:    formatVersion + 1,
