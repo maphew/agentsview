@@ -1643,7 +1643,7 @@ func isWindowsDrivePath(target string) bool {
 		return false
 	}
 	c := target[0]
-	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 		return false
 	}
 	return target[2] == '\\' || target[2] == '/'
