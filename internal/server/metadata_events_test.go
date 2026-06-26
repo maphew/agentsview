@@ -214,6 +214,8 @@ func TestMetadataEventsUnstarRestoresStarWhenArtifactWriteFails(t *testing.T) {
 	ids, err := te.db.ListStarredSessionIDs(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"s1"}, ids)
+	assert.Equal(t, 0, serverMetadataTableCount(t, te, "metadata_replay_state", "session_gid = 'desk-a1b2c3~s1'"))
+	assert.Equal(t, 0, serverMetadataTableCount(t, te, "metadata_applied_events", "origin = 'desk-a1b2c3'"))
 
 	require.NoError(t, os.Remove(metaDir))
 	w = te.del(t, "/api/v1/sessions/s1/star")
@@ -274,4 +276,12 @@ func metadataOps(events []recordedMetadataEvent) []string {
 		ops[i] = event.Op
 	}
 	return ops
+}
+
+func serverMetadataTableCount(t *testing.T, te *testEnv, table, where string) int {
+	t.Helper()
+	var count int
+	err := te.db.Reader().QueryRow("SELECT COUNT(*) FROM " + table + " WHERE " + where).Scan(&count)
+	require.NoError(t, err)
+	return count
 }

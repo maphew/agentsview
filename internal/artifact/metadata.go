@@ -143,10 +143,6 @@ func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput)
 	}
 	hash := hashHex(data)
 	orderKey := stamp.OrderingKey(hash)
-	// Record the local event in the LWW replay register before publishing the
-	// artifact so a later peer event with a lower order key cannot win against
-	// this newer local edit. The handler has already applied the mutation, so
-	// only the bookkeeping is recorded here.
 	projection, err := metadataProjection(metadataArtifact{
 		orderKey: orderKey,
 		hash:     hash,
@@ -156,12 +152,15 @@ func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput)
 	if err != nil {
 		return MetadataRecord{}, err
 	}
-	if _, err := r.database.RecordLocalMetadataProjection(ctx, projection); err != nil {
-		return MetadataRecord{}, fmt.Errorf("recording local metadata replay state: %w", err)
-	}
 	path := filepath.Join(r.root, origin, "meta", orderKey+metadataEventExtension)
 	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		return MetadataRecord{}, fmt.Errorf("writing metadata event: %w", err)
+	}
+	// Record the local event in the LWW replay register only after the artifact
+	// exists. Otherwise a failed publish can leave hidden local state that wins
+	// future LWW comparisons for an event no peer can import.
+	if _, err := r.database.RecordLocalMetadataProjection(ctx, projection); err != nil {
+		return MetadataRecord{}, fmt.Errorf("recording local metadata replay state: %w", err)
 	}
 	return MetadataRecord{
 		HLC:        event.HLC,
