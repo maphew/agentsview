@@ -55,6 +55,21 @@ type MetadataRecord struct {
 	Path       string
 }
 
+// MetadataPublishedError reports that the artifact file was durably written,
+// but local replay bookkeeping failed afterward.
+type MetadataPublishedError struct {
+	Record MetadataRecord
+	Err    error
+}
+
+func (e *MetadataPublishedError) Error() string {
+	return fmt.Sprintf("metadata event published but local replay state was not recorded: %v", e.Err)
+}
+
+func (e *MetadataPublishedError) Unwrap() error {
+	return e.Err
+}
+
 // MetadataRecorderOptions configures metadata event artifact writes.
 type MetadataRecorderOptions struct {
 	DataDir  string
@@ -153,6 +168,14 @@ func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput)
 		return MetadataRecord{}, err
 	}
 	path := filepath.Join(r.root, origin, "meta", orderKey+metadataEventExtension)
+	record := MetadataRecord{
+		HLC:        event.HLC,
+		Origin:     origin,
+		SessionGID: event.SessionGID,
+		Op:         event.Op,
+		Hash:       hash,
+		Path:       path,
+	}
 	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		return MetadataRecord{}, fmt.Errorf("writing metadata event: %w", err)
 	}
@@ -160,16 +183,12 @@ func (r *MetadataRecorder) Append(ctx context.Context, input MetadataEventInput)
 	// exists. Otherwise a failed publish can leave hidden local state that wins
 	// future LWW comparisons for an event no peer can import.
 	if _, err := r.database.RecordLocalMetadataProjection(ctx, projection); err != nil {
-		return MetadataRecord{}, fmt.Errorf("recording local metadata replay state: %w", err)
+		return record, &MetadataPublishedError{
+			Record: record,
+			Err:    fmt.Errorf("recording local metadata replay state: %w", err),
+		}
 	}
-	return MetadataRecord{
-		HLC:        event.HLC,
-		Origin:     origin,
-		SessionGID: event.SessionGID,
-		Op:         event.Op,
-		Hash:       hash,
-		Path:       path,
-	}, nil
+	return record, nil
 }
 
 // Import reads every foreign origin under root and imports referenced sessions

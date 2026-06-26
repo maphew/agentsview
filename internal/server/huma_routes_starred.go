@@ -83,6 +83,10 @@ func (s *Server) humaUnstarSession(
 		SessionID: in.ID,
 		Op:        artifact.MetadataOpUnstar,
 	}); err != nil {
+		var publishedErr *artifact.MetadataPublishedError
+		if errors.As(err, &publishedErr) {
+			return nil, internalError("unstar session metadata event", err)
+		}
 		if restored, restoreErr := s.db.StarSession(in.ID); restoreErr != nil {
 			return nil, internalError(
 				"unstar session metadata event",

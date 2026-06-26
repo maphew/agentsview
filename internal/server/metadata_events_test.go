@@ -230,6 +230,36 @@ func TestMetadataEventsUnstarRestoresStarWhenArtifactWriteFails(t *testing.T) {
 	assert.Equal(t, "desk-a1b2c3~s1", events[0].SessionGID)
 }
 
+func TestMetadataEventsUnstarDoesNotRestoreStarWhenArtifactPublished(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+	ok, err := te.db.StarSession("s1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w := te.del(t, "/api/v1/sessions/s1/star")
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	ids, err := te.db.ListStarredSessionIDs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+	assert.Equal(t, 0, serverMetadataTableCount(t, te, "metadata_replay_state", "session_gid = 'desk-a1b2c3~s1'"))
+	assert.Equal(t, 0, serverMetadataTableCount(t, te, "metadata_applied_events", "origin = 'desk-a1b2c3'"))
+
+	events := readMetadataEvents(t, te)
+	require.Len(t, events, 1)
+	assert.Equal(t, artifact.MetadataOpUnstar, events[0].Op)
+	assert.Equal(t, "desk-a1b2c3~s1", events[0].SessionGID)
+}
+
 func TestMetadataEventsSuppressedDuringReplay(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
 	te.seedSession(t, "s1", "alpha", 2)
