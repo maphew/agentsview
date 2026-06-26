@@ -198,6 +198,36 @@ func TestMetadataEventsUnstarOnlyRecordsRemovedStars(t *testing.T) {
 	assert.Equal(t, "desk-a1b2c3~s1", events[0].SessionGID)
 }
 
+func TestMetadataEventsUnstarRestoresStarWhenArtifactWriteFails(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+	ok, err := te.db.StarSession("s1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	metaDir := filepath.Join(te.dataDir, "artifacts", "desk-a1b2c3", "meta")
+	require.NoError(t, os.MkdirAll(filepath.Dir(metaDir), 0o755))
+	require.NoError(t, os.WriteFile(metaDir, []byte("not a directory"), 0o644))
+
+	w := te.del(t, "/api/v1/sessions/s1/star")
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	ids, err := te.db.ListStarredSessionIDs(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"s1"}, ids)
+
+	require.NoError(t, os.Remove(metaDir))
+	w = te.del(t, "/api/v1/sessions/s1/star")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	ids, err = te.db.ListStarredSessionIDs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+
+	events := readMetadataEvents(t, te)
+	require.Len(t, events, 1)
+	assert.Equal(t, artifact.MetadataOpUnstar, events[0].Op)
+	assert.Equal(t, "desk-a1b2c3~s1", events[0].SessionGID)
+}
+
 func TestMetadataEventsSuppressedDuringReplay(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
 	te.seedSession(t, "s1", "alpha", 2)

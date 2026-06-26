@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"go.kenn.io/agentsview/internal/artifact"
@@ -81,6 +83,17 @@ func (s *Server) humaUnstarSession(
 		SessionID: in.ID,
 		Op:        artifact.MetadataOpUnstar,
 	}); err != nil {
+		if restored, restoreErr := s.db.StarSession(in.ID); restoreErr != nil {
+			return nil, internalError(
+				"unstar session metadata event",
+				errors.Join(err, fmt.Errorf("restore star after metadata failure: %w", restoreErr)),
+			)
+		} else if !restored {
+			return nil, internalError(
+				"unstar session metadata event",
+				errors.Join(err, fmt.Errorf("restore star after metadata failure: session %q not found", in.ID)),
+			)
+		}
 		return nil, internalError("unstar session metadata event", err)
 	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
