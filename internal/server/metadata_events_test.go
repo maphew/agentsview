@@ -347,6 +347,99 @@ END;
 		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "purge"))
 }
 
+func TestMetadataEventsRestoreRepairsPublishedArtifactState(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+
+	w := te.del(t, "/api/v1/sessions/s1")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpSoftDelete,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+
+	_, err := te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	restored, err := te.db.GetSessionFull(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, restored)
+	assert.Nil(t, restored.DeletedAt)
+	assert.Equal(t, artifact.MetadataOpSoftDelete,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+	restoreOrderKey := metadataEventOrderKey(t, te, artifact.MetadataOpRestore)
+
+	_, err = te.db.Reader().Exec(`DROP TRIGGER fail_metadata_replay_state_insert`)
+	require.NoError(t, err)
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpRestore,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+
+	restoreHLC, _ := splitMetadataOrderKey(t, restoreOrderKey)
+	olderHash := strings.Repeat("0", 64)
+	_, err = te.db.ApplyMetadataProjection(context.Background(), db.MetadataProjection{
+		EventOrigin:    "peer-b2c3d4",
+		OrderKey:       restoreHLC + "-" + olderHash,
+		HLC:            restoreHLC,
+		ArtifactHash:   olderHash,
+		SessionGID:     "desk-a1b2c3~s1",
+		LocalSessionID: "s1",
+		Field:          "deleted_at",
+		Op:             artifact.MetadataOpSoftDelete,
+		Value:          artifact.MetadataOpSoftDelete,
+	})
+	require.NoError(t, err)
+	restored, err = te.db.GetSessionFull(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, restored)
+	assert.Nil(t, restored.DeletedAt)
+}
+
+func TestMetadataEventsRestoreRetriesWithoutPublishedArtifact(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+
+	w := te.del(t, "/api/v1/sessions/s1")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+
+	_, err := te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	restored, err := te.db.GetSessionFull(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, restored)
+	assert.Nil(t, restored.DeletedAt)
+	deleteMetadataEventsByOp(t, te, artifact.MetadataOpRestore)
+
+	_, err = te.db.Reader().Exec(`DROP TRIGGER fail_metadata_replay_state_insert`)
+	require.NoError(t, err)
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+
+	events := readMetadataEvents(t, te)
+	assert.Equal(t, []string{
+		artifact.MetadataOpSoftDelete,
+		artifact.MetadataOpRestore,
+	}, metadataOps(events))
+	assert.Equal(t, artifact.MetadataOpRestore,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+}
+
 func TestMetadataEventsSuppressedDuringReplay(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
 	te.seedSession(t, "s1", "alpha", 2)

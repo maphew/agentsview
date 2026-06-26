@@ -190,6 +190,28 @@ func (db *DB) RecordLocalMetadataProjection(
 	return db.applyMetadataProjection(ctx, ev, false)
 }
 
+// MetadataReplayStateOp returns the current LWW operation recorded for a
+// metadata field.
+func (db *DB) MetadataReplayStateOp(
+	ctx context.Context,
+	sessionGID string,
+	field string,
+) (string, bool, error) {
+	var op string
+	err := db.getReader().QueryRowContext(ctx,
+		`SELECT op FROM metadata_replay_state
+		 WHERE session_gid = ? AND field = ?`,
+		sessionGID, field,
+	).Scan(&op)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading metadata replay state: %w", err)
+	}
+	return op, true, nil
+}
+
 func (db *DB) applyMetadataProjection(
 	ctx context.Context,
 	ev MetadataProjection,

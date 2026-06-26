@@ -29,6 +29,26 @@ func (s *Server) repairLocalMetadataEvent(
 	return s.metadata.RepairLocalSessionMetadata(ctx, input.SessionID, input.Op)
 }
 
+type metadataReplayStateStore interface {
+	MetadataReplayStateOp(ctx context.Context, sessionGID string, field string) (string, bool, error)
+}
+
+func (s *Server) metadataReplayStateOp(
+	ctx context.Context,
+	sessionID string,
+	field string,
+) (string, bool, error) {
+	store, ok := s.db.(metadataReplayStateStore)
+	if !ok {
+		return "", false, nil
+	}
+	origin := s.localArtifactOrigin()
+	if origin == "" {
+		return "", false, nil
+	}
+	return store.MetadataReplayStateOp(ctx, artifact.MetadataSessionGID(origin, sessionID), field)
+}
+
 func renameMetadataValue(displayName *string) (json.RawMessage, error) {
 	data, err := json.Marshal(struct {
 		DisplayName *string `json:"display_name"`

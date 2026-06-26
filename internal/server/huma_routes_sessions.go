@@ -705,6 +705,10 @@ func (s *Server) humaRestoreSession(
 	ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
+	metadataInput := artifact.MetadataEventInput{
+		SessionID: in.ID,
+		Op:        artifact.MetadataOpRestore,
+	}
 	n, err := s.db.RestoreSession(in.ID)
 	if err != nil {
 		if handled := handleHumaReadOnly(err); handled != nil {
@@ -713,12 +717,32 @@ func (s *Server) humaRestoreSession(
 		return nil, internalError("restore session", err)
 	}
 	if n == 0 {
+		session, err := s.db.GetSessionFull(ctx, in.ID)
+		if err != nil {
+			return nil, internalError("restore session retry lookup", err)
+		}
+		if session != nil && session.DeletedAt == nil {
+			op, ok, err := s.metadataReplayStateOp(ctx, in.ID, "deleted_at")
+			if err != nil {
+				return nil, internalError("restore session metadata retry lookup", err)
+			}
+			if !ok || op != artifact.MetadataOpSoftDelete {
+				return nil, apiError(http.StatusNotFound, "session not found or not in trash")
+			}
+			repaired, err := s.repairLocalMetadataEvent(ctx, metadataInput)
+			if err != nil {
+				return nil, internalError("restore session metadata repair", err)
+			}
+			if repaired == 0 {
+				if err := s.appendMetadataEvent(ctx, metadataInput); err != nil {
+					return nil, internalError("restore session metadata event", err)
+				}
+			}
+			return &noContentOutput{Status: http.StatusNoContent}, nil
+		}
 		return nil, apiError(http.StatusNotFound, "session not found or not in trash")
 	}
-	if err := s.appendMetadataEvent(ctx, artifact.MetadataEventInput{
-		SessionID: in.ID,
-		Op:        artifact.MetadataOpRestore,
-	}); err != nil {
+	if err := s.appendMetadataEvent(ctx, metadataInput); err != nil {
 		return nil, internalError("restore session metadata event", err)
 	}
 	return &noContentOutput{Status: http.StatusNoContent}, nil
