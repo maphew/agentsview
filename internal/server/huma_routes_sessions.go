@@ -729,11 +729,15 @@ func (s *Server) humaRestoreSession(
 			if !ok || op != artifact.MetadataOpSoftDelete {
 				return nil, apiError(http.StatusNotFound, "session not found or not in trash")
 			}
-			repaired, err := s.repairLocalMetadataEvent(ctx, metadataInput)
+			_, err = s.repairLocalMetadataEvent(ctx, metadataInput)
 			if err != nil {
 				return nil, internalError("restore session metadata repair", err)
 			}
-			if repaired == 0 {
+			op, ok, err = s.metadataReplayStateOp(ctx, in.ID, "deleted_at")
+			if err != nil {
+				return nil, internalError("restore session metadata retry lookup", err)
+			}
+			if !ok || op != artifact.MetadataOpRestore {
 				if err := s.appendMetadataEvent(ctx, metadataInput); err != nil {
 					return nil, internalError("restore session metadata event", err)
 				}

@@ -440,6 +440,50 @@ END;
 		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
 }
 
+func TestMetadataEventsRestoreRetryPublishesWhenOlderRestoreLoses(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
+	te.seedSession(t, "s1", "alpha", 2)
+
+	w := te.del(t, "/api/v1/sessions/s1")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	olderRestore := metadataEventOrderKey(t, te, artifact.MetadataOpRestore)
+
+	w = te.del(t, "/api/v1/sessions/s1")
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpSoftDelete,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+
+	_, err := te.db.Reader().Exec(`
+CREATE TRIGGER fail_metadata_replay_state_insert
+BEFORE INSERT ON metadata_replay_state
+BEGIN
+	SELECT RAISE(FAIL, 'forced metadata replay failure');
+END;
+`)
+	require.NoError(t, err)
+
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, artifact.MetadataOpSoftDelete,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+	for _, key := range metadataEventOrderKeys(t, te, artifact.MetadataOpRestore) {
+		if key != olderRestore {
+			deleteMetadataEventOrderKey(t, te, key)
+		}
+	}
+
+	_, err = te.db.Reader().Exec(`DROP TRIGGER fail_metadata_replay_state_insert`)
+	require.NoError(t, err)
+	w = te.post(t, "/api/v1/sessions/s1/restore", `{}`)
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
+
+	assert.Equal(t, artifact.MetadataOpRestore,
+		serverMetadataReplayOp(t, te, "desk-a1b2c3~s1", "deleted_at"))
+	assert.Len(t, metadataEventOrderKeys(t, te, artifact.MetadataOpRestore), 2)
+}
+
 func TestMetadataEventsSuppressedDuringReplay(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desk-a1b2c3"))
 	te.seedSession(t, "s1", "alpha", 2)
@@ -482,20 +526,27 @@ func readMetadataEvents(t *testing.T, te *testEnv) []recordedMetadataEvent {
 
 func metadataEventOrderKey(t *testing.T, te *testEnv, op string) string {
 	t.Helper()
+	keys := metadataEventOrderKeys(t, te, op)
+	require.NotEmpty(t, keys, "metadata event op %s not found", op)
+	return keys[0]
+}
+
+func metadataEventOrderKeys(t *testing.T, te *testEnv, op string) []string {
+	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(te.dataDir, "artifacts", "*", "meta", "*.json"))
 	require.NoError(t, err)
 	sort.Strings(paths)
+	keys := make([]string, 0)
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
 		var event recordedMetadataEvent
 		require.NoError(t, json.Unmarshal(data, &event))
 		if event.Op == op {
-			return strings.TrimSuffix(filepath.Base(path), ".json")
+			keys = append(keys, strings.TrimSuffix(filepath.Base(path), ".json"))
 		}
 	}
-	require.FailNowf(t, "metadata event not found", "op %s", op)
-	return ""
+	return keys
 }
 
 func splitMetadataOrderKey(t *testing.T, orderKey string) (string, string) {
@@ -503,6 +554,14 @@ func splitMetadataOrderKey(t *testing.T, orderKey string) (string, string) {
 	idx := strings.LastIndex(orderKey, "-")
 	require.NotEqual(t, -1, idx, "order key %q missing hash suffix", orderKey)
 	return orderKey[:idx], orderKey[idx+1:]
+}
+
+func deleteMetadataEventOrderKey(t *testing.T, te *testEnv, orderKey string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(te.dataDir, "artifacts", "*", "meta", orderKey+".json"))
+	require.NoError(t, err)
+	require.Len(t, paths, 1)
+	require.NoError(t, os.Remove(paths[0]))
 }
 
 func deleteMetadataEventsByOp(t *testing.T, te *testEnv, op string) {
