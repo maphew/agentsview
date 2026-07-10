@@ -19,6 +19,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"go.kenn.io/agentsview/internal/artifact"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
@@ -49,18 +50,23 @@ const (
 
 // Server is the HTTP server that serves the SPA and REST API.
 type Server struct {
-	mu             gosync.RWMutex
-	cfg            config.Config
-	db             db.Store
-	engine         *sync.Engine
-	onDemandEngine *sync.Engine
-	sessions       service.SessionService
-	broadcaster    *Broadcaster
-	mux            *http.ServeMux
-	api            huma.API
-	httpSrv        *http.Server
-	version        VersionInfo
-	dataDir        string
+	mu                    gosync.RWMutex
+	sessionLifecycleMu    gosync.Mutex
+	artifactImportPending bool
+	artifactBaselineDone  bool
+	cfg                   config.Config
+	db                    db.Store
+	engine                *sync.Engine
+	onDemandEngine        *sync.Engine
+	sessions              service.SessionService
+	broadcaster           *Broadcaster
+	metadata              *artifact.MetadataRecorder
+	metadataAppend        func(context.Context, artifact.MetadataEventInput) error
+	mux                   *http.ServeMux
+	api                   huma.API
+	httpSrv               *http.Server
+	version               VersionInfo
+	dataDir               string
 
 	// baseCtx, when set, is used as the base context for all
 	// incoming requests. Cancelling it causes SSE handlers to
@@ -78,6 +84,9 @@ type Server struct {
 	// handler, used only by tests to guarantee handlers
 	// exceed a short timeout. Zero in production.
 	handlerDelay time.Duration
+	// beforeSessionLifecycleLock observes lock attempts in concurrency tests.
+	// Production servers leave it nil.
+	beforeSessionLifecycleLock func()
 
 	// updateCheckFn is the function called to check for
 	// updates. Defaults to update.CheckForUpdate; tests
@@ -111,6 +120,13 @@ type Server struct {
 	// generation to the daemon's pg push handler. Nil leaves the vector
 	// push phase skipped, e.g. when [vector] is disabled.
 	vectorPushSource postgres.VectorPushSource
+}
+
+func (s *Server) lockSessionLifecycle() {
+	if s.beforeSessionLifecycleLock != nil {
+		s.beforeSessionLifecycleLock()
+	}
+	s.sessionLifecycleMu.Lock()
 }
 
 // New creates a new Server.
@@ -156,6 +172,12 @@ func New(
 		},
 		spaFS:      dist,
 		spaHandler: http.FileServerFS(dist),
+	}
+	if local, ok := database.(*db.DB); ok && !local.ReadOnly() && cfg.DataDir != "" {
+		s.metadata = artifact.NewMetadataRecorder(local, artifact.MetadataRecorderOptions{
+			DataDir: cfg.DataDir,
+			Origin:  cfg.ArtifactOriginID,
+		})
 	}
 	for _, opt := range opts {
 		opt(s)

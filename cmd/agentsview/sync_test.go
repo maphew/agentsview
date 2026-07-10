@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -527,10 +528,53 @@ func TestDoSyncUsesDaemonRouteWhenWritableDaemonRunning(t *testing.T) {
 
 	registerSyncRouteTestRuntime(t, env.DataDir, ts.URL)
 
-	hadFailures := doSync(SyncConfig{})
+	hadFailures, err := doSync(SyncConfig{})
+	require.NoError(t, err)
 	require.False(t, hadFailures)
 	assert.True(t, syncCalled)
 	env.assertNoLocalDB(t)
+}
+
+func TestDoSyncRejectsArtifactTargetWhenWritableDaemonRunning(t *testing.T) {
+	env := newSyncCLIEnv(t)
+	target := t.TempDir()
+
+	var syncCalled bool
+	ts := syncRouteTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		syncCalled = true
+		writeDoneSSE(t, w, agentsync.SyncStats{Synced: 7})
+	})
+
+	registerSyncRouteTestRuntime(t, env.DataDir, ts.URL)
+
+	hadFailures, err := doSync(SyncConfig{ArtifactFolder: target})
+	require.Error(t, err)
+	assert.False(t, hadFailures)
+	assert.False(t, syncCalled, "daemon sync must not consume an artifact target")
+	assert.Contains(t, err.Error(), "artifact sync")
+	assert.Contains(t, err.Error(), "writable daemon")
+	env.assertNoLocalDB(t)
+}
+
+func TestSyncTransportArtifactTargetUsesDirectDBWithoutAutoStartingDaemon(t *testing.T) {
+	env := newSyncCLIEnv(t)
+	var autostartCalled bool
+	stubStartBackgroundServeForTransport(t, func(
+		context.Context, *config.Config, time.Duration,
+	) (*DaemonRuntime, error) {
+		autostartCalled = true
+		return nil, errors.New("unexpected daemon autostart")
+	})
+
+	appCfg := config.Config{
+		DataDir: env.DataDir,
+	}
+	tr, err := syncTransport(&appCfg, SyncConfig{
+		ArtifactFolder: t.TempDir(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, transportDirect, tr.Mode)
+	assert.False(t, autostartCalled)
 }
 
 func TestDoSyncFullUsesDaemonResyncRoute(t *testing.T) {
@@ -554,7 +598,9 @@ func TestDoSyncFullUsesDaemonResyncRoute(t *testing.T) {
 
 	var hadFailures bool
 	out := captureStdout(t, func() {
-		hadFailures = doSync(SyncConfig{Full: true})
+		var err error
+		hadFailures, err = doSync(SyncConfig{Full: true})
+		require.NoError(t, err)
 	})
 	require.False(t, hadFailures)
 	assert.True(t, resyncCalled)
@@ -590,13 +636,14 @@ func TestDoSyncRemoteHostUsesDaemonRouteWhenWritableDaemonRunning(t *testing.T) 
 	ts := remoteSyncRouteTestServer(t, handler)
 	registerSyncRouteTestRuntime(t, env.DataDir, ts.URL)
 
-	hadFailures := doSync(SyncConfig{
+	hadFailures, err := doSync(SyncConfig{
 		Host: "devbox",
 		User: "alice",
 		Port: 2222,
 		Full: true,
 	})
 
+	require.NoError(t, err)
 	require.False(t, hadFailures)
 	assert.False(t, got.IncludeLocal)
 	assert.True(t, got.Full)
@@ -627,10 +674,12 @@ func TestDoSyncRemoteHostPrintsDaemonProgress(t *testing.T) {
 	registerSyncRouteTestRuntime(t, env.DataDir, ts.URL)
 
 	var hadFailures bool
+	var err error
 	out := captureStdout(t, func() {
-		hadFailures = doSync(SyncConfig{Host: "devbox"})
+		hadFailures, err = doSync(SyncConfig{Host: "devbox"})
 	})
 
+	require.NoError(t, err)
 	require.False(t, hadFailures)
 	assert.Contains(t, out, "Running sync with remotes via daemon...")
 	assert.Contains(t, out, "Resolving agent directories on devbox")
@@ -709,8 +758,9 @@ user = "robot"
 	ts := remoteSyncRouteTestServer(t, handler)
 	registerSyncRouteTestRuntime(t, env.DataDir, ts.URL)
 
-	hadFailures := doSync(SyncConfig{})
+	hadFailures, err := doSync(SyncConfig{})
 
+	require.NoError(t, err)
 	require.False(t, hadFailures)
 	assert.True(t, got.IncludeLocal)
 	require.Len(t, got.Hosts, 1)
@@ -931,7 +981,6 @@ func TestRemoteFailureDisplaySanitizesHTTPErrors(t *testing.T) {
 		})
 	}
 }
-
 func TestRunHTTPRemoteSyncReachesMirrorPath(t *testing.T) {
 	manifestRequests := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -965,4 +1014,233 @@ func TestRunHTTPRemoteSyncReachesMirrorPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, manifestRequests,
 		"configured DataDir must route HTTP sync through the manifest/mirror path")
+}
+
+func TestNewSyncCommandRegistersArtifactFolderFlag(t *testing.T) {
+	cmd := newSyncCommand()
+	flag := cmd.Flags().Lookup("artifact-folder")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+	assert.Contains(t, flag.Usage, "local-first sync artifacts")
+	initFlag := cmd.Flags().Lookup("init")
+	require.NotNil(t, initFlag)
+	assert.Equal(t, "false", initFlag.DefValue)
+	assert.Contains(t, initFlag.Usage, "Initialize artifact sync")
+	assert.Contains(t, cmd.Long, "do not point this at the")
+	assert.Contains(t, cmd.Long, "Use --init with an artifact folder")
+	watchFlag := cmd.Flags().Lookup("watch")
+	require.NotNil(t, watchFlag)
+	assert.Equal(t, "false", watchFlag.DefValue)
+	assert.Contains(t, watchFlag.Usage, "Run artifact folder sync continuously")
+	assert.Equal(t, defaultWatchDebounce.String(), cmd.Flags().Lookup("debounce").DefValue)
+	assert.Equal(t, defaultWatchInterval.String(), cmd.Flags().Lookup("interval").DefValue)
+	assert.Contains(t, cmd.Long, "Use --watch with an artifact folder")
+}
+
+func TestApplySyncArtifactTargetUsesPositionalArgument(t *testing.T) {
+	cfg := SyncConfig{}
+	err := applySyncArtifactTarget(&cfg, []string{"/tmp/agentsview-share"}, false)
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/agentsview-share", cfg.ArtifactFolder)
+}
+
+func TestApplySyncArtifactTargetRejectsArgumentAndFlag(t *testing.T) {
+	cfg := SyncConfig{ArtifactFolder: "/tmp/from-flag"}
+	err := applySyncArtifactTarget(&cfg, []string{"/tmp/from-arg"}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "both as an argument")
+	assert.Equal(t, "/tmp/from-flag", cfg.ArtifactFolder)
+}
+
+func TestValidateSyncConfigInitRequiresArtifactFolder(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{Init: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--init requires")
+}
+
+func TestValidateSyncConfigInitRejectsHost(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{
+		Init:           true,
+		Host:           "remote",
+		ArtifactFolder: "/tmp/agentsview-share",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined with --host")
+}
+
+func TestValidateSyncConfigInitAllowsArtifactFolder(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{
+		Init:           true,
+		ArtifactFolder: "/tmp/agentsview-share",
+	})
+	require.NoError(t, err)
+}
+
+func TestValidateSyncConfigWatchRequiresArtifactFolder(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{Watch: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--watch requires")
+}
+
+func TestValidateSyncConfigWatchRejectsHost(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{
+		Watch:          true,
+		Host:           "remote",
+		ArtifactFolder: "/tmp/agentsview-share",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined with --host")
+}
+
+func TestValidateSyncConfigWatchAllowsArtifactFolder(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{
+		Watch:          true,
+		ArtifactFolder: "/tmp/agentsview-share",
+		Debounce:       time.Second,
+		Interval:       time.Minute,
+	})
+	require.NoError(t, err)
+}
+
+func TestValidateSyncConfigRejectsHostWithArtifactTarget(t *testing.T) {
+	err := validateSyncConfig(SyncConfig{
+		Host:           "remote",
+		ArtifactFolder: "/tmp/agentsview-share",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--host cannot be combined with an artifact target")
+}
+
+func TestValidateSyncConfigAllowsHostWithoutArtifactTarget(t *testing.T) {
+	require.NoError(t, validateSyncConfig(SyncConfig{Host: "remote"}))
+}
+
+func TestArtifactPeerTokenDoesNotReuseLocalAuthToken(t *testing.T) {
+	got := artifactPeerToken(SyncConfig{
+		ArtifactFolder: "https://peer.example.test",
+	})
+	assert.Empty(t, got)
+
+	got = artifactPeerToken(SyncConfig{
+		ArtifactFolder: "https://peer.example.test",
+		Token:          "peer-secret",
+	})
+	assert.Equal(t, "peer-secret", got)
+}
+
+func TestSyncArtifactFolderPlumbsInsecurePeerOptIn(t *testing.T) {
+	target, requests := insecureArtifactPeerTarget(t)
+	dataDir := t.TempDir()
+	database, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	_, err = syncArtifactFolder(
+		context.Background(), config.Config{DataDir: dataDir}, database,
+		target, "desk-a1b2c3", "", true, false, nil,
+	)
+
+	require.NoError(t, err)
+	assert.Positive(t, requests.Load(),
+		"one-shot sync must reach an explicitly allowed plaintext peer")
+}
+
+func insecureArtifactPeerTarget(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	var host net.IP
+	addrs, err := net.InterfaceAddrs()
+	require.NoError(t, err)
+	for _, addr := range addrs {
+		ip, _, parseErr := net.ParseCIDR(addr.String())
+		if parseErr == nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsUnspecified() {
+			host = ip
+			break
+		}
+	}
+	if host == nil {
+		t.Skip("no non-loopback IPv4 interface available for plaintext peer plumbing test")
+	}
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	require.NoError(t, err)
+	var requests atomic.Int32
+	peer := &httptest.Server{
+		Listener: listener,
+		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/origins"):
+				_, _ = io.WriteString(w, `{"origins":[]}`)
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/index"):
+				_, _ = io.WriteString(w, `{"origin":"desk-a1b2c3"}`)
+			case r.Method == http.MethodPost:
+				w.WriteHeader(http.StatusCreated)
+			default:
+				http.NotFound(w, r)
+			}
+		})},
+	}
+	peer.Start()
+	t.Cleanup(peer.Close)
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "*")
+	port := listener.Addr().(*net.TCPAddr).Port
+	return "http://" + net.JoinHostPort(host.String(), strconv.Itoa(port)), &requests
+}
+
+func TestSyncGCHelpDocumentsMaintenanceFlags(t *testing.T) {
+	help, err := executeCommand(newRootCommand(), "sync", "gc", "--help")
+	require.NoError(t, err)
+	for _, want := range []string{"Garbage collect", "--grace", "--dry-run"} {
+		assert.Contains(t, help, want)
+	}
+}
+
+func TestSyncGCRejectsNonFolderTarget(t *testing.T) {
+	_, err := executeCommand(newRootCommand(), "sync", "gc", "https://example.test/artifacts")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local folder targets only")
+}
+
+func TestSyncGCDryRunPrintsSummary(t *testing.T) {
+	out, err := executeCommand(newRootCommand(), "sync", "gc", "--dry-run", t.TempDir())
+	require.NoError(t, err)
+	assert.Contains(t, out, "Artifact GC:")
+	assert.Contains(t, out, "would delete 0 artifact(s)")
+}
+
+func TestArtifactFolderPusherPushExportsToTarget(t *testing.T) {
+	dataDir := t.TempDir()
+	target := t.TempDir()
+	database, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	dbtest.SeedSession(t, database, "sess-1", "alpha", func(s *db.Session) {
+		s.MessageCount = 1
+		s.UserMessageCount = 1
+	})
+	require.NoError(t, database.ReplaceSessionMessages("sess-1", []db.Message{
+		{SessionID: "sess-1", Ordinal: 0, Role: "user", Content: "hello", ContentLength: 5},
+	}))
+
+	pusher := &artifactFolderPusher{
+		appCfg:   config.Config{DataDir: dataDir},
+		database: database,
+		target:   target,
+		origin:   "desk-a1b2c3",
+	}
+	require.NoError(t, pusher.push(context.Background(), reasonChange))
+
+	checkpoints, err := filepath.Glob(
+		filepath.Join(target, "desk-a1b2c3", "checkpoints", "*.json"),
+	)
+	require.NoError(t, err)
+	require.Len(t, checkpoints, 1)
+	manifests, err := filepath.Glob(
+		filepath.Join(target, "desk-a1b2c3", "manifests", "*.json.zst"),
+	)
+	require.NoError(t, err)
+	assert.Len(t, manifests, 1)
 }

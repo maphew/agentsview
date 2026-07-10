@@ -103,6 +103,13 @@ func TestDuckDBPushHelpShowsProjectFlags(t *testing.T) {
 	}
 }
 
+func TestSyncHelpShowsArtifactTransportSafetyFlag(t *testing.T) {
+	help, err := executeCommand(newRootCommand(), "sync", "--help")
+	require.NoError(t, err, "Execute")
+	assert.Contains(t, help, "--allow-insecure")
+	assert.Contains(t, help, "non-loopback artifact peer")
+}
+
 func TestPGStatusHelpShowsProjectFlags(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "pg", "status", "--help")
 	require.NoError(t, err, "Execute")
@@ -325,7 +332,7 @@ func TestRootHelpDocumentsRemoteHosts(t *testing.T) {
 func TestSyncHelpMentionsConfiguredHosts(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "sync", "--help")
 	require.NoError(t, err, "Execute")
-	for _, want := range []string{"remote_hosts", "--host", "passwordless"} {
+	for _, want := range []string{"remote_hosts", "--host", "passwordless", "trusted personal fleet", "rendezvous"} {
 		assert.Contains(t, help, want, "sync help missing %q", want)
 	}
 }

@@ -309,9 +309,13 @@ func (d *DB) CopyTrashedDataFrom(sourcePath string) (int, error) {
 	return count, nil
 }
 
-// CopySyncStateFrom copies pg_sync_state rows from the source database into the
-// current database. ResyncAll uses this to preserve durable local sync metadata
-// such as the PG push owner marker across the temp-DB swap.
+// CopySyncStateFrom copies durable pg_sync_state rows from the source database
+// into the current database. ResyncAll uses this to preserve durable local sync
+// metadata across the temp-DB swap: the PG push owner marker plus the artifact
+// ledger state written by internal/artifact (origin identity, metadata HLC,
+// and per-session import/export watermarks, all keyed with an "artifact_"
+// prefix). Transient bookkeeping such as last_sync_* timestamps is
+// deliberately left behind so the rebuilt DB reports its own sync times.
 func (d *DB) CopySyncStateFrom(sourcePath string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -347,9 +351,79 @@ func (d *DB) CopySyncStateFrom(sourcePath string) error {
 	_, err = conn.ExecContext(ctx, `
 		INSERT OR REPLACE INTO main.pg_sync_state (key, value)
 		SELECT key, value FROM old_db.pg_sync_state
-		WHERE key = 'pg_push_marker_id'`)
+		WHERE key = 'pg_push_marker_id'
+		   OR key LIKE 'artifact\_%' ESCAPE '\'`)
 	if err != nil {
 		return fmt.Errorf("copying sync state: %w", err)
+	}
+	return nil
+}
+
+// CopyMetadataReplayFrom copies the durable artifact metadata replay tables
+// (metadata_applied_events, metadata_replay_state, metadata_conflicts) from
+// the source database. ResyncAll uses this so previously applied peer
+// metadata events are not replayed against an empty LWW register after a
+// full rebuild, which would let old events overwrite newer local state.
+func (d *DB) CopyMetadataReplayFrom(sourcePath string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ctx := context.Background()
+	conn, err := d.getWriter().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(
+		ctx, "ATTACH DATABASE ? AS old_db", sourcePath,
+	); err != nil {
+		return fmt.Errorf("attaching source db: %w", err)
+	}
+	defer func() {
+		_, _ = execWithoutCancel(ctx, conn, "DETACH DATABASE old_db")
+	}()
+
+	copies := []struct {
+		table   string
+		columns string
+	}{
+		{
+			"metadata_applied_events",
+			"origin, order_key, artifact_hash, applied_at",
+		},
+		{
+			"metadata_replay_state",
+			"session_gid, field, order_key, hlc, artifact_hash, " +
+				"origin, op, value, updated_at",
+		},
+		{
+			"metadata_conflicts",
+			"session_gid, field, winning_order_key, losing_order_key, " +
+				"winning_origin, losing_origin, winning_op, losing_op, " +
+				"winning_value, losing_value, created_at",
+		},
+	}
+	for _, c := range copies {
+		// Older databases may predate the metadata replay tables.
+		var tableExists int
+		err := conn.QueryRowContext(ctx,
+			"SELECT 1 FROM old_db.sqlite_master WHERE type='table' AND name=?",
+			c.table,
+		).Scan(&tableExists)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return fmt.Errorf("probing %s table: %w", c.table, err)
+		}
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf(
+			`INSERT OR IGNORE INTO main.%s (%s)
+			 SELECT %s FROM old_db.%s`,
+			c.table, c.columns, c.columns, c.table,
+		)); err != nil {
+			return fmt.Errorf("copying %s: %w", c.table, err)
+		}
 	}
 	return nil
 }
