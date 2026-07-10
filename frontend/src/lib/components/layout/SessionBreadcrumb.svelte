@@ -69,7 +69,6 @@
   let sessionDir = $state<string | null>(null);
   let metadataConflicts = $state<DbMetadataConflict[]>([]);
   let conflictsOpen = $state(false);
-  let conflictFetchId: string | null = null;
   let conflictRequestSeq = 0;
 
   interface Opener {
@@ -139,13 +138,10 @@
     if (!session) {
       metadataConflicts = [];
       conflictsOpen = false;
-      conflictFetchId = null;
       conflictRequestSeq++;
       return;
     }
     const id = session.id;
-    if (id === conflictFetchId) return;
-    conflictFetchId = id;
     metadataConflicts = [];
     conflictsOpen = false;
     const seq = ++conflictRequestSeq;

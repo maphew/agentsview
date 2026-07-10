@@ -810,10 +810,27 @@ describe("SessionBreadcrumb", () => {
     unmount(component);
   });
 
-  it("does not retry failed metadata conflict fetches until the session changes", async () => {
-    sessionsService.getApiV1SessionsIdMetadataConflicts.mockRejectedValue(
-      new Error("boom"),
-    );
+  it("refreshes metadata conflicts when the open session refreshes", async () => {
+    sessionsService.getApiV1SessionsIdMetadataConflicts
+      .mockResolvedValueOnce({ conflicts: [] })
+      .mockResolvedValueOnce({
+        conflicts: [
+          {
+            id: 42,
+            session_gid: "desk-a1b2c3~run:aaa",
+            field: "display_name",
+            winning_order_key: "2026-06-14T01:02:04Z-desk-a1b2c3",
+            losing_order_key: "2026-06-14T01:02:03Z-lap-b2c3d4",
+            winning_origin: "desk-a1b2c3",
+            losing_origin: "lap-b2c3d4",
+            winning_op: "rename",
+            losing_op: "rename",
+            winning_value: '{"display_name":"Current title"}',
+            losing_value: '{"display_name":"Other title"}',
+            created_at: "2026-06-14T01:02:05Z",
+          },
+        ],
+      });
 
     const component = createClassComponent({
       component: SessionBreadcrumb,
@@ -835,18 +852,15 @@ describe("SessionBreadcrumb", () => {
         message_count: 3,
       }),
     });
-    await flushPromises();
-    expect(
-      sessionsService.getApiV1SessionsIdMetadataConflicts,
-    ).toHaveBeenCalledTimes(1);
-
-    component.$set({
-      session: makeSession("claude", { id: "run:bbb" }),
+    await vi.waitFor(() => {
+      expect(document.querySelector(".conflict-badge")).toBeTruthy();
     });
-    await flushPromises();
     expect(
       sessionsService.getApiV1SessionsIdMetadataConflicts,
     ).toHaveBeenCalledTimes(2);
+    expect(
+      sessionsService.getApiV1SessionsIdMetadataConflicts,
+    ).toHaveBeenLastCalledWith({ id: "run:aaa" });
 
     component.$destroy();
   });
