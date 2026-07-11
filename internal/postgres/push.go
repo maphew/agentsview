@@ -176,10 +176,6 @@ func (s *Sync) Push(
 	if err != nil {
 		return result, err
 	}
-	artifactImportedSessions, err := artifact.ImportedSessionIDs(s.local)
-	if err != nil {
-		return result, err
-	}
 	artifactIdentityMode := currentArtifactIdentityMode(localArtifactOrigin)
 	storedArtifactIdentityMode, err := state.GetSyncState(
 		artifactIdentityModeStateKey,
@@ -352,6 +348,12 @@ func (s *Sync) Push(
 		}
 	}
 
+	artifactImportedSessions, err := artifact.ImportedSessionIDs(
+		s.local, mapKeys(sessionByID),
+	)
+	if err != nil {
+		return result, err
+	}
 	for id, sess := range sessionByID {
 		_, artifactImported := artifactImportedSessions[sess.ID]
 		identity, err := s.resolvePushedSessionIdentity(

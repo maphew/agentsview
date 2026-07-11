@@ -29,6 +29,52 @@ func TestEnsureOriginPersists(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
+type recordingSyncStateValueReader struct {
+	states map[string]string
+	keys   []string
+	calls  int
+}
+
+func (r *recordingSyncStateValueReader) SyncStateValues(
+	keys []string,
+) (map[string]string, error) {
+	r.calls++
+	r.keys = append([]string(nil), keys...)
+	result := make(map[string]string)
+	for _, key := range keys {
+		if value := r.states[key]; value != "" {
+			result[key] = value
+		}
+	}
+	return result, nil
+}
+
+func TestImportedSessionIDsReadsOnlyCandidateProvenance(t *testing.T) {
+	reader := &recordingSyncStateValueReader{states: map[string]string{
+		"artifact_import:desk-a1b2c3:desk-a1b2c3~one":     "manifest-one",
+		"artifact_import:laptop-d4e5f6:laptop-d4e5f6~two": "manifest-two",
+	}}
+
+	got, err := ImportedSessionIDs(reader, []string{
+		"desk-a1b2c3~one",
+		"local-session",
+		"phone-112233~missing",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]struct{}{"desk-a1b2c3~one": {}}, got)
+	assert.Equal(t, []string{
+		"artifact_import:desk-a1b2c3:desk-a1b2c3~one",
+		"artifact_import:phone-112233:phone-112233~missing",
+	}, reader.keys)
+	assert.Equal(t, 1, reader.calls)
+
+	empty, err := ImportedSessionIDs(reader, nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+	assert.Equal(t, 1, reader.calls,
+		"a no-candidate push must not query artifact provenance")
+}
+
 func TestIsFolderTargetAcceptsWindowsDrivePaths(t *testing.T) {
 	tests := []struct {
 		name   string

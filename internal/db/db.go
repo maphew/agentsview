@@ -2926,28 +2926,43 @@ func (db *DB) GetSyncState(key string) (string, error) {
 	return value, err
 }
 
-// SyncStatesWithPrefix reads all non-empty sync-state entries whose keys start
-// with prefix in one query.
-func (db *DB) SyncStatesWithPrefix(prefix string) (map[string]string, error) {
-	rows, err := db.getReader().Query(
-		`SELECT key, value FROM pg_sync_state
-		 WHERE substr(key, 1, length(?)) = ? AND value <> ''`,
-		prefix, prefix,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// SyncStateValues reads the non-empty values for exact sync-state keys. Queries
+// are bounded so callers can bulk-resolve state without exceeding SQLite's
+// historical variable limit.
+func (db *DB) SyncStateValues(keys []string) (map[string]string, error) {
 	states := map[string]string{}
-	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
+	const batchSize = 900
+	for start := 0; start < len(keys); start += batchSize {
+		end := min(start+batchSize, len(keys))
+		batch := keys[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for i, key := range batch {
+			args[i] = key
+		}
+		rows, err := db.getReader().Query(
+			`SELECT key, value FROM pg_sync_state
+			 WHERE key IN (`+placeholders+`) AND value <> ''`,
+			args...,
+		)
+		if err != nil {
 			return nil, err
 		}
-		states[key] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		for rows.Next() {
+			var key, value string
+			if err := rows.Scan(&key, &value); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			states[key] = value
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
 	}
 	return states, nil
 }

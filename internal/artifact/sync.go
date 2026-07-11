@@ -357,23 +357,43 @@ func StoredOrigin(database *db.DB) (string, error) {
 	return "", nil
 }
 
-// ImportedSessionIDs returns the durable session IDs written by artifact
-// import. A foreign machine~id shape is shared by other import mechanisms, so
-// callers must use this provenance instead of inferring artifact ownership from
-// the session row alone.
-func ImportedSessionIDs(database *db.DB) (map[string]struct{}, error) {
-	states, err := database.SyncStatesWithPrefix(importStatePrefix)
+type syncStateValueReader interface {
+	SyncStateValues(keys []string) (map[string]string, error)
+}
+
+// ImportedSessionIDs returns the candidate session IDs with durable artifact
+// import provenance. A foreign machine~id shape is shared by other import
+// mechanisms, so callers must query the exact provenance keys rather than
+// infer artifact ownership from the session row or scan all historical imports.
+func ImportedSessionIDs(
+	database syncStateValueReader, candidateIDs []string,
+) (map[string]struct{}, error) {
+	ids := make(map[string]struct{})
+	if len(candidateIDs) == 0 {
+		return ids, nil
+	}
+	keys := make([]string, 0, len(candidateIDs))
+	keyToID := make(map[string]string, len(candidateIDs))
+	for _, gid := range candidateIDs {
+		origin, nativeID, ok := strings.Cut(gid, "~")
+		if !ok || origin == "" || nativeID == "" {
+			continue
+		}
+		key := importStateKey(origin, gid)
+		keys = append(keys, key)
+		keyToID[key] = gid
+	}
+	if len(keys) == 0 {
+		return ids, nil
+	}
+	states, err := database.SyncStateValues(keys)
 	if err != nil {
 		return nil, fmt.Errorf("reading artifact import provenance: %w", err)
 	}
-	ids := make(map[string]struct{}, len(states))
 	for key := range states {
-		rest := strings.TrimPrefix(key, importStatePrefix)
-		origin, gid, ok := strings.Cut(rest, ":")
-		if !ok || origin == "" || !strings.HasPrefix(gid, origin+"~") {
-			continue
+		if gid, ok := keyToID[key]; ok {
+			ids[gid] = struct{}{}
 		}
-		ids[gid] = struct{}{}
 	}
 	return ids, nil
 }
