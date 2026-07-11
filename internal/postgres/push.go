@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.kenn.io/agentsview/internal/artifact"
@@ -351,6 +352,13 @@ func (s *Sync) Push(
 	artifactImportedSessions, err := artifact.ImportedSessionIDs(
 		s.local, mapKeys(sessionByID),
 	)
+	if err != nil {
+		return result, err
+	}
+	ctx, err = s.preloadPGSessionOwners(ctx, s.pushIdentityOwnerCandidateIDs(
+		sessionByID, artifactImportedSessions, localArtifactOrigin,
+		markerID, legacyMarkerMachines,
+	))
 	if err != nil {
 		return result, err
 	}
@@ -1855,6 +1863,31 @@ func (s *Sync) markRelationshipConflicts(
 	return nil
 }
 
+func initialPushedSessionIdentity(
+	sess db.Session,
+	fallbackMachine string,
+	localArtifactOrigin string,
+	artifactImported bool,
+	markerID string,
+) (pushedSessionIdentity, bool) {
+	identity := pushedSessionIdentity{
+		ID:      sess.ID,
+		Machine: pushedSessionMachine(sess, fallbackMachine),
+	}
+	if id, machine, ownerMarker, ok := artifactPushIdentity(
+		sess, localArtifactOrigin, artifactImported,
+	); ok {
+		identity.ID = id
+		identity.Machine = machine
+		identity.OwnerMarker = ownerMarker
+		identity.LegacyOwnerMarkers = []string{markerID}
+		identity.ArtifactReplica = artifactImported
+		identity.AliasIDs = artifactPushAliasIDs(sess, id, machine)
+		return identity, true
+	}
+	return identity, false
+}
+
 // resolvePushedSessionIdentity decides the PG id a local session is stored
 // under. A session this sync owns -- by matching push marker, or an adoptable
 // legacy/ownerless row (see sameSessionOwner) -- is updated in place: an
@@ -1873,22 +1906,9 @@ func (s *Sync) resolvePushedSessionIdentity(
 	markerID string,
 	legacyMarkerMachines []string,
 ) (pushedSessionIdentity, error) {
-	identity := pushedSessionIdentity{
-		ID:      sess.ID,
-		Machine: pushedSessionMachine(sess, s.machine),
-	}
-	artifactIdentity := false
-	if id, machine, ownerMarker, ok := artifactPushIdentity(
-		sess, localArtifactOrigin, artifactImported,
-	); ok {
-		artifactIdentity = true
-		identity.ID = id
-		identity.Machine = machine
-		identity.OwnerMarker = ownerMarker
-		identity.LegacyOwnerMarkers = []string{markerID}
-		identity.ArtifactReplica = artifactImported
-		identity.AliasIDs = artifactPushAliasIDs(sess, id, machine)
-	}
+	identity, artifactIdentity := initialPushedSessionIdentity(
+		sess, s.machine, localArtifactOrigin, artifactImported, markerID,
+	)
 	canonicalID := identity.ID
 	id, err := s.resolveOwnedPushIdentityID(
 		ctx, identity.ID, identity, markerID, legacyMarkerMachines,
@@ -1918,6 +1938,42 @@ func (s *Sync) resolvePushedSessionIdentity(
 		identity.LegacyDuplicateID = legacyDuplicateID
 	}
 	return identity, nil
+}
+
+func (s *Sync) pushIdentityOwnerCandidateIDs(
+	sessionByID map[string]db.Session,
+	artifactImportedSessions map[string]struct{},
+	localArtifactOrigin string,
+	markerID string,
+	legacyMarkerMachines []string,
+) []string {
+	ids := make(map[string]struct{}, len(sessionByID)*3)
+	for _, sess := range sessionByID {
+		_, artifactImported := artifactImportedSessions[sess.ID]
+		identity, _ := initialPushedSessionIdentity(
+			sess, s.machine, localArtifactOrigin, artifactImported, markerID,
+		)
+		ids[identity.ID] = struct{}{}
+		for _, machine := range pushIDMachinePrefixes(
+			identity.Machine, legacyMarkerMachines,
+		) {
+			candidateID := prefixedSessionID(machine, identity.ID)
+			if candidateID != identity.ID {
+				ids[candidateID] = struct{}{}
+			}
+		}
+		for _, aliasID := range uniqueNonEmptyStrings(identity.AliasIDs) {
+			ids[aliasID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		if id != "" {
+			result = append(result, id)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 // artifactLegacyDuplicateCandidate recognizes the narrow upgrade state where
@@ -2076,6 +2132,72 @@ func pushIDMachinePrefixes(machine string, legacyMarkerMachines []string) []stri
 	return prefixes
 }
 
+type pgSessionOwnerRecord struct {
+	machine     string
+	ownerMarker string
+	exists      bool
+}
+
+type pgSessionOwnerCache struct {
+	mu      sync.Mutex
+	entries map[string]pgSessionOwnerRecord
+}
+
+type pgSessionOwnerCacheContextKey struct{}
+
+func (c *pgSessionOwnerCache) get(id string) (pgSessionOwnerRecord, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	record, ok := c.entries[id]
+	return record, ok
+}
+
+func (c *pgSessionOwnerCache) put(id string, record pgSessionOwnerRecord) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[id] = record
+}
+
+// preloadPGSessionOwners resolves a candidate set in one PG round trip and
+// records both hits and misses. pgSessionOwner reuses this cache and memoizes
+// any relationship targets discovered later in the same push.
+func (s *Sync) preloadPGSessionOwners(
+	ctx context.Context, ids []string,
+) (context.Context, error) {
+	unique := uniqueNonEmptyStrings(ids)
+	cache := &pgSessionOwnerCache{
+		entries: make(map[string]pgSessionOwnerRecord, len(unique)),
+	}
+	for _, id := range unique {
+		cache.entries[id] = pgSessionOwnerRecord{}
+	}
+	if len(unique) == 0 {
+		return context.WithValue(ctx, pgSessionOwnerCacheContextKey{}, cache), nil
+	}
+	rows, err := s.pg.QueryContext(ctx, `
+		SELECT id, machine, owner_marker
+		FROM sessions
+		WHERE id = ANY($1)`, unique)
+	if err != nil {
+		return ctx, fmt.Errorf("preloading pg session owners: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, machine string
+		var ownerMarker sql.NullString
+		if err := rows.Scan(&id, &machine, &ownerMarker); err != nil {
+			return ctx, fmt.Errorf("scanning pg session owner: %w", err)
+		}
+		cache.entries[id] = pgSessionOwnerRecord{
+			machine: machine, ownerMarker: ownerMarker.String, exists: true,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return ctx, fmt.Errorf("iterating pg session owners: %w", err)
+	}
+	return context.WithValue(ctx, pgSessionOwnerCacheContextKey{}, cache), nil
+}
+
 // pgSessionOwner returns the machine and owner_marker of a PG session row, and
 // whether it exists. owner_marker is empty for legacy rows pushed before the
 // marker model.
@@ -2083,6 +2205,12 @@ func (s *Sync) pgSessionOwner(
 	ctx context.Context,
 	id string,
 ) (string, string, bool, error) {
+	cache, _ := ctx.Value(pgSessionOwnerCacheContextKey{}).(*pgSessionOwnerCache)
+	if cache != nil {
+		if record, ok := cache.get(id); ok {
+			return record.machine, record.ownerMarker, record.exists, nil
+		}
+	}
 	var machine string
 	var ownerMarker sql.NullString
 	err := s.pg.QueryRowContext(ctx,
@@ -2091,12 +2219,20 @@ func (s *Sync) pgSessionOwner(
 	).Scan(&machine, &ownerMarker)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			if cache != nil {
+				cache.put(id, pgSessionOwnerRecord{})
+			}
 			return "", "", false, nil
 		}
 		return "", "", false, fmt.Errorf(
 			"reading pg session owner for %s: %w",
 			id, err,
 		)
+	}
+	if cache != nil {
+		cache.put(id, pgSessionOwnerRecord{
+			machine: machine, ownerMarker: ownerMarker.String, exists: true,
+		})
 	}
 	return machine, ownerMarker.String, true, nil
 }

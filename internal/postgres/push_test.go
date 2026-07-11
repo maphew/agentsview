@@ -1194,6 +1194,13 @@ type pushSessionProbeState struct {
 	aliases             map[string]string
 	excludedIDs         map[string]bool
 	existingExcluded    map[string]bool
+	ownerQueries        int
+	owners              map[string]pushSessionProbeOwner
+}
+
+type pushSessionProbeOwner struct {
+	machine string
+	marker  string
 }
 
 var (
@@ -1310,7 +1317,29 @@ func (c *pushSessionProbeConn) QueryContext(
 	defer c.state.mu.Unlock()
 
 	switch {
+	case strings.Contains(normalized, "select id, machine, owner_marker"):
+		c.state.ownerQueries++
+		values := [][]driver.Value{}
+		for _, id := range namedValueStrings(args) {
+			if owner, ok := c.state.owners[id]; ok {
+				values = append(values, []driver.Value{id, owner.machine, owner.marker})
+			}
+		}
+		return &pushSessionProbeRows{
+			columns: []string{"id", "machine", "owner_marker"},
+			values:  values,
+		}, nil
 	case strings.Contains(normalized, "select machine, owner_marker"):
+		c.state.ownerQueries++
+		if len(args) > 0 {
+			id, _ := args[0].Value.(string)
+			if owner, ok := c.state.owners[id]; ok {
+				return &pushSessionProbeRows{
+					columns: []string{"machine", "owner_marker"},
+					values:  [][]driver.Value{{owner.machine, owner.marker}},
+				}, nil
+			}
+		}
 		return &pushSessionProbeRows{
 			columns: []string{"machine", "owner_marker"},
 		}, nil
@@ -1345,6 +1374,71 @@ func (c *pushSessionProbeConn) QueryContext(
 	default:
 		return nil, errors.New("unexpected push-session probe query")
 	}
+}
+
+func TestPreloadPGSessionOwnersUsesOneQueryAndCachesMisses(t *testing.T) {
+	state := &pushSessionProbeState{owners: map[string]pushSessionProbeOwner{
+		"owned-a": {machine: "desk", marker: "marker-a"},
+		"owned-b": {machine: "laptop", marker: "marker-b"},
+	}}
+	sync := &Sync{pg: newPushSessionProbeDB(t, state)}
+
+	ctx, err := sync.preloadPGSessionOwners(
+		context.Background(), []string{"owned-a", "owned-b", "missing"},
+	)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		id      string
+		machine string
+		marker  string
+		exists  bool
+	}{
+		{id: "owned-a", machine: "desk", marker: "marker-a", exists: true},
+		{id: "owned-b", machine: "laptop", marker: "marker-b", exists: true},
+		{id: "missing"},
+	} {
+		machine, marker, exists, lookupErr := sync.pgSessionOwner(ctx, tc.id)
+		require.NoError(t, lookupErr)
+		assert.Equal(t, tc.machine, machine)
+		assert.Equal(t, tc.marker, marker)
+		assert.Equal(t, tc.exists, exists)
+	}
+	assert.Equal(t, 1, state.ownerQueries,
+		"preloaded hits and misses must use one owner query")
+
+	_, _, exists, err := sync.pgSessionOwner(ctx, "late-miss")
+	require.NoError(t, err)
+	assert.False(t, exists)
+	_, _, exists, err = sync.pgSessionOwner(ctx, "late-miss")
+	require.NoError(t, err)
+	assert.False(t, exists)
+	assert.Equal(t, 2, state.ownerQueries,
+		"an owner first discovered after preload must be memoized")
+}
+
+func TestPushIdentityOwnerCandidateIDsCoverLegacyAndArtifactAliases(t *testing.T) {
+	sync := &Sync{machine: "desk"}
+	sessions := map[string]db.Session{
+		"plain": {
+			ID: "plain", Machine: "local",
+		},
+		"remote-a1b2c3~imported": {
+			ID: "remote-a1b2c3~imported", Machine: "remote-a1b2c3",
+		},
+	}
+	imported := map[string]struct{}{"remote-a1b2c3~imported": {}}
+
+	got := sync.pushIdentityOwnerCandidateIDs(
+		sessions, imported, "desk-origin", "marker", []string{"old-desk"},
+	)
+	assert.ElementsMatch(t, []string{
+		"desk-origin~plain",
+		"old-desk~desk-origin~plain",
+		"plain",
+		"remote-a1b2c3~imported",
+		"old-desk~remote-a1b2c3~imported",
+		"imported",
+	}, got)
 }
 
 func (pushSessionProbeTx) Commit() error { return nil }
