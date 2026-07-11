@@ -871,6 +871,8 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 		 ON sessions(cwd) WHERE cwd != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_project_git_branch
 		 ON sessions(project, git_branch) WHERE git_branch != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_source_session
+		 ON sessions(source_session_id) WHERE source_session_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_compact_boundary
 		 ON messages(session_id, ordinal) WHERE is_compact_boundary = TRUE`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_sidechain
@@ -893,6 +895,12 @@ func createPartialIndexesPG(ctx context.Context, db *sql.DB) error {
 		// SQLite partial index so legacy schemas migrate cleanly.
 		`CREATE INDEX IF NOT EXISTS idx_tool_calls_file_path
 		 ON tool_calls(file_path) WHERE file_path IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_tool_calls_subagent_session
+		 ON tool_calls(subagent_session_id)
+		 WHERE subagent_session_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_tool_result_events_subagent_session
+		 ON tool_result_events(subagent_session_id)
+		 WHERE subagent_session_id IS NOT NULL`,
 		// idx_messages_session_role backs the dense-flow unit-range boundary
 		// fetch (user ordinals by session), mirroring the SQLite index.
 		`CREATE INDEX IF NOT EXISTS idx_messages_session_role

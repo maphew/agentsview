@@ -830,6 +830,12 @@ func TestEnsureSchemaCreatesSessionTraversalIndex(t *testing.T) {
 
 	assert.Contains(t, state.executedSQL(),
 		"CREATE INDEX IF NOT EXISTS idx_sessions_parent")
+	assert.Contains(t, state.executedSQL(),
+		"CREATE INDEX IF NOT EXISTS idx_sessions_source_session")
+	assert.Contains(t, state.executedSQL(),
+		"CREATE INDEX IF NOT EXISTS idx_tool_calls_subagent_session")
+	assert.Contains(t, state.executedSQL(),
+		"CREATE INDEX IF NOT EXISTS idx_tool_result_events_subagent_session")
 }
 
 func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
