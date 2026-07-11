@@ -363,6 +363,26 @@ func (db *DB) GetAllMessages(
 	return msgs, nil
 }
 
+// GetMessageForMetadataPin returns only the stable fields needed to publish a
+// pin metadata event. It deliberately avoids loading message content, tool
+// calls, and tool-result events for an otherwise single-row lookup.
+func (db *DB) GetMessageForMetadataPin(
+	ctx context.Context, sessionID string, messageID int64,
+) (*Message, error) {
+	row := db.getReader().QueryRowContext(ctx, `
+		SELECT id, session_id, ordinal, COALESCE(source_uuid, '')
+		FROM messages
+		WHERE session_id = ? AND id = ?`, sessionID, messageID)
+	var msg Message
+	if err := row.Scan(&msg.ID, &msg.SessionID, &msg.Ordinal, &msg.SourceUUID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying message metadata for pin: %w", err)
+	}
+	return &msg, nil
+}
+
 // EmbeddableUnit is one embedding document: a single embeddable user
 // message, or a run of contiguous embeddable assistant messages.
 type EmbeddableUnit struct {

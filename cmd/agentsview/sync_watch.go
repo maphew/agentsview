@@ -20,7 +20,7 @@ import (
 type artifactFolderPusher struct {
 	appCfg        config.Config
 	database      *db.DB
-	engine        *syncpkg.Engine
+	engine        artifactWatchSyncer
 	target        string
 	origin        string
 	token         string
@@ -34,6 +34,11 @@ type artifactFolderPusher struct {
 	// goroutine, so no locking is needed.
 	baseline      bool
 	onDataChanged func()
+}
+
+type artifactWatchSyncer interface {
+	SyncAll(context.Context, syncpkg.ProgressFunc) syncpkg.SyncStats
+	FlushSignals()
 }
 
 func newArtifactWatchEngine(
@@ -51,7 +56,12 @@ func (p *artifactFolderPusher) push(
 	ctx context.Context, reason pushReason,
 ) error {
 	if p.engine != nil {
-		p.engine.SyncAll(ctx, nil)
+		// Startup already performed a full sync, and watcher change bursts have
+		// already applied their targeted paths. Only the periodic floor needs a
+		// full discovery pass to cover roots that could not be watched.
+		if reason == reasonInterval {
+			p.engine.SyncAll(ctx, nil)
+		}
 		// Export reads session rows outside a sync operation; flush
 		// debounced signal recomputes so manifests carry current signals.
 		p.engine.FlushSignals()

@@ -3,6 +3,7 @@ package duckdb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -234,6 +235,25 @@ func (s *Store) GetAllMessages(ctx context.Context, sessionID string) ([]db.Mess
 		return nil, err
 	}
 	return msgs, nil
+}
+
+// GetMessageForMetadataPin returns only the stable message identity fields
+// needed for metadata pin events.
+func (s *Store) GetMessageForMetadataPin(
+	ctx context.Context, sessionID string, messageID int64,
+) (*db.Message, error) {
+	row := s.queryRowContext(ctx, `
+		SELECT id, session_id, ordinal, COALESCE(source_uuid, '')
+		FROM messages
+		WHERE session_id = ? AND id = ?`, sessionID, messageID)
+	var msg db.Message
+	if err := row.Scan(&msg.ID, &msg.SessionID, &msg.Ordinal, &msg.SourceUUID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying message metadata for pin: %w", err)
+	}
+	return &msg, nil
 }
 
 func scanMessages(rows *sql.Rows) ([]db.Message, error) {

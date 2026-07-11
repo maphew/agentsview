@@ -689,6 +689,56 @@ func seedCurationPinMessage(t *testing.T, database *db.DB) int64 {
 	return messages[0].ID
 }
 
+type metadataPinPointLookupStore struct {
+	db.Store
+	message         *db.Message
+	fullReads       int
+	pointReads      int
+	lookupSessionID string
+	lookupMessageID int64
+}
+
+func (s *metadataPinPointLookupStore) GetAllMessages(
+	_ context.Context, _ string,
+) ([]db.Message, error) {
+	s.fullReads++
+	return nil, errors.New("full transcript read must not be used for pin metadata")
+}
+
+func (s *metadataPinPointLookupStore) GetMessageForMetadataPin(
+	_ context.Context, sessionID string, messageID int64,
+) (*db.Message, error) {
+	s.pointReads++
+	s.lookupSessionID = sessionID
+	s.lookupMessageID = messageID
+	return s.message, nil
+}
+
+func TestMetadataPinUsesPointMessageLookup(t *testing.T) {
+	store := &metadataPinPointLookupStore{message: &db.Message{
+		ID:         42,
+		SessionID:  "s1",
+		Ordinal:    7,
+		SourceUUID: "message-a1b2c3",
+	}}
+	srv := &Server{db: store}
+	note := "remember"
+
+	pin, err := srv.metadataPinForMessage(
+		context.Background(), "s1", 42, &note,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pin)
+	assert.Equal(t, "message-a1b2c3", pin.SourceUUID)
+	assert.Equal(t, 7, pin.Ordinal)
+	require.NotNil(t, pin.Note)
+	assert.Equal(t, "remember", *pin.Note)
+	assert.Equal(t, 1, store.pointReads)
+	assert.Zero(t, store.fullReads)
+	assert.Equal(t, "s1", store.lookupSessionID)
+	assert.Equal(t, int64(42), store.lookupMessageID)
+}
+
 func TestPinLifecycleWaitsForFailedAppendCompensation(t *testing.T) {
 	database := dbtest.OpenTestDB(t)
 	messageID := seedCurationPinMessage(t, database)

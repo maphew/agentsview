@@ -12,8 +12,25 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
+
+type countingArtifactWatchSyncer struct {
+	syncAllCalls int
+	flushCalls   int
+}
+
+func (s *countingArtifactWatchSyncer) SyncAll(
+	_ context.Context, _ syncpkg.ProgressFunc,
+) syncpkg.SyncStats {
+	s.syncAllCalls++
+	return syncpkg.SyncStats{}
+}
+
+func (s *countingArtifactWatchSyncer) FlushSignals() {
+	s.flushCalls++
+}
 
 func openWatchTestDB(t *testing.T) *db.DB {
 	t.Helper()
@@ -102,6 +119,33 @@ func TestArtifactFolderPusherPlumbsInsecurePeerOptIn(t *testing.T) {
 	require.NoError(t, pusher.push(context.Background(), reasonStartup))
 	assert.Positive(t, requests.Load(),
 		"watch sync must reach an explicitly allowed plaintext peer")
+}
+
+func TestArtifactFolderPusherOnlyRunsFullDiscoveryForInterval(t *testing.T) {
+	dataDir := t.TempDir()
+	target := t.TempDir()
+	database := openWatchTestDB(t)
+	syncer := &countingArtifactWatchSyncer{}
+	pusher := &artifactFolderPusher{
+		appCfg:   config.Config{DataDir: dataDir},
+		database: database,
+		engine:   syncer,
+		target:   target,
+		origin:   "desk-a1b2c3",
+	}
+
+	for _, reason := range []pushReason{reasonStartup, reasonChange, reasonShutdown} {
+		require.NoError(t, pusher.push(context.Background(), reason))
+	}
+	assert.Zero(t, syncer.syncAllCalls,
+		"startup and watcher-driven pushes already synchronized local files")
+	assert.Equal(t, 3, syncer.flushCalls,
+		"every export must flush pending signal recomputes")
+
+	require.NoError(t, pusher.push(context.Background(), reasonInterval))
+	assert.Equal(t, 1, syncer.syncAllCalls,
+		"the periodic floor must discover changes from unwatched roots")
+	assert.Equal(t, 4, syncer.flushCalls)
 }
 
 func TestArtifactWatchEngineHonorsConfiguredCwdPrefixes(t *testing.T) {

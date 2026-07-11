@@ -96,23 +96,20 @@ func (s *Server) metadataPinForMessage(
 	messageID int64,
 	note *string,
 ) (*artifact.MetadataPin, error) {
-	msgs, err := s.db.GetAllMessages(ctx, sessionID)
+	msg, err := s.db.GetMessageForMetadataPin(ctx, sessionID, messageID)
 	if err != nil {
 		return nil, fmt.Errorf("loading message for metadata pin: %w", err)
 	}
-	for _, msg := range msgs {
-		if msg.ID != messageID {
-			continue
-		}
-		pin := &artifact.MetadataPin{
-			SourceUUID: msg.SourceUUID,
-			Ordinal:    msg.Ordinal,
-		}
-		if note != nil {
-			noteCopy := *note
-			pin.Note = &noteCopy
-		}
-		return pin, nil
+	if msg == nil {
+		return nil, nil
 	}
-	return nil, nil
+	pin := &artifact.MetadataPin{
+		SourceUUID: msg.SourceUUID,
+		Ordinal:    msg.Ordinal,
+	}
+	if note != nil {
+		noteCopy := *note
+		pin.Note = &noteCopy
+	}
+	return pin, nil
 }

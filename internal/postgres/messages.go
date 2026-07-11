@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -247,6 +249,28 @@ func (s *Store) GetAllMessages(
 		return nil, err
 	}
 	return msgs, nil
+}
+
+// GetMessageForMetadataPin returns the stable message identity fields used by
+// metadata pin events. PostgreSQL message IDs exposed through the API are
+// ordinals, matching PinMessage.
+func (s *Store) GetMessageForMetadataPin(
+	ctx context.Context, sessionID string, messageID int64,
+) (*db.Message, error) {
+	var msg db.Message
+	err := s.pg.QueryRowContext(ctx, `
+		SELECT ordinal, session_id, ordinal, COALESCE(source_uuid, '')
+		FROM messages
+		WHERE session_id = $1 AND ordinal = $2`, sessionID, messageID).Scan(
+		&msg.ID, &msg.SessionID, &msg.Ordinal, &msg.SourceUUID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying message metadata for pin: %w", err)
+	}
+	return &msg, nil
 }
 
 // SearchSession performs ILIKE substring search within a single
