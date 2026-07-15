@@ -121,7 +121,7 @@ func TestArtifactFolderPusherPlumbsInsecurePeerOptIn(t *testing.T) {
 		"watch sync must reach an explicitly allowed plaintext peer")
 }
 
-func TestArtifactFolderPusherOnlyRunsFullDiscoveryForInterval(t *testing.T) {
+func TestArtifactFolderPusherRunsFullDiscoveryForIntervalAndShutdown(t *testing.T) {
 	dataDir := t.TempDir()
 	target := t.TempDir()
 	database := openWatchTestDB(t)
@@ -134,18 +134,66 @@ func TestArtifactFolderPusherOnlyRunsFullDiscoveryForInterval(t *testing.T) {
 		origin:   "desk-a1b2c3",
 	}
 
-	for _, reason := range []pushReason{reasonStartup, reasonChange, reasonShutdown} {
+	for _, reason := range []pushReason{reasonStartup, reasonChange} {
 		require.NoError(t, pusher.push(context.Background(), reason))
 	}
 	assert.Zero(t, syncer.syncAllCalls,
 		"startup and watcher-driven pushes already synchronized local files")
-	assert.Equal(t, 3, syncer.flushCalls,
+	assert.Equal(t, 2, syncer.flushCalls,
 		"every export must flush pending signal recomputes")
 
-	require.NoError(t, pusher.push(context.Background(), reasonInterval))
+	require.NoError(t, pusher.push(context.Background(), reasonShutdown))
 	assert.Equal(t, 1, syncer.syncAllCalls,
+		"shutdown must discover changes still pending in the watcher batch")
+	require.NoError(t, pusher.push(context.Background(), reasonInterval))
+	assert.Equal(t, 2, syncer.syncAllCalls,
 		"the periodic floor must discover changes from unwatched roots")
 	assert.Equal(t, 4, syncer.flushCalls)
+}
+
+func TestArtifactFolderPusherShutdownDiscoversPendingFilesystemChange(t *testing.T) {
+	claudeDir := t.TempDir()
+	projectDir := filepath.Join(claudeDir, "-Users-alice-work")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser("2026-01-01T00:00:00Z", "pending change", "/Users/alice/work/project").
+		AddClaudeAssistant("2026-01-01T00:00:01Z", "saved").
+		String()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(projectDir, "pending-session.jsonl"), []byte(content), 0o644,
+	))
+
+	dataDir := t.TempDir()
+	target := t.TempDir()
+	database := openWatchTestDB(t)
+	appCfg := config.Config{
+		DataDir: dataDir,
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {claudeDir},
+		},
+	}
+	engine := newArtifactWatchEngine(database, appCfg)
+	t.Cleanup(engine.Close)
+	pusher := &artifactFolderPusher{
+		appCfg:   appCfg,
+		database: database,
+		engine:   engine,
+		target:   target,
+		origin:   "desk-a1b2c3",
+	}
+
+	require.NoError(t, pusher.push(context.Background(), reasonShutdown))
+
+	session, err := database.GetSession(context.Background(), "pending-session")
+	require.NoError(t, err)
+	require.NotNil(t, session,
+		"the shutdown exchange must ingest a change still pending in the watcher batch")
+	assert.Equal(t, "pending change", *session.FirstMessage)
+	summary, err := artifact.CheckpointSummary(target, "desk-a1b2c3")
+	require.NoError(t, err)
+	require.True(t, summary.Found)
+	assert.Equal(t, 1, summary.SessionCount,
+		"the shutdown exchange must publish the newly ingested session")
 }
 
 func TestArtifactWatchEngineHonorsConfiguredCwdPrefixes(t *testing.T) {

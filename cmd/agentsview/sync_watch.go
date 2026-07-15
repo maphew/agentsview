@@ -57,9 +57,10 @@ func (p *artifactFolderPusher) push(
 ) error {
 	if p.engine != nil {
 		// Startup already performed a full sync, and watcher change bursts have
-		// already applied their targeted paths. Only the periodic floor needs a
-		// full discovery pass to cover roots that could not be watched.
-		if reason == reasonInterval {
+		// already applied their targeted paths. The periodic floor covers roots
+		// that could not be watched, while shutdown discovery recovers changes
+		// still waiting in the watcher's batching window before the final export.
+		if reason == reasonInterval || reason == reasonShutdown {
 			p.engine.SyncAll(ctx, nil)
 		}
 		// Export reads session rows outside a sync operation; flush
