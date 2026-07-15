@@ -148,9 +148,9 @@ func (s *Server) humaListArtifactPeers(
 	if err != nil {
 		return nil, artifactRouteError("list artifact origins", err)
 	}
-	counts, err := s.db.MachineSessionCounts(ctx)
+	localDB, err := s.writableArtifactImportDB()
 	if err != nil {
-		return nil, internalError("machine session counts", err)
+		return nil, err
 	}
 	conflicts, err := s.db.CountMetadataConflicts(ctx)
 	if err != nil {
@@ -180,10 +180,18 @@ func (s *Server) humaListArtifactPeers(
 			return nil, artifactRouteError("read artifact checkpoint", err)
 		}
 		isLocal := origin == localOrigin
-		machineKey := origin
+		var landedSessions int
 		if isLocal {
-			// Owned sessions keep machine "local" in the local DB.
-			machineKey = "local"
+			// publishLocalArtifacts just refreshed this origin, so every session
+			// in its latest checkpoint is present locally at that manifest.
+			landedSessions = summary.SessionCount
+		} else {
+			landedSessions, err = artifact.CountImportedCheckpointSessions(
+				localDB, origin, summary.SessionManifests,
+			)
+			if err != nil {
+				return nil, internalError("count landed artifact sessions", err)
+			}
 		}
 		last := ""
 		if summary.Found {
@@ -194,7 +202,7 @@ func (s *Server) humaListArtifactPeers(
 			IsLocal:           isLocal,
 			CheckpointSeq:     summary.Sequence,
 			PublishedSessions: summary.SessionCount,
-			LocalSessions:     counts[machineKey],
+			LocalSessions:     landedSessions,
 			LastPublished:     last,
 		})
 	}

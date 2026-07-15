@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -204,20 +205,22 @@ func ReadLatestCheckpoint(root, origin string) (PeerArtifact, error) {
 	}, nil
 }
 
-// OriginCheckpointSummary describes the latest checkpoint published by one
-// origin. Found is false when the origin has no checkpoint yet.
+// OriginCheckpointSummary describes the latest valid checkpoint published by
+// one origin, including its exact global-session-ID to manifest-hash mapping.
+// Found is false when the origin has no compatible checkpoint yet.
 type OriginCheckpointSummary struct {
-	Sequence     int
-	SessionCount int
-	ModTime      time.Time
-	Found        bool
+	Sequence         int
+	SessionCount     int
+	SessionManifests map[string]string
+	ModTime          time.Time
+	Found            bool
 }
 
-// CheckpointSummary returns summary information about an origin's latest
+// CheckpointSummary returns summary information about an origin's latest valid
 // checkpoint without decoding any session bundles. It is the read side of the
-// peers status view. A checkpoint that no longer decodes is quarantined and
-// the summary falls back to the newest one that does, so one corrupt file
-// cannot make the peers view unusable.
+// peers status view. A checkpoint that no longer validates is quarantined and
+// the summary falls back to the newest valid one, so one corrupt file cannot
+// make the peers view unusable.
 func CheckpointSummary(root, origin string) (OriginCheckpointSummary, error) {
 	if strings.TrimSpace(root) == "" {
 		return OriginCheckpointSummary{}, fmt.Errorf("%w: artifact root is required", ErrArtifactInvalid)
@@ -251,11 +254,25 @@ func CheckpointSummary(root, origin string) (OriginCheckpointSummary, error) {
 			quarantineArtifact(path)
 			continue
 		}
+		if err := validateCheckpoint(&cp, origin); err != nil {
+			if errors.Is(err, errFutureArtifactVersion) {
+				continue
+			}
+			log.Printf("artifact: skipping invalid checkpoint %s in peer summary: %v", path, err)
+			quarantineArtifact(path)
+			continue
+		}
+		if err := validateCheckpointSequenceIdentity(cp, filepath.Base(path)); err != nil {
+			log.Printf("artifact: skipping invalid checkpoint %s in peer summary: %v", path, err)
+			quarantineArtifact(path)
+			continue
+		}
 		return OriginCheckpointSummary{
-			Sequence:     cp.Sequence,
-			SessionCount: len(cp.Sessions),
-			ModTime:      info.ModTime(),
-			Found:        true,
+			Sequence:         cp.Sequence,
+			SessionCount:     len(cp.Sessions),
+			SessionManifests: maps.Clone(cp.Sessions),
+			ModTime:          info.ModTime(),
+			Found:            true,
 		}, nil
 	}
 	return OriginCheckpointSummary{}, nil

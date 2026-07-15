@@ -398,6 +398,36 @@ func ImportedSessionIDs(
 	return ids, nil
 }
 
+// CountImportedCheckpointSessions returns how many sessions in one checkpoint
+// have landed at the exact manifest version it publishes. Import provenance is
+// independent of the session row's current lifecycle state, so a locally
+// trashed session remains landed while a stale active row does not.
+func CountImportedCheckpointSessions(
+	database syncStateValueReader, origin string, sessionManifests map[string]string,
+) (int, error) {
+	if len(sessionManifests) == 0 {
+		return 0, nil
+	}
+	keys := make([]string, 0, len(sessionManifests))
+	expectedByKey := make(map[string]string, len(sessionManifests))
+	for gid, manifestHash := range sessionManifests {
+		key := importStateKey(origin, gid)
+		keys = append(keys, key)
+		expectedByKey[key] = manifestHash
+	}
+	states, err := database.SyncStateValues(keys)
+	if err != nil {
+		return 0, fmt.Errorf("reading checkpoint import provenance: %w", err)
+	}
+	landed := 0
+	for key, expectedHash := range expectedByKey {
+		if states[key] == expectedHash {
+			landed++
+		}
+	}
+	return landed, nil
+}
+
 func newOriginID() (string, error) {
 	host, err := os.Hostname()
 	if err != nil || strings.TrimSpace(host) == "" {

@@ -306,6 +306,85 @@ func TestArtifactPeersStatus(t *testing.T) {
 	assert.Equal(t, 1, peer.CheckpointSeq)
 }
 
+func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
+	te := setup(t, withArtifactOrigin("desktop-d4e5f6"))
+	ctx := context.Background()
+	first := "hello"
+
+	// This peer is fully imported, then its local row is trashed. The import
+	// provenance still proves the published manifest landed successfully.
+	trashedOrigin := "trashed-a1b2c3"
+	trashedRoot := t.TempDir()
+	trashedDB, err := db.Open(filepath.Join(t.TempDir(), "trashed-peer.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { trashedDB.Close() })
+	dbtest.SeedSession(t, trashedDB, "sess-1", "alpha", func(s *db.Session) {
+		s.FirstMessage = &first
+	})
+	require.NoError(t, trashedDB.ReplaceSessionMessages("sess-1", []db.Message{
+		{SessionID: "sess-1", Ordinal: 0, Role: "user", Content: "hello", ContentLength: 5},
+	}))
+	_, err = artifact.Export(ctx, trashedDB, trashedRoot, trashedOrigin)
+	require.NoError(t, err)
+	postArtifactFile(t, te, trashedOrigin, "segments",
+		oneArtifactPath(t, trashedRoot, trashedOrigin, "segments", "*"))
+	postArtifactFile(t, te, trashedOrigin, "manifests",
+		oneArtifactPath(t, trashedRoot, trashedOrigin, "manifests", "*"))
+	postArtifactFile(t, te, trashedOrigin, "checkpoints",
+		oneArtifactPath(t, trashedRoot, trashedOrigin, "checkpoints", "*"))
+	require.NoError(t, te.db.SoftDeleteSession(trashedOrigin+"~sess-1"))
+
+	// This peer's first manifest landed, but its latest checkpoint references a
+	// newer manifest that has not arrived. The active stale row is not current.
+	staleOrigin := "stale-d4e5f6"
+	staleRoot := t.TempDir()
+	staleDB, err := db.Open(filepath.Join(t.TempDir(), "stale-peer.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { staleDB.Close() })
+	dbtest.SeedSession(t, staleDB, "sess-1", "before", func(s *db.Session) {
+		s.FirstMessage = &first
+	})
+	require.NoError(t, staleDB.ReplaceSessionMessages("sess-1", []db.Message{
+		{SessionID: "sess-1", Ordinal: 0, Role: "user", Content: "hello", ContentLength: 5},
+	}))
+	_, err = artifact.Export(ctx, staleDB, staleRoot, staleOrigin)
+	require.NoError(t, err)
+	postArtifactFile(t, te, staleOrigin, "segments",
+		oneArtifactPath(t, staleRoot, staleOrigin, "segments", "*"))
+	postArtifactFile(t, te, staleOrigin, "manifests",
+		oneArtifactPath(t, staleRoot, staleOrigin, "manifests", "*"))
+	postArtifactFile(t, te, staleOrigin, "checkpoints",
+		filepath.Join(staleRoot, staleOrigin, "checkpoints", "cp-0000000001.json"))
+
+	dbtest.SeedSession(t, staleDB, "sess-1", "after", func(s *db.Session) {
+		s.FirstMessage = &first
+	})
+	exported, err := artifact.Export(ctx, staleDB, staleRoot, staleOrigin)
+	require.NoError(t, err)
+	require.Equal(t, 1, exported)
+	postArtifactFile(t, te, staleOrigin, "checkpoints",
+		filepath.Join(staleRoot, staleOrigin, "checkpoints", "cp-0000000002.json"))
+
+	w := artifactPeerRequest(t, te, http.MethodGet, "/api/v1/artifacts/peers", nil, "")
+	assertStatus(t, w, http.StatusOK)
+	body := decode[artifactPeersBody](t, w)
+	byOrigin := make(map[string]artifactPeerBody, len(body.Peers))
+	for _, peer := range body.Peers {
+		byOrigin[peer.Origin] = peer
+	}
+
+	trashedPeer, ok := byOrigin[trashedOrigin]
+	require.True(t, ok)
+	assert.Equal(t, 1, trashedPeer.PublishedSessions)
+	assert.Equal(t, 1, trashedPeer.LocalSessions,
+		"a locally trashed row remains landed when its manifest provenance matches")
+	stalePeer, ok := byOrigin[staleOrigin]
+	require.True(t, ok)
+	assert.Equal(t, 1, stalePeer.PublishedSessions)
+	assert.Equal(t, 0, stalePeer.LocalSessions,
+		"an active row is pending when its imported manifest is older than the checkpoint")
+}
+
 func TestArtifactPeersStatusPublishesEmptyLocalOrigin(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desktop-d4e5f6"))
 	// Discovery publishes an explicit empty checkpoint for a configured origin.
