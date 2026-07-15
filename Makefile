@@ -33,7 +33,7 @@ AIR_BIN := $(shell if command -v air >/dev/null 2>&1; then command -v air; \
 	elif [ -x "$(GOPATH_FIRST)/bin/air" ]; then printf "%s" "$(GOPATH_FIRST)/bin/air"; \
 	fi)
 
-.PHONY: build build-release install frontend frontend-dev dev check-air air-install desktop-dev desktop-build desktop-macos-app desktop-macos-dmg desktop-windows-installer desktop-linux-appimage desktop-app docs-install docs-build docs-serve docs-check docs-screenshots docs-assets-branch docs-generated-assets-branch docs-deploy-staging docs-deploy test test-short test-evalingest bench-backends bench-gate bench-gate-config test-postgres test-postgres-ci test-s3 test-minio postgres-up postgres-down test-ssh test-ssh-ci ssh-up ssh-down e2e e2e-duckdb vet lint lint-ci lint-golangci lint-golangci-ci nilaway nilaway-golangci-build lint-tools tidy clean release release-darwin-arm64 release-darwin-amd64 release-linux-amd64 install-hooks ensure-embed-dir pricing-snapshot sqlite-vec-header dev-snapshot help
+.PHONY: build build-release install frontend frontend-dev dev check-air air-install desktop-dev desktop-build desktop-macos-app desktop-macos-dmg desktop-windows-installer desktop-linux-appimage desktop-app docs-install docs-build docs-serve docs-check docs-screenshots docs-assets-branch docs-generated-assets-branch docs-deploy-staging docs-deploy test test-short test-evalingest bench-backends bench-artifact-large bench-gate bench-gate-config test-postgres test-postgres-ci test-s3 test-minio postgres-up postgres-down test-ssh test-ssh-ci ssh-up ssh-down e2e e2e-duckdb vet lint lint-ci lint-golangci lint-golangci-ci nilaway nilaway-golangci-build lint-tools tidy clean release release-darwin-arm64 release-darwin-amd64 release-linux-amd64 install-hooks ensure-embed-dir pricing-snapshot sqlite-vec-header dev-snapshot help
 
 # Ensure go:embed has at least one file (no-op if frontend is built)
 ensure-embed-dir:
@@ -293,6 +293,19 @@ bench-backends: pricing-snapshot ensure-embed-dir
 	AGENTSVIEW_BENCH_SESSIONS=$(BENCH_BACKENDS_SESSIONS) \
 		AGENTSVIEW_BENCH_MESSAGES_PER_SESSION=$(BENCH_BACKENDS_MESSAGES_PER_SESSION) \
 		CGO_ENABLED=1 go test -tags "fts5,benchdb" ./internal/backendbench $(BENCH_BACKENDS_FLAGS)
+
+# Reproducible artifact-sync archive baseline. Override the three dimensions to
+# measure a different archive shape while retaining the same four workloads.
+BENCH_ARTIFACT_SESSIONS ?= 200
+BENCH_ARTIFACT_MESSAGES ?= 80
+BENCH_ARTIFACT_CONTENT_BYTES ?= 384
+BENCH_ARTIFACT_TIME ?= 1x
+bench-artifact-large: pricing-snapshot ensure-embed-dir
+	AGENTSVIEW_BENCH_ARTIFACT_SESSIONS=$(BENCH_ARTIFACT_SESSIONS) \
+		AGENTSVIEW_BENCH_ARTIFACT_MESSAGES=$(BENCH_ARTIFACT_MESSAGES) \
+		AGENTSVIEW_BENCH_ARTIFACT_CONTENT_BYTES=$(BENCH_ARTIFACT_CONTENT_BYTES) \
+		CGO_ENABLED=1 go test -tags "fts5" ./internal/artifact -run '^$$' \
+		-bench 'BenchmarkArtifact' -benchmem -count 1 -benchtime $(BENCH_ARTIFACT_TIME)
 
 # Hot-path benchmark gate. Runs every benchmark in the gated packages
 # (sync engine warm/cold/append, artifact transfer, message write

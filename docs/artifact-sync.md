@@ -246,3 +246,22 @@ cloud-synced folder, or always-running AgentsView peer can act as a rendezvous.
 That rendezvous is a deployment convention, not a privileged architecture:
 AgentsView still treats every participant as a peer and keeps the complete local
 archive on each machine.
+
+## Performance Benchmark
+
+`make bench-artifact-large` runs the canonical large-archive baseline: 200
+sessions with 80 messages each and 384 bytes of content per message (16,000
+messages and approximately 6.1 MB of uncompressed message content). The target
+reports the effective fixture dimensions and fails when an explicitly supplied
+dimension is not a positive integer.
+
+Reference results from 2026-07-15 on Linux/amd64, Go 1.26.5, and an Intel Core
+i9-13900 are below. These numbers are a reproducibility snapshot, not release
+thresholds; compare changes by rerunning the target on the same machine.
+
+| Workload                   | Time/op |      Bytes/op | Allocations/op |
+| -------------------------- | ------: | ------------: | -------------: |
+| Initial export             | 0.948 s | 1,264,824,584 |      3,482,351 |
+| Initial import             | 0.869 s |   157,243,904 |        732,822 |
+| Converged no-op sync       | 0.578 s |   309,815,240 |      2,488,226 |
+| Single-session incremental | 0.672 s |   322,859,824 |      2,546,133 |

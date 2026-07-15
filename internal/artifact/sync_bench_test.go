@@ -55,33 +55,45 @@ type artifactBenchArchive struct {
 	uncompressedBytes int64
 }
 
-func newArtifactBenchArchive() artifactBenchArchive {
+func newArtifactBenchArchive(b *testing.B) artifactBenchArchive {
+	b.Helper()
 	return artifactBenchArchive{
 		sessions: artifactBenchIntFromEnv(
+			b,
 			"AGENTSVIEW_BENCH_ARTIFACT_SESSIONS",
 			defaultArtifactBenchSessions,
 		),
 		messages: artifactBenchIntFromEnv(
+			b,
 			"AGENTSVIEW_BENCH_ARTIFACT_MESSAGES",
 			defaultArtifactBenchMessages,
 		),
 		contentBytes: artifactBenchIntFromEnv(
+			b,
 			"AGENTSVIEW_BENCH_ARTIFACT_CONTENT_BYTES",
 			defaultArtifactBenchContentBytes,
 		),
 	}
 }
 
-func artifactBenchIntFromEnv(name string, fallback int) int {
+func artifactBenchIntFromEnv(b *testing.B, name string, fallback int) int {
+	b.Helper()
 	raw := os.Getenv(name)
 	if raw == "" {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil || value <= 0 {
-		return fallback
+		b.Fatalf("%s must be a positive integer, got %q", name, raw)
 	}
 	return value
+}
+
+func (a artifactBenchArchive) reportScale(b *testing.B) {
+	b.Helper()
+	b.ReportMetric(float64(a.sessions), "sessions")
+	b.ReportMetric(float64(a.messages), "messages/session")
+	b.ReportMetric(float64(a.contentBytes), "content-bytes/message")
 }
 
 func (a *artifactBenchArchive) seed(b *testing.B, database *db.DB) {
@@ -260,7 +272,7 @@ func verifyArtifactBenchImport(
 // are deliberately excluded.
 func BenchmarkArtifactInitialExport(b *testing.B) {
 	silenceArtifactBenchLogs(b)
-	archive := newArtifactBenchArchive()
+	archive := newArtifactBenchArchive(b)
 	database := openArtifactBenchDB(b, filepath.Join(b.TempDir(), "source.db"))
 	b.Cleanup(func() { require.NoError(b, database.Close()) })
 	archive.seed(b, database)
@@ -302,6 +314,7 @@ func BenchmarkArtifactInitialExport(b *testing.B) {
 		assert.Len(b, checkpoint.Sessions, archive.sessions)
 		require.NoError(b, os.RemoveAll(root))
 	}
+	archive.reportScale(b)
 }
 
 // BenchmarkArtifactInitialImport measures decoding and writing a complete
@@ -309,7 +322,7 @@ func BenchmarkArtifactInitialExport(b *testing.B) {
 // open/migrations are outside the timed region.
 func BenchmarkArtifactInitialImport(b *testing.B) {
 	silenceArtifactBenchLogs(b)
-	archive := newArtifactBenchArchive()
+	archive := newArtifactBenchArchive(b)
 	source := openArtifactBenchDB(b, filepath.Join(b.TempDir(), "source.db"))
 	archive.seed(b, source)
 	root := b.TempDir()
@@ -344,6 +357,7 @@ func BenchmarkArtifactInitialImport(b *testing.B) {
 			require.NoError(b, os.Remove(path))
 		}
 	}
+	archive.reportScale(b)
 }
 
 // BenchmarkArtifactSyncWarmNoop measures a complete folder sync after export
@@ -352,7 +366,7 @@ func BenchmarkArtifactInitialImport(b *testing.B) {
 // dilute the cost under test.
 func BenchmarkArtifactSyncWarmNoop(b *testing.B) {
 	silenceArtifactBenchLogs(b)
-	archive := newArtifactBenchArchive()
+	archive := newArtifactBenchArchive(b)
 	database := openArtifactBenchDB(b, filepath.Join(b.TempDir(), "source.db"))
 	b.Cleanup(func() { require.NoError(b, database.Close()) })
 	archive.seed(b, database)
@@ -391,6 +405,7 @@ func BenchmarkArtifactSyncWarmNoop(b *testing.B) {
 	require.NotNil(b, checkpoint)
 	assert.Equal(b, 1, checkpoint.Sequence,
 		"a no-op sync must not publish another checkpoint generation")
+	archive.reportScale(b)
 }
 
 // BenchmarkArtifactSyncSingleSessionIncremental measures end-to-end folder
@@ -399,7 +414,7 @@ func BenchmarkArtifactSyncWarmNoop(b *testing.B) {
 // validating the peer's stored tail are both excluded from the timed region.
 func BenchmarkArtifactSyncSingleSessionIncremental(b *testing.B) {
 	silenceArtifactBenchLogs(b)
-	archive := newArtifactBenchArchive()
+	archive := newArtifactBenchArchive(b)
 	source := openArtifactBenchDB(b, filepath.Join(b.TempDir(), "source.db"))
 	peer := openArtifactBenchDB(b, filepath.Join(b.TempDir(), "peer.db"))
 	b.Cleanup(func() {
@@ -455,6 +470,7 @@ func BenchmarkArtifactSyncSingleSessionIncremental(b *testing.B) {
 		require.Len(b, messages, archive.messages+i+1)
 		assert.Equal(b, tailContent, messages[len(messages)-1].Content)
 	}
+	archive.reportScale(b)
 }
 
 func appendArtifactBenchMessage(
