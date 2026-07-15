@@ -309,7 +309,7 @@ func TestArtifactPeersStatus(t *testing.T) {
 func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 	te := setup(t, withArtifactOrigin("desktop-d4e5f6"))
 	ctx := context.Background()
-	first := "hello"
+	firstMessage := "hello"
 
 	// This peer is fully imported, then its local row is trashed. The import
 	// provenance still proves the published manifest landed successfully.
@@ -319,7 +319,7 @@ func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { trashedDB.Close() })
 	dbtest.SeedSession(t, trashedDB, "sess-1", "alpha", func(s *db.Session) {
-		s.FirstMessage = &first
+		s.FirstMessage = &firstMessage
 	})
 	require.NoError(t, trashedDB.ReplaceSessionMessages("sess-1", []db.Message{
 		{SessionID: "sess-1", Ordinal: 0, Role: "user", Content: "hello", ContentLength: 5},
@@ -342,7 +342,7 @@ func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { staleDB.Close() })
 	dbtest.SeedSession(t, staleDB, "sess-1", "before", func(s *db.Session) {
-		s.FirstMessage = &first
+		s.FirstMessage = &firstMessage
 	})
 	require.NoError(t, staleDB.ReplaceSessionMessages("sess-1", []db.Message{
 		{SessionID: "sess-1", Ordinal: 0, Role: "user", Content: "hello", ContentLength: 5},
@@ -357,7 +357,7 @@ func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 		filepath.Join(staleRoot, staleOrigin, "checkpoints", "cp-0000000001.json"))
 
 	dbtest.SeedSession(t, staleDB, "sess-1", "after", func(s *db.Session) {
-		s.FirstMessage = &first
+		s.FirstMessage = &firstMessage
 	})
 	exported, err := artifact.Export(ctx, staleDB, staleRoot, staleOrigin)
 	require.NoError(t, err)

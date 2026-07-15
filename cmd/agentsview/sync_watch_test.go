@@ -185,7 +185,11 @@ func TestArtifactFolderPusherFlushesPendingWatchBatchOnShutdown(t *testing.T) {
 	}()
 
 	loop.NotifyDirty()
-	<-debounceArmed
+	select {
+	case <-debounceArmed:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "pending watch batch did not arm the debounce")
+	}
 	cancel()
 	select {
 	case <-done:
