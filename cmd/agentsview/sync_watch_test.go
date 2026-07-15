@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,14 +18,16 @@ import (
 )
 
 type countingArtifactWatchSyncer struct {
-	syncAllCalls int
-	flushCalls   int
+	syncAllCalls       int
+	flushCalls         int
+	syncAllHasDeadline bool
 }
 
 func (s *countingArtifactWatchSyncer) SyncAll(
-	_ context.Context, _ syncpkg.ProgressFunc,
+	ctx context.Context, _ syncpkg.ProgressFunc,
 ) syncpkg.SyncStats {
 	s.syncAllCalls++
+	_, s.syncAllHasDeadline = ctx.Deadline()
 	return syncpkg.SyncStats{}
 }
 
@@ -151,6 +154,51 @@ func TestArtifactFolderPusherRunsFullDiscoveryForIntervalAndShutdown(t *testing.
 	assert.Equal(t, 4, syncer.flushCalls)
 }
 
+func TestArtifactFolderPusherFlushesPendingWatchBatchOnShutdown(t *testing.T) {
+	database := openWatchTestDB(t)
+	syncer := &countingArtifactWatchSyncer{}
+	pusher := &artifactFolderPusher{
+		appCfg:   config.Config{DataDir: t.TempDir()},
+		database: database,
+		engine:   syncer,
+		target:   t.TempDir(),
+		origin:   "desk-a1b2c3",
+	}
+	debounceArmed := make(chan struct{})
+	neverFire := make(chan time.Time)
+	loop := &pushLoop{
+		debounce: time.Hour,
+		dirty:    make(chan struct{}, 1),
+		floor:    make(chan time.Time),
+		after: func(time.Duration) <-chan time.Time {
+			close(debounceArmed)
+			return neverFire
+		},
+		push:         pusher.push,
+		flushTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		loop.Run(ctx)
+		close(done)
+	}()
+
+	loop.NotifyDirty()
+	<-debounceArmed
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "shutdown flush did not complete")
+	}
+
+	assert.Equal(t, 1, syncer.syncAllCalls,
+		"shutdown must replace the pending watcher batch with full discovery")
+	assert.True(t, syncer.syncAllHasDeadline,
+		"shutdown discovery must use the bounded flush context")
+}
+
 func TestArtifactFolderPusherShutdownDiscoversPendingFilesystemChange(t *testing.T) {
 	claudeDir := t.TempDir()
 	projectDir := filepath.Join(claudeDir, "-Users-alice-work")
@@ -188,6 +236,7 @@ func TestArtifactFolderPusherShutdownDiscoversPendingFilesystemChange(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, session,
 		"the shutdown exchange must ingest a change still pending in the watcher batch")
+	require.NotNil(t, session.FirstMessage)
 	assert.Equal(t, "pending change", *session.FirstMessage)
 	summary, err := artifact.CheckpointSummary(target, "desk-a1b2c3")
 	require.NoError(t, err)

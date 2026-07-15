@@ -364,6 +364,15 @@ func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 	require.Equal(t, 1, exported)
 	postArtifactFile(t, te, staleOrigin, "checkpoints",
 		filepath.Join(staleRoot, staleOrigin, "checkpoints", "cp-0000000002.json"))
+	require.NoError(t, te.db.UpsertSession(db.Session{
+		ID:               staleOrigin + "~unrelated",
+		Project:          "unrelated",
+		Machine:          staleOrigin,
+		Agent:            "claude",
+		MessageCount:     1,
+		UserMessageCount: 1,
+		CreatedAt:        "2026-07-15T12:00:00Z",
+	}), "seed an active same-origin row absent from the checkpoint")
 
 	w := artifactPeerRequest(t, te, http.MethodGet, "/api/v1/artifacts/peers", nil, "")
 	assertStatus(t, w, http.StatusOK)
@@ -382,7 +391,7 @@ func TestArtifactPeersStatusUsesLatestCheckpointImportProvenance(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 1, stalePeer.PublishedSessions)
 	assert.Equal(t, 0, stalePeer.LocalSessions,
-		"an active row is pending when its imported manifest is older than the checkpoint")
+		"stale and checkpoint-unrelated active rows must not count as landed")
 }
 
 func TestArtifactPeersStatusPublishesEmptyLocalOrigin(t *testing.T) {
