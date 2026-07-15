@@ -549,6 +549,91 @@ func TestGetSessionFullPopulatesSessionName(t *testing.T) {
 	assert.Equal(t, "Agent Title", *s.SessionName, "SessionName unchanged after rename")
 }
 
+func TestSessionIdentity(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "sqlite-identity", "sqlite-identity", func(s *Session) {
+		s.Agent = "claude"
+		s.AgentLabel = "Claude Triage"
+		s.Entrypoint = "sdk-cli"
+		s.SessionName = Ptr("Agent Title")
+		s.StartedAt = Ptr("2024-06-15T08:00:00Z")
+		s.EndedAt = Ptr("2024-06-15T09:00:00Z")
+		s.CreatedAt = "2024-06-15T08:00:00Z"
+		s.UserMessageCount = 1
+	})
+
+	index, err := d.GetSidebarSessionIndex(ctx, SessionFilter{
+		Project: "sqlite-identity",
+	})
+	require.NoError(t, err)
+	require.Len(t, index.Sessions, 1)
+	assert.Equal(t, "sqlite-identity", index.Sessions[0].ID)
+	assert.Equal(t, "Claude Triage", index.Sessions[0].AgentLabel)
+	assert.Equal(t, "sdk-cli", index.Sessions[0].Entrypoint)
+	require.NotNil(t, index.Sessions[0].DisplayName)
+	assert.Equal(t, "Agent Title", *index.Sessions[0].DisplayName)
+}
+
+func TestSessionIdentityAbsent(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "sqlite-identity-absent", "sqlite-identity-absent", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-15T08:00:00Z")
+		s.CreatedAt = "2024-06-15T08:00:00Z"
+		s.UserMessageCount = 1
+	})
+
+	session, err := d.GetSession(ctx, "sqlite-identity-absent")
+	require.NoError(t, err)
+	assert.Equal(t, "", session.AgentLabel)
+	assert.Equal(t, "", session.Entrypoint)
+
+	index, err := d.GetSidebarSessionIndex(ctx, SessionFilter{
+		Project: "sqlite-identity-absent",
+	})
+	require.NoError(t, err)
+	require.Len(t, index.Sessions, 1)
+	assert.Equal(t, "", index.Sessions[0].AgentLabel)
+	assert.Equal(t, "", index.Sessions[0].Entrypoint)
+}
+
+func TestGetSessionName(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, d.UpsertSession(Session{
+		ID: "null-name", Project: "p", Machine: "local", Agent: "codex",
+	}), "upsert session with null name")
+	require.NoError(t, d.UpsertSession(Session{
+		ID: "stored-name", Project: "p", Machine: "local", Agent: "codex",
+		SessionName: Ptr("Agent Title"),
+	}), "upsert session with stored name")
+
+	tests := []struct {
+		name      string
+		id        string
+		wantName  string
+		wantFound bool
+	}{
+		{name: "missing", id: "missing", wantFound: false},
+		{name: "null", id: "null-name", wantFound: true},
+		{name: "stored", id: "stored-name", wantName: "Agent Title", wantFound: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, found, err := d.GetSessionName(ctx, tt.id)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantName, name)
+			assert.Equal(t, tt.wantFound, found)
+		})
+	}
+}
+
 func TestRenameSessionSetsAndClears(t *testing.T) {
 	d := testDB(t)
 	requireNoError(t, d.UpsertSession(Session{

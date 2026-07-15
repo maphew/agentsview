@@ -195,6 +195,56 @@ func TestRunServeStatusStartingWithoutStateFallsBack(t *testing.T) {
 	assert.NotContains(t, out, "phase:")
 }
 
+func TestRunServeStatus_StartupStateFallbackWithoutRuntimeRecord(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	createTime, ok := processCreateTimeMillis(os.Getpid())
+	require.True(t, ok)
+	writeStartupFallbackFixture(t, dir, host, port, os.Getpid(), strconv.FormatInt(createTime, 10))
+
+	out := captureStdout(t, func() {
+		runServeStatus(config.Config{DataDir: dir})
+	})
+
+	assert.Contains(t, out, "agentsview running at")
+	assert.Contains(t, out, fmt.Sprintf("http://%s:%d", host, port))
+	assert.Contains(t, out, "runtime record unwritten")
+}
+
+func TestRunServeStatus_StartupStateFallbackStaleStateDoesNotClaimRunning(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	writeStartupFallbackFixture(t, dir, host, port, os.Getpid(), "1")
+
+	out := captureStdout(t, func() {
+		runServeStatus(config.Config{DataDir: dir})
+	})
+
+	assert.NotContains(t, out, "agentsview running at")
+	assert.Contains(t, out, "agentsview is starting up.")
+	assert.Contains(t, out, "stale fallback")
+}
+
+func TestRunServeStop_StartupStateFallbackWithoutRuntimeRecord(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	createTime, ok := processCreateTimeMillis(os.Getpid())
+	require.True(t, ok)
+	writeStartupFallbackFixture(t, dir, host, port, os.Getpid(), strconv.FormatInt(createTime, 10))
+
+	rt := FindWritableDaemonRuntime(dir)
+	require.NotNil(t, rt)
+	assert.True(t, stopTargetConfirmed(rt.Record, ""))
+}
+
+func TestRunServeStop_StartupStateFallbackRequiresIdentity(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	writeStartupFallbackFixture(t, dir, host, port, os.Getpid(), "1")
+
+	assert.Nil(t, FindWritableDaemonRuntime(dir), "stale fallback must not authorize stop")
+}
+
 func TestUnmarkDaemonStartingRemovesStartupState(t *testing.T) {
 	dir := runtimeTestDir(t)
 	MarkDaemonStarting(dir)
@@ -311,6 +361,30 @@ func TestStopWritableDaemonsForUpdateStopsAllAndRestartsOne(t *testing.T) {
 	assert.True(t, result.RequireAuthKnown)
 	assert.True(t, result.NoSync)
 	assert.ElementsMatch(t, []int{os.Getpid(), secondPID}, stopped)
+}
+
+func TestStopWritableDaemonsForUpdateUsesStartupStateFallback(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	createTime, ok := processCreateTimeMillis(os.Getpid())
+	require.True(t, ok)
+	writeStartupFallbackFixture(t, dir, host, port, os.Getpid(), strconv.FormatInt(createTime, 10))
+
+	oldStop := stopDaemonRuntimeForUpgrade
+	var stopped *DaemonRuntime
+	stopDaemonRuntimeForUpgrade = func(_ config.Config, rt *DaemonRuntime) error {
+		stopped = rt
+		return nil
+	}
+	t.Cleanup(func() { stopDaemonRuntimeForUpgrade = oldStop })
+
+	result, err := stopWritableDaemonsForUpdate(config.Config{DataDir: dir})
+	require.NoError(t, err)
+	assert.True(t, result.Stopped)
+	assert.Equal(t, host, result.Host)
+	assert.Equal(t, port, result.Port)
+	require.NotNil(t, stopped)
+	assert.Equal(t, os.Getpid(), stopped.Record.PID)
 }
 
 func TestStopDaemonProcessTerminatesAndCleansRecord(t *testing.T) {

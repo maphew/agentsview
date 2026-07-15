@@ -156,11 +156,15 @@ func (p *claudeProvider) ParseIncremental(
 	if req.Fingerprint.Size == req.Offset {
 		return IncrementalOutcome{}, IncrementalNoNewData, nil
 	}
-	newMsgs, endedAt, consumed, err := claudeParseSessionFrom(
+	newMsgs, links, endedAt, consumed, err := claudeParseSessionFrom(
 		path,
 		req.Offset,
 		req.StartOrdinal,
 		req.LastEntryUUID,
+		claudeStoredIdentity{
+			agentLabel: req.StoredAgentLabel,
+			entrypoint: req.StoredEntrypoint,
+		},
 	)
 	if err != nil {
 		if IsIncrementalFullParseFallback(err) || errorsIsClaudeDAG(err) {
@@ -173,6 +177,7 @@ func (p *claudeProvider) ParseIncremental(
 		if consumed > 0 {
 			return IncrementalOutcome{
 				SessionID:     req.SessionID,
+				SubagentLinks: links,
 				EndedAt:       endedAt,
 				ConsumedBytes: consumed,
 			}, IncrementalApplied, nil
@@ -183,6 +188,7 @@ func (p *claudeProvider) ParseIncremental(
 	return IncrementalOutcome{
 		SessionID:            req.SessionID,
 		Messages:             newMsgs,
+		SubagentLinks:        links,
 		EndedAt:              endedAt,
 		ConsumedBytes:        consumed,
 		MessageCount:         len(newMsgs),
@@ -538,6 +544,7 @@ func claudeProviderCapabilities() Capabilities {
 			PerSessionErrors:     CapabilityNotApplicable,
 			ExcludedSessions:     CapabilitySupported,
 			ForceReplaceOnParse:  CapabilitySupported,
+			VerifiedLocalStat:    CapabilitySupported,
 		},
 		Content: ContentCapabilities{
 			FirstMessage:         CapabilitySupported,

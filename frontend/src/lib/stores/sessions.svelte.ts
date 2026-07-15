@@ -45,6 +45,8 @@ export interface SessionGroupInput {
   project: string;
   machine: string;
   agent: string;
+  agent_label?: string | null;
+  entrypoint?: string | null;
   first_message?: string | null;
   display_name?: string | null;
   started_at: string | null;
@@ -53,6 +55,7 @@ export interface SessionGroupInput {
   termination_status?: string | null;
   message_count: number;
   user_message_count?: number;
+  transcript_revision?: string;
   is_automated?: boolean;
   is_teammate?: boolean;
   is_index_only?: boolean;
@@ -1309,6 +1312,8 @@ function sidebarIndexRowToSession(
     project: row.project,
     machine: row.machine,
     agent: row.agent,
+    agent_label: row.agent_label ?? undefined,
+    entrypoint: row.entrypoint ?? undefined,
     first_message: null,
     display_name: row.display_name ?? null,
     started_at: row.started_at,
@@ -1322,6 +1327,7 @@ function sidebarIndexRowToSession(
     peak_context_tokens: 0,
     has_total_output_tokens: false,
     has_peak_context_tokens: false,
+    transcript_revision: row.transcript_revision,
     is_automated: row.is_automated,
     is_teammate: row.is_teammate ?? false,
     is_index_only: true,
@@ -1334,6 +1340,8 @@ function sidebarIndexRowToSession(
     project: skinny.project,
     machine: skinny.machine,
     agent: skinny.agent,
+    agent_label: skinny.agent_label,
+    entrypoint: skinny.entrypoint,
     display_name: skinny.display_name,
     started_at: skinny.started_at,
     ended_at: skinny.ended_at,
@@ -1342,6 +1350,7 @@ function sidebarIndexRowToSession(
     parent_session_id: skinny.parent_session_id,
     relationship_type: skinny.relationship_type,
     termination_status: skinny.termination_status,
+    transcript_revision: skinny.transcript_revision,
     is_automated: skinny.is_automated,
     is_teammate: skinny.is_teammate ?? existing.is_teammate,
     is_index_only: false,

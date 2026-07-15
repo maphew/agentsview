@@ -677,6 +677,11 @@ func (b *directBackend) Search(
 func (b *directBackend) UsageSummary(
 	ctx context.Context, req UsageRequest,
 ) (*UsageSummaryResult, error) {
+	var err error
+	req, err = ResolveUsageProjectKeys(ctx, b.db, req)
+	if err != nil {
+		return nil, err
+	}
 	f, err := BuildUsageFilter(req)
 	if err != nil {
 		return nil, err
@@ -704,6 +709,11 @@ func (b *directBackend) UsageSummary(
 func (b *directBackend) UsagePairwiseComparison(
 	ctx context.Context, req UsagePairwiseComparisonRequest,
 ) (*UsagePairwiseComparisonResponse, error) {
+	var err error
+	req, err = ResolveUsagePairwiseProjectKeys(ctx, b.db, req)
+	if err != nil {
+		return nil, err
+	}
 	leftFilter, leftEmpty, rightFilter, rightEmpty, err := BuildUsagePairwiseFilters(req)
 	if err != nil {
 		return nil, err
@@ -1066,15 +1076,18 @@ func (b *directBackend) Stats(
 	}
 	f.Agent = normalizeStatsAgentFilter(f.Agent)
 	stats, err := b.local.GetSessionStats(ctx, db.StatsFilter{
-		Since:                 f.Since,
-		Until:                 f.Until,
-		Agent:                 f.Agent,
-		IncludeProjects:       f.IncludeProjects,
-		ExcludeProjects:       f.ExcludeProjects,
-		Timezone:              f.Timezone,
-		IncludeGitOutcomes:    f.IncludeGitOutcomes,
-		IncludeGitHubOutcomes: f.IncludeGitHubOutcomes,
-		GHToken:               f.GHToken,
+		Since:                  f.Since,
+		Until:                  f.Until,
+		Agent:                  f.Agent,
+		ApplyDefaultVisibility: f.ApplyDefaultVisibility,
+		IncludeOneShot:         f.IncludeOneShot,
+		IncludeAutomated:       f.IncludeAutomated,
+		IncludeProjects:        f.IncludeProjects,
+		ExcludeProjects:        f.ExcludeProjects,
+		Timezone:               f.Timezone,
+		IncludeGitOutcomes:     f.IncludeGitOutcomes,
+		IncludeGitHubOutcomes:  f.IncludeGitHubOutcomes,
+		GHToken:                f.GHToken,
 	})
 	if err != nil {
 		return nil, err

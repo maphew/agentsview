@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -150,6 +151,7 @@ func newServeCommandWithDaemonDeps(deps daemonCommandDeps) *cobra.Command {
 	var checkDataVersion bool
 	var replace bool
 	var pprofEnabled bool
+	var skipInitialSync bool
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Short:        "Start server",
@@ -174,9 +176,10 @@ func newServeCommandWithDaemonDeps(deps daemonCommandDeps) *cobra.Command {
 				return nil
 			}
 			runServe(mustLoadConfig(cmd), serveOptions{
-				ReplaceDaemon:  replace,
-				NoSyncExplicit: cmd.Flags().Changed("no-sync"),
-				Pprof:          pprofEnabled,
+				ReplaceDaemon:   replace,
+				NoSyncExplicit:  cmd.Flags().Changed("no-sync"),
+				SkipInitialSync: skipInitialSync,
+				Pprof:           pprofEnabled,
 			})
 			return nil
 		},
@@ -200,6 +203,13 @@ func newServeCommandWithDaemonDeps(deps daemonCommandDeps) *cobra.Command {
 		"Check whether the configured database is compatible with this binary",
 	)
 	_ = cmd.Flags().MarkHidden("check-data-version")
+	cmd.Flags().BoolVar(
+		&skipInitialSync,
+		"skip-initial-sync",
+		false,
+		"Start serving before the initial sync",
+	)
+	_ = cmd.Flags().MarkHidden("skip-initial-sync")
 	cmd.Flags().BoolVar(
 		&pprofEnabled,
 		"pprof",
@@ -880,16 +890,36 @@ func newDuckDBQuackCommand() *cobra.Command {
 }
 
 func newVersionCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:          "version",
 		Short:        "Show version information",
 		GroupID:      groupMeta,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat(cmd) == "json" {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(versionJSON{
+					SchemaVersion: 1,
+					Name:          "agentsview",
+					Version:       version,
+					Commit:        commit,
+					BuildDate:     buildDate,
+				})
+			}
 			printVersion(cmd.OutOrStdout())
+			return nil
 		},
 	}
+	registerFormatFlags(cmd.Flags())
+	return cmd
+}
+
+type versionJSON struct {
+	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	BuildDate     string `json:"build_date"`
 }
 
 func printVersion(w io.Writer) {

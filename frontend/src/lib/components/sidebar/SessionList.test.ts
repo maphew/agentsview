@@ -12,6 +12,7 @@ import { mount, tick, unmount } from "svelte";
 import SessionList from "./SessionList.svelte";
 import sessionFilterControlSource from "../filters/SessionFilterControl.svelte?raw";
 import sessionItemSource from "./SessionItem.svelte?raw";
+import { readProgress } from "../../stores/read-progress.svelte.js";
 import { sessions } from "../../stores/sessions.svelte.js";
 import type { Session } from "../../api/types.js";
 import { starred } from "../../stores/starred.svelte.js";
@@ -87,6 +88,7 @@ describe("SessionList filter dropdown", () => {
     sessions.hydratedSessionsByVersion = new Map([
       [sessions.sidebarIndexVersion, new Map()],
     ]);
+    readProgress.reset();
     starred.filterOnly = false;
     starred.ids = new Set();
     setLocale("en");
@@ -106,6 +108,7 @@ describe("SessionList filter dropdown", () => {
     });
     clientHeightSpy?.mockRestore();
     rafSpy?.mockRestore();
+    readProgress.reset();
     vi.restoreAllMocks();
   });
 
@@ -210,6 +213,42 @@ describe("SessionList filter dropdown", () => {
     expect(batchSelectButton?.textContent?.trim()).toBe("清除");
     expect(document.body.textContent).toContain("取消");
   });
+
+  it("shows the unread indicator only for rows whose hydrated token changed", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "changed",
+        display_name: "Changed",
+        transcript_revision: "new",
+        is_index_only: true,
+      }),
+      makeSession({
+        id: "same",
+        display_name: "Same",
+        transcript_revision: "same",
+        is_index_only: true,
+      }),
+    ];
+    readProgress.baseline(
+      "changed",
+      "old",
+      1,
+    );
+    readProgress.baseline(
+      "same",
+      "same",
+      1,
+    );
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const indicators = document.querySelectorAll(
+      '[aria-label="Unread messages"]',
+    );
+    expect(indicators).toHaveLength(1);
+  });
 });
 
 describe("SessionList visible hydration", () => {
@@ -244,6 +283,7 @@ describe("SessionList visible hydration", () => {
     sessions.hydratedSessionsByVersion = new Map([
       [sessions.sidebarIndexVersion, new Map()],
     ]);
+    readProgress.reset();
     starred.filterOnly = false;
     starred.ids = new Set();
     setLocale("en");
@@ -263,6 +303,7 @@ describe("SessionList visible hydration", () => {
     });
     clientHeightSpy?.mockRestore();
     rafSpy?.mockRestore();
+    readProgress.reset();
     vi.restoreAllMocks();
   });
 
@@ -700,6 +741,39 @@ describe("SessionList visible hydration", () => {
     await tick();
 
     expect(document.querySelectorAll(".group-hint-icon")).toHaveLength(1);
+  });
+
+  it("shows unread state from a collapsed group child", async () => {
+    sessions.sessions = [
+      makeSession({
+        id: "root",
+        display_name: "Root",
+        transcript_revision: "same",
+        is_index_only: true,
+      }),
+      makeSession({
+        id: "team",
+        parent_session_id: "root",
+        display_name: "Changed team task",
+        is_teammate: true,
+        transcript_revision: "new",
+        is_index_only: true,
+      }),
+    ];
+    readProgress.baseline("root", "same", 0);
+    readProgress.baseline("team", "old", 0);
+    vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(undefined);
+
+    component = mount(SessionList, { target: document.body });
+    await tick();
+
+    const indicator = document.querySelector(
+      '[aria-label="Unread messages"]',
+    );
+    expect(indicator).not.toBeNull();
+    expect(
+      indicator?.closest<HTMLElement>(".session-item")?.dataset.sessionId,
+    ).toBe("root");
   });
 
   it("selects only rendered session rows when selecting all visible", async () => {

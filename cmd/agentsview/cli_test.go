@@ -174,7 +174,13 @@ func TestServeCheckDataVersionRejectsNewerDatabase(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Contains(t, err.Error(), "database data version")
 	assert.Contains(t, err.Error(), "is newer than this agentsview binary")
-	assert.Contains(t, err.Error(), `Run "agentsview update"`)
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("Use an AgentsView build with data version %d or newer", futureVersion))
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("restore an archive backup compatible with data version %d",
+			db.CurrentDataVersion()))
+	assert.Contains(t, err.Error(), "The archive was not modified")
+	assert.NotContains(t, err.Error(), `Run "agentsview update"`)
 }
 
 func TestServeCheckDataVersionDoesNotCreateConfig(t *testing.T) {
@@ -250,6 +256,37 @@ func TestRootVersionFlag(t *testing.T) {
 	got, err := executeCommand(newRootCommand(), "--version")
 	require.NoError(t, err, "Execute")
 	assert.Contains(t, got, "agentsview ", "version output = %q", got)
+}
+
+func TestVersionJSONContractDoesNotRequireRuntimeState(t *testing.T) {
+	oldVersion, oldCommit, oldBuildDate := version, commit, buildDate
+	t.Cleanup(func() {
+		version, commit, buildDate = oldVersion, oldCommit, oldBuildDate
+	})
+	version = "v1.2.3"
+	commit = "abc1234"
+	buildDate = "2026-07-12T14:30:00Z"
+
+	dataDirFile := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(dataDirFile, []byte("occupied"), 0o600))
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDirFile)
+
+	got, err := executeCommand(newRootCommand(), "version", "--json")
+	require.NoError(t, err, "Execute")
+
+	var doc struct {
+		SchemaVersion int    `json:"schema_version"`
+		Name          string `json:"name"`
+		Version       string `json:"version"`
+		Commit        string `json:"commit"`
+		BuildDate     string `json:"build_date"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(got), &doc))
+	assert.Equal(t, 1, doc.SchemaVersion)
+	assert.Equal(t, "agentsview", doc.Name)
+	assert.Equal(t, "v1.2.3", doc.Version)
+	assert.Equal(t, "abc1234", doc.Commit)
+	assert.Equal(t, "2026-07-12T14:30:00Z", doc.BuildDate)
 }
 
 func TestNormalizeLegacyLongFlags(t *testing.T) {

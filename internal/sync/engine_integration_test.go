@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -286,6 +287,63 @@ func assignFocusedAgentDir(
 	default:
 		t.Fatalf("unsupported focused test fixture for %s", agent)
 	}
+}
+
+func TestGrokSummaryCountsSurviveSync(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	root := t.TempDir()
+	summaryPath := filepath.Join(
+		root,
+		"cwd-key",
+		"sess-1",
+		"summary.json",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(summaryPath), 0o755))
+	require.NoError(t, os.WriteFile(summaryPath, []byte(`{
+		"summary":"Preserve Grok counts",
+		"firstPrompt":"resume the build",
+		"modelId":"grok-code-fast",
+		"createdAt":"2026-07-08T10:00:00Z",
+		"updatedAt":"2026-07-08T10:30:00Z",
+		"lastActiveAt":"2026-07-08T10:31:00Z",
+		"numMessages":6,
+		"worktreeLabel":"agentsview"
+	}`), 0o644))
+
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentGrok: {root},
+		},
+		Machine: "local",
+	})
+
+	stats := engine.SyncAll(context.Background(), nil)
+	require.GreaterOrEqual(t, stats.Synced, 1)
+
+	sess, err := database.GetSession(context.Background(), "grok:sess-1")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, 6, sess.MessageCount)
+	assert.Equal(t, 1, sess.UserMessageCount)
+
+	promptSearch, err := database.Search(context.Background(), db.SearchFilter{
+		Query: "resume the build",
+		Limit: 5,
+	})
+	require.NoError(t, err)
+	require.Len(t, promptSearch.Results, 1)
+	assert.Equal(t, "grok:sess-1", promptSearch.Results[0].SessionID)
+
+	nameSearch, err := database.Search(context.Background(), db.SearchFilter{
+		Query: "Preserve Grok counts",
+		Limit: 5,
+	})
+	require.NoError(t, err)
+	require.Len(t, nameSearch.Results, 1)
+	assert.Equal(t, "grok:sess-1", nameSearch.Results[0].SessionID)
 }
 
 type openCodeFamilySQLiteCase struct {
@@ -2005,6 +2063,173 @@ func TestResyncAllAppliesWorktreeProjectMappingDuringBulkWrites(
 	)
 }
 
+func TestResyncAllWithOptionsIngestsContributors(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+
+	localPath := filepath.Join(localRoot, "project-local", "local-session.jsonl")
+	remotePath := filepath.Join(remoteRoot, "project-remote", "remote-session.jsonl")
+	dbtest.WriteTestFile(t, localPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsZero, "local rebuild message").String()))
+	dbtest.WriteTestFile(t, remotePath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarlyS1, "remote rebuild message").String()))
+	olderPath := filepath.Join(localRoot, "archived", "older-active.jsonl")
+	dbtest.WriteTestFile(t, olderPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "older active archive message").String()))
+	require.Equal(t, 2, env.engine.SyncAll(context.Background(), nil).Synced)
+	require.NoError(t, os.Remove(olderPath))
+	observedBeforeSwap := false
+
+	stats, err := env.engine.ResyncAllWithOptions(
+		context.Background(), nil, sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "remote-host",
+			Config: sync.EngineConfig{
+				AgentDirs:    map[parser.AgentType][]string{parser.AgentClaude: {remoteRoot}},
+				Machine:      "remote-host",
+				IDPrefix:     "remote~",
+				PathRewriter: func(path string) string { return "remote:" + path },
+				Ephemeral:    true,
+			},
+			AfterSync: func(_ *sync.Engine, tempDB *db.DB) error {
+				observedBeforeSwap = true
+				assert.NotEqual(t, env.db.Path(), tempDB.Path())
+				assert.Equal(t, env.db.Path()+"-resync", tempDB.Path())
+
+				older, getErr := env.db.GetSession(context.Background(), "older-active")
+				require.NoError(t, getErr)
+				require.NotNil(t, older, "active archive lost old row before swap")
+				assertMessageContent(t, env.db, "older-active", "older active archive message")
+				page, searchErr := env.db.Search(context.Background(), db.SearchFilter{
+					Query: "older active archive message", Limit: 5,
+				})
+				require.NoError(t, searchErr)
+				require.Len(t, page.Results, 1, "active search changed before swap")
+				remote, getErr := env.db.GetSession(context.Background(), "remote~remote-session")
+				require.NoError(t, getErr)
+				assert.Nil(t, remote, "contributor row reached active DB before swap")
+
+				remote, getErr = tempDB.GetSession(context.Background(), "remote~remote-session")
+				require.NoError(t, getErr)
+				require.NotNil(t, remote, "contributor row missing from temporary DB")
+				older, getErr = tempDB.GetSession(context.Background(), "older-active")
+				require.NoError(t, getErr)
+				assert.Nil(t, older, "orphan copy ran before contributor callback")
+				return nil
+			},
+		}}},
+	)
+	require.NoError(t, err)
+	require.True(t, observedBeforeSwap)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+	assert.Equal(t, 2, stats.Synced)
+	assert.Equal(t, 1, stats.OrphanedCopied)
+
+	local, err := env.db.GetSession(context.Background(), "local-session")
+	require.NoError(t, err)
+	require.NotNil(t, local)
+	assert.Equal(t, "local", local.Machine)
+	remote, err := env.db.GetSession(context.Background(), "remote~remote-session")
+	require.NoError(t, err)
+	require.NotNil(t, remote)
+	assert.Equal(t, "remote-host", remote.Machine)
+	assert.Equal(t, "remote:"+remotePath, env.db.GetSessionFilePath(remote.ID))
+	older, err := env.db.GetSession(context.Background(), "older-active")
+	require.NoError(t, err)
+	require.NotNil(t, older)
+
+	for _, query := range []string{"local rebuild message", "remote rebuild message"} {
+		page, searchErr := env.db.Search(context.Background(), db.SearchFilter{Query: query, Limit: 5})
+		require.NoError(t, searchErr)
+		assert.Len(t, page.Results, 1, query)
+	}
+	require.Len(t, stats.RebuildPhases, 2)
+	require.Len(t, env.engine.LastSyncStats().RebuildPhases, 2)
+	assert.Equal(t, "local", stats.RebuildPhases[0].Contributor)
+	assert.EqualValues(t, 1, stats.RebuildPhases[0].BatchedWrites)
+	assert.Equal(t, "remote-host", stats.RebuildPhases[1].Contributor)
+	assert.EqualValues(t, 1, stats.RebuildPhases[1].BatchedWrites)
+}
+
+func TestResyncContributorFailureLeavesArchiveUnchanged(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+	oldPath := filepath.Join(localRoot, "old-project", "old-session.jsonl")
+	dbtest.WriteTestFile(t, oldPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsZero, "durable old archive message").String()))
+	require.Equal(t, 1, env.engine.SyncAll(context.Background(), nil).Synced)
+	require.NoError(t, os.Remove(oldPath))
+	newPath := filepath.Join(localRoot, "new-project", "new-session.jsonl")
+	dbtest.WriteTestFile(t, newPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarlyS1, "partial replacement message").String()))
+	remotePath := filepath.Join(remoteRoot, "remote-project", "remote-session.jsonl")
+	dbtest.WriteTestFile(t, remotePath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarlyS5, "partial remote message").String()))
+
+	sentinel := errors.New("after sync failed")
+	stats, err := env.engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "broken-remote",
+			Config: sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {remoteRoot}},
+				Machine:   "broken-remote",
+				IDPrefix:  "broken~",
+				Ephemeral: true,
+			},
+			AfterSync: func(*sync.Engine, *db.DB) error { return sentinel },
+		}}})
+	require.Error(t, err)
+	assert.True(t, stats.Aborted)
+	var contributorErr *sync.RebuildContributorError
+	require.True(t, errors.As(err, &contributorErr))
+	assert.Equal(t, "broken-remote", contributorErr.Contributor)
+	assert.ErrorIs(t, err, sentinel)
+	assert.Contains(t, stats.Warnings,
+		`resync contributor "broken-remote" failed: after sync failed`)
+
+	oldSession, getErr := env.db.GetSession(context.Background(), "old-session")
+	require.NoError(t, getErr)
+	require.NotNil(t, oldSession)
+	newSession, getErr := env.db.GetSession(context.Background(), "new-session")
+	require.NoError(t, getErr)
+	assert.Nil(t, newSession)
+	page, searchErr := env.db.Search(context.Background(), db.SearchFilter{
+		Query: "durable old archive message", Limit: 5,
+	})
+	require.NoError(t, searchErr)
+	require.Len(t, page.Results, 1)
+	assert.NoFileExists(t, env.db.Path()+"-resync")
+	assert.NoFileExists(t, env.db.Path()+"-resync-wal")
+	assert.NoFileExists(t, env.db.Path()+"-resync-shm")
+}
+
+func TestResyncEmptyContributorDoesNotAbortNonEmptyLocalRebuild(t *testing.T) {
+	localRoot := t.TempDir()
+	emptyRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+	dbtest.WriteTestFile(t, filepath.Join(localRoot, "project", "local.jsonl"),
+		[]byte(testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsZero, "nonempty local rebuild").String()))
+
+	stats, err := env.engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "empty",
+			Config: sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {emptyRoot}},
+				Machine:   "empty",
+				IDPrefix:  "empty~",
+				Ephemeral: true,
+			},
+		}}})
+	require.NoError(t, err)
+	assert.False(t, stats.Aborted, "resync aborted: %+v", stats)
+	assert.Equal(t, 1, stats.Synced)
+	assert.EqualValues(t, 1, stats.RebuildPhases[0].BatchedWrites)
+	assert.Zero(t, stats.RebuildPhases[1].BatchedWrites)
+	assertSessionMessageCount(t, env.db, "local", 1)
+}
+
 func TestResyncAllExcludesExistingClaudeUsageProbe(t *testing.T) {
 	env := setupSingleAgentTestEnv(t, parser.AgentClaude)
 
@@ -2051,6 +2276,305 @@ func TestResyncAllExcludesExistingClaudeUsageProbe(t *testing.T) {
 		"parser exclusions must not become permanent user deletions")
 }
 
+func TestResyncContributorExclusionIsNotRestoredAsOrphan(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+	dbtest.WriteTestFile(t, filepath.Join(localRoot, "local", "local.jsonl"),
+		[]byte(testjsonl.NewSessionBuilder().AddClaudeUser(tsZero, "local").String()))
+
+	const rawID = "remote-usage-probe"
+	const storedID = "remote~remote-usage-probe"
+	usageCmd := "<command-name>/usage</command-name>\n" +
+		"<command-message>usage</command-message>\n<command-args></command-args>"
+	content := testjsonl.ClaudeUserJSON(usageCmd, tsEarly)
+	path := filepath.Join(remoteRoot, "remote", rawID+".jsonl")
+	dbtest.WriteTestFile(t, path, []byte(content))
+	storedPath := "remote:" + path
+	size := int64(len(content))
+	mtime := time.Now().Add(-time.Hour).UnixNano()
+	firstMessage := "/usage"
+	startedAt := tsEarly
+	require.NoError(t, env.db.UpsertSession(db.Session{
+		ID: storedID, Project: "remote", Machine: "remote", Agent: string(parser.AgentClaude),
+		FirstMessage: &firstMessage, StartedAt: &startedAt, EndedAt: &startedAt,
+		MessageCount: 1, UserMessageCount: 1, FilePath: &storedPath,
+		FileSize: &size, FileMtime: &mtime,
+	}))
+
+	stats, err := env.engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "remote",
+			Config: sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {remoteRoot}},
+				Machine:   "remote", IDPrefix: "remote~", Ephemeral: true,
+				PathRewriter: func(path string) string { return "remote:" + path },
+			},
+		}}})
+	require.NoError(t, err)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+	assert.Zero(t, stats.OrphanedCopied)
+	got, getErr := env.db.GetSession(context.Background(), storedID)
+	require.NoError(t, getErr)
+	assert.Nil(t, got)
+}
+
+func TestResyncContributorPreservesPinnedAndTrashedRemoteState(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+	dbtest.WriteTestFile(t, filepath.Join(localRoot, "local", "local.jsonl"),
+		[]byte(testjsonl.NewSessionBuilder().AddClaudeUser(tsZero, "local").String()))
+	remotePath := filepath.Join(remoteRoot, "remote", "remote-trash.jsonl")
+	dbtest.WriteTestFile(t, remotePath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "preserved remote prompt").
+		AddClaudeAssistant(tsEarlyS1, "preserved remote reply").String()))
+	remoteConfig := sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {remoteRoot}},
+		Machine:   "remote", IDPrefix: "remote~", Ephemeral: true,
+		PathRewriter: func(path string) string { return "remote:" + path },
+	}
+	remoteEngine := sync.NewEngine(env.db, remoteConfig)
+	require.Equal(t, 1, remoteEngine.SyncAll(context.Background(), nil).Synced)
+	remoteEngine.Close()
+	msgs := fetchMessages(t, env.db, "remote~remote-trash")
+	require.Len(t, msgs, 2)
+	note := "keep this remote message"
+	_, err := env.db.PinMessage("remote~remote-trash", msgs[1].ID, &note)
+	require.NoError(t, err)
+	require.NoError(t, env.db.SoftDeleteSession("remote~remote-trash"))
+
+	stats, err := env.engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "remote", Config: remoteConfig,
+		}}})
+	require.NoError(t, err)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+	full, err := env.db.GetSessionFull(context.Background(), "remote~remote-trash")
+	require.NoError(t, err)
+	require.NotNil(t, full)
+	assert.NotNil(t, full.DeletedAt)
+	preservedMessages := fetchMessages(t, env.db, "remote~remote-trash")
+	require.Len(t, preservedMessages, 2)
+	assert.Equal(t, "preserved remote prompt", preservedMessages[0].Content)
+	assert.Equal(t, "preserved remote reply", preservedMessages[1].Content)
+	pins, err := env.db.ListPinnedMessages(context.Background(), "remote~remote-trash", "")
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	require.NotNil(t, pins[0].Note)
+	assert.Equal(t, note, *pins[0].Note)
+}
+
+type usageParityProvider struct {
+	parser.ProviderBase
+	source parser.SourceRef
+	result parser.ParseResult
+}
+
+func (p *usageParityProvider) Discover(context.Context) ([]parser.SourceRef, error) {
+	return []parser.SourceRef{p.source}, nil
+}
+
+func (p *usageParityProvider) Fingerprint(
+	context.Context, parser.SourceRef,
+) (parser.SourceFingerprint, error) {
+	return parser.SourceFingerprint{
+		Key: p.source.FingerprintKey, Size: 128, MTimeNS: 1_700_000_000_000_000_000,
+	}, nil
+}
+
+func (p *usageParityProvider) Parse(
+	context.Context, parser.ParseRequest,
+) (parser.ParseOutcome, error) {
+	return parser.ParseOutcome{
+		Results:           []parser.ParseResultOutcome{{Result: p.result}},
+		ResultSetComplete: true,
+	}, nil
+}
+
+type usageParityFactory struct{ provider *usageParityProvider }
+
+func (f usageParityFactory) Definition() parser.AgentDef {
+	return f.provider.Definition()
+}
+
+func (f usageParityFactory) Capabilities() parser.Capabilities {
+	return f.provider.Capabilities()
+}
+
+func (f usageParityFactory) NewProvider(parser.ProviderConfig) parser.Provider {
+	return f.provider
+}
+
+func newUsageParityProvider(sourcePath, machine string) *usageParityProvider {
+	const rawID = "usage-equivalent"
+	messageOrdinal := 0
+	costUSD := 0.0125
+	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	return &usageParityProvider{
+		ProviderBase: parser.ProviderBase{
+			Def: parser.AgentDef{Type: parser.AgentCowork, FileBased: true},
+			Caps: parser.Capabilities{Source: parser.SourceCapabilities{
+				DiscoverSources:      parser.CapabilitySupported,
+				CompositeFingerprint: parser.CapabilitySupported,
+			}},
+		},
+		source: parser.SourceRef{
+			Provider: parser.AgentCowork, Key: sourcePath,
+			DisplayPath: sourcePath, FingerprintKey: sourcePath,
+		},
+		result: parser.ParseResult{
+			Session: parser.ParsedSession{
+				ID: rawID, Project: "usage-parity", Machine: machine,
+				Agent: parser.AgentCowork, StartedAt: started, EndedAt: started,
+				FirstMessage: "usage parity fixture", MessageCount: 1,
+				UserMessageCount: 1,
+				File: parser.FileInfo{
+					Path: sourcePath, Size: 128, Mtime: 1_700_000_000_000_000_000,
+				},
+			},
+			Messages: []parser.ParsedMessage{{
+				Ordinal: 0, Role: parser.RoleUser,
+				Content: "usage parity fixture", Timestamp: started,
+			}},
+			UsageEvents: []parser.ParsedUsageEvent{{
+				SessionID: rawID, MessageOrdinal: &messageOrdinal,
+				Source: "literal-provider-usage", Model: "literal-model-v1",
+				InputTokens: 101, OutputTokens: 37,
+				CacheCreationInputTokens: 23, CacheReadInputTokens: 19,
+				ReasoningTokens: 11, CostUSD: &costUSD,
+				CostStatus: "exact", CostSource: "literal-fixture",
+				OccurredAt: "2026-01-02T03:04:05Z",
+				DedupKey:   "usage-equivalent:event-1",
+			}},
+		},
+	}
+}
+
+func TestResyncContributorPersistsEquivalentUsageEvents(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	localProvider := newUsageParityProvider(
+		filepath.Join(localRoot, "usage-equivalent.fixture"), "local",
+	)
+	remoteProvider := newUsageParityProvider(
+		filepath.Join(remoteRoot, "usage-equivalent.fixture"), "remote",
+	)
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentCowork: {localRoot}},
+		Machine:   "local",
+		ProviderFactories: []parser.ProviderFactory{
+			usageParityFactory{provider: localProvider},
+		},
+		ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+			parser.AgentCowork: parser.ProviderMigrationProviderAuthoritative,
+		},
+	})
+	t.Cleanup(engine.Close)
+
+	stats, err := engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "remote",
+			Config: sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentCowork: {remoteRoot}},
+				Machine:   "remote", IDPrefix: "remote~", Ephemeral: true,
+				ProviderFactories: []parser.ProviderFactory{
+					usageParityFactory{provider: remoteProvider},
+				},
+				ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+					parser.AgentCowork: parser.ProviderMigrationProviderAuthoritative,
+				},
+			},
+		}}})
+	require.NoError(t, err)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+
+	localEvents, err := database.GetUsageEvents(context.Background(), "usage-equivalent")
+	require.NoError(t, err)
+	require.Len(t, localEvents, 1)
+	remoteEvents, err := database.GetUsageEvents(context.Background(), "remote~usage-equivalent")
+	require.NoError(t, err)
+	require.Len(t, remoteEvents, 1)
+
+	localEvent := localEvents[0]
+	remoteEvent := remoteEvents[0]
+	assert.Equal(t, "usage-equivalent", localEvent.SessionID)
+	assert.Equal(t, "remote~usage-equivalent", remoteEvent.SessionID)
+	localEvent.ID = 0
+	remoteEvent.ID = 0
+	remoteEvent.SessionID = localEvent.SessionID
+	assert.Equal(t, localEvent, remoteEvent,
+		"contributor usage must differ only by its persisted session namespace")
+
+	messageOrdinal := 0
+	costUSD := 0.0125
+	assert.Equal(t, db.UsageEvent{
+		SessionID: "usage-equivalent", MessageOrdinal: &messageOrdinal,
+		Source: "literal-provider-usage", Model: "literal-model-v1",
+		InputTokens: 101, OutputTokens: 37,
+		CacheCreationInputTokens: 23, CacheReadInputTokens: 19,
+		ReasoningTokens: 11, CostUSD: &costUSD,
+		CostStatus: "exact", CostSource: "literal-fixture",
+		OccurredAt: "2026-01-02T03:04:05Z",
+		DedupKey:   "usage-equivalent:event-1",
+	}, localEvent)
+}
+
+func TestResyncContributorPreservesAnnotationsOrphansAndOtherHosts(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	env := setupSingleAgentTestEnvWithDirs(t, parser.AgentClaude, []string{localRoot})
+	dbtest.WriteTestFile(t, filepath.Join(localRoot, "local", "local.jsonl"),
+		[]byte(testjsonl.NewSessionBuilder().AddClaudeUser(tsZero, "local").String()))
+	remoteCurrent := filepath.Join(remoteRoot, "remote", "annotated.jsonl")
+	remoteOrphan := filepath.Join(remoteRoot, "remote", "remote-orphan.jsonl")
+	dbtest.WriteTestFile(t, remoteCurrent, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "annotated remote").String()))
+	dbtest.WriteTestFile(t, remoteOrphan, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarlyS1, "remote orphan").String()))
+	remoteConfig := sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {remoteRoot}},
+		Machine:   "remote", IDPrefix: "remote~", Ephemeral: true,
+	}
+	remoteEngine := sync.NewEngine(env.db, remoteConfig)
+	require.Equal(t, 2, remoteEngine.SyncAll(context.Background(), nil).Synced)
+	remoteEngine.Close()
+	annotation := "user annotation survives"
+	require.NoError(t, env.db.RenameSession("remote~annotated", &annotation))
+	require.NoError(t, os.Remove(remoteOrphan))
+
+	otherPath := filepath.Join(otherRoot, "other", "other-host.jsonl")
+	dbtest.WriteTestFile(t, otherPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarlyS5, "other host archive").String()))
+	otherEngine := sync.NewEngine(env.db, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {otherRoot}},
+		Machine:   "other", IDPrefix: "other~", Ephemeral: true,
+	})
+	require.Equal(t, 1, otherEngine.SyncAll(context.Background(), nil).Synced)
+	otherEngine.Close()
+	require.NoError(t, os.Remove(otherPath))
+
+	stats, err := env.engine.ResyncAllWithOptions(context.Background(), nil,
+		sync.RebuildOptions{Contributors: []sync.RebuildContributor{{
+			Name: "remote", Config: remoteConfig,
+		}}})
+	require.NoError(t, err)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+	assert.Equal(t, 2, stats.OrphanedCopied)
+	annotated, err := env.db.GetSession(context.Background(), "remote~annotated")
+	require.NoError(t, err)
+	require.NotNil(t, annotated)
+	require.NotNil(t, annotated.DisplayName)
+	assert.Equal(t, annotation, *annotated.DisplayName)
+	for _, id := range []string{"remote~remote-orphan", "other~other-host"} {
+		session, getErr := env.db.GetSession(context.Background(), id)
+		require.NoError(t, getErr)
+		assert.NotNil(t, session, id)
+	}
+}
+
 func TestSyncEngineCodex(t *testing.T) {
 	env := setupSingleAgentTestEnv(t, parser.AgentCodex)
 
@@ -2071,6 +2595,84 @@ func TestSyncEngineCodex(t *testing.T) {
 	assertSessionState(t, env.db, "codex:test-uuid", func(sess *db.Session) {
 		assert.Equal(t, "codex", sess.Agent, "agent = %q", sess.Agent)
 	})
+}
+
+func TestSyncEngineCodexSubagentLineage(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentCodex)
+	const (
+		parentID = "01900000-0000-7000-8000-000000000001"
+		childID  = "01900000-0000-7000-8000-000000000002"
+	)
+
+	parentContent := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(parentID, "/tmp/project", "user", tsEarly),
+		testjsonl.CodexMsgJSON("user", "delegate the task", tsEarlyS1),
+		testjsonl.CodexFunctionCallWithCallIDJSON(
+			"spawn_agent", "call_spawn",
+			map[string]any{"task_name": "identity_lifecycle"}, tsEarlyS5,
+		),
+	)
+	childContent := testjsonl.JoinJSONL(
+		testjsonl.CodexSubagentSessionMetaJSON(
+			childID, parentID, "/tmp/project", "user",
+			"2024-01-01T10:01:00Z",
+		),
+		testjsonl.CodexMsgJSON(
+			"assistant", "subtask complete", "2024-01-01T10:01:05Z",
+		),
+	)
+
+	parentPath := env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-parent.jsonl", parentContent,
+	)
+	env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-child.jsonl", childContent,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 2, Synced: 2,
+	})
+
+	assertSessionState(t, env.db, "codex:"+childID, func(sess *db.Session) {
+		require.NotNil(t, sess.ParentSessionID)
+		assert.Equal(t, "codex:"+parentID, *sess.ParentSessionID)
+		assert.Equal(t, "subagent", sess.RelationshipType)
+	})
+
+	var linkedID sql.NullString
+	err := env.db.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"codex:"+parentID, "call_spawn",
+	).Scan(&linkedID)
+	require.NoError(t, err)
+	assert.False(t, linkedID.Valid)
+
+	appended := testjsonl.CodexSubagentActivityJSON(
+		"started", "call_spawn", childID,
+		"/root/identity_lifecycle", "2024-01-01T10:01:00Z",
+	)
+	f, err := os.OpenFile(parentPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, writeErr := f.WriteString(appended + "\n")
+	closeErr := f.Close()
+	require.NoError(t, writeErr)
+	require.NoError(t, closeErr)
+
+	env.engine.SyncPaths([]string{parentPath})
+
+	err = env.db.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"codex:"+parentID, "call_spawn",
+	).Scan(&linkedID)
+	require.NoError(t, err)
+	require.True(t, linkedID.Valid)
+	assert.Equal(t, "codex:"+childID, linkedID.String)
 }
 
 func TestSyncEngineProgress(t *testing.T) {
@@ -2721,9 +3323,10 @@ func TestCodexExecMigrationIdempotent(t *testing.T) {
 	)
 	info, err := os.Stat(path)
 	require.NoError(t, err, "stat codex session")
+	cacheKey := fmt.Sprintf("%s?source_hash=%x", path, sha256.Sum256([]byte(content)))
 
 	require.NoError(t, env.db.ReplaceSkippedFiles(map[string]int64{
-		path: info.ModTime().UnixNano(),
+		cacheKey: info.ModTime().UnixNano(),
 	}), "seed skipped files")
 
 	// Rebuild the engine without resetting the migration
@@ -2747,7 +3350,7 @@ func TestCodexExecMigrationIdempotent(t *testing.T) {
 
 	loaded, err := env.db.LoadSkippedFiles()
 	require.NoError(t, err, "load skipped files")
-	_, ok := loaded[path]
+	_, ok := loaded[cacheKey]
 	require.True(t, ok,
 		"post-migration skip entry for %s was cleared; migration must be idempotent",
 		path,
@@ -3420,6 +4023,72 @@ func TestSyncAllSinceCodexIndexRenameBelowStoredMtimeRefreshesName(t *testing.T)
 	if assert.NotNil(t, sess.SessionName, "expected renamed session_name") {
 		assert.Equal(t, "Renamed title", *sess.SessionName)
 	}
+}
+
+func TestSyncAllWarmGateCodexIndexSameStatRenameRefreshesName(t *testing.T) {
+	root := t.TempDir()
+	codexDir := filepath.Join(root, "sessions")
+	require.NoError(t, os.MkdirAll(codexDir, 0o755))
+	env := setupTestEnv(t, WithCodexDirs([]string{codexDir}))
+
+	uuid := "019eb791-cf7d-75c1-8439-9ed74c1229e1"
+	content := testjsonl.NewSessionBuilder().
+		AddCodexMeta(tsEarly, uuid, "/tmp/project", "user").
+		AddCodexMessage(tsEarlyS1, "user", "Rename me").
+		String()
+	path := env.writeCodexSession(
+		t,
+		filepath.Join("2026", "06", "11"),
+		"rollout-2026-06-11T12-44-06-"+uuid+".jsonl",
+		content,
+	)
+
+	indexPath := filepath.Join(root, parser.CodexSessionIndexFilename)
+	indexLine := func(title string) []byte {
+		return fmt.Appendf(nil,
+			`{"id":"%s","thread_name":"%s","updated_at":"2026-06-11T17:34:20Z"}`+"\n",
+			uuid, title,
+		)
+	}
+	originalIndex := indexLine("Title Alpha")
+	renamedIndex := indexLine("Title Bravo")
+	require.Len(t, renamedIndex, len(originalIndex),
+		"fixture must preserve the index size")
+	require.NoError(t, os.WriteFile(indexPath, originalIndex, 0o644))
+
+	transcriptTime := time.Now().Add(-30 * time.Minute)
+	indexTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(path, transcriptTime, transcriptTime))
+	require.NoError(t, os.Chtimes(indexPath, indexTime, indexTime))
+
+	first := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 1, first.Synced)
+	second := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, second.Synced, "second pass must warm source trust")
+
+	sess, err := env.db.GetSessionFull(context.Background(), "codex:"+uuid)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.SessionName)
+	require.Equal(t, "Title Alpha", *sess.SessionName)
+	require.NotNil(t, sess.FileMtime)
+	require.Equal(t, transcriptTime.UnixNano(), *sess.FileMtime,
+		"transcript mtime must remain the stored watermark")
+
+	// Simulate a missed watcher event: rewrite only the sidecar while restoring
+	// its lower mtime and preserving its size. The full sync must still reload
+	// the index and repair the persisted title.
+	require.NoError(t, os.WriteFile(indexPath, renamedIndex, 0o644))
+	require.NoError(t, os.Chtimes(indexPath, indexTime, indexTime))
+
+	third := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 1, third.Synced,
+		"same-stat title rewrite must bypass warm source trust")
+	sess, err = env.db.GetSessionFull(context.Background(), "codex:"+uuid)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.SessionName)
+	assert.Equal(t, "Title Bravo", *sess.SessionName)
 }
 
 func TestSyncAllSinceCodexIndexRefreshOnlySyncsRenamedSession(t *testing.T) {
@@ -7281,6 +7950,34 @@ func TestResyncAllPreservesModelPricing(t *testing.T) {
 	assert.Equal(t, 75.0, pricing.OutputPerMTok, "output rate")
 }
 
+func TestResyncAllAbortsWhenSessionSnapshotMetadataCannotCopy(t *testing.T) {
+	env := setupTestEnv(t)
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "original content").
+		AddClaudeAssistant(tsEarlyS5, "original reply").
+		String()
+	env.writeClaudeSession(t, "test-proj", "metadata-copy.jsonl", content)
+	env.engine.SyncAll(context.Background(), nil)
+	assertSessionMessageCount(t, env.db, "metadata-copy", 2)
+
+	dbPath := env.db.Path()
+	require.NoError(t, env.db.Close())
+	raw, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP TABLE starred_sessions;
+		CREATE TABLE starred_sessions (broken_column TEXT)`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+	require.NoError(t, env.db.Reopen())
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+
+	assert.True(t, stats.Aborted)
+	assert.Contains(t, strings.Join(stats.Warnings, "\n"),
+		"session metadata copy failed, aborting swap")
+	assertSessionMessageCount(t, env.db, "metadata-copy", 2)
+}
+
 // TestResyncAllAbortsOnFailures verifies that ResyncAll
 // does not swap the DB when sync has more failures than
 // successes.
@@ -8822,6 +9519,81 @@ func TestIncrementalSync_ClaudeAppend(t *testing.T) {
 	assert.Equal(t, 500, msgs[1].ContextTokens, "assistant ContextTokens = %d, want 500", msgs[1].ContextTokens)
 }
 
+func TestIncrementalSync_ClaudeAgentSettingAppendUsesFullParse(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsZero),
+	)
+	path := env.writeClaudeSession(
+		t, "proj", "identity-append.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	assertSessionState(t, env.db, "identity-append", func(sess *db.Session) {
+		assert.Equal(t, string(parser.AgentClaude), sess.Agent)
+		assert.Equal(t, "", sess.AgentLabel)
+		assert.Equal(t, "", sess.Entrypoint)
+	})
+
+	appended := `{"type":"user","timestamp":"2026-06-01T00:00:02Z","uuid":"u2","parentUuid":"u1","agentSetting":"triage","entrypoint":"sdk-cli","message":{"content":"late identity"}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, err = f.WriteString(appended)
+	require.NoError(t, err, "append")
+	require.NoError(t, f.Close(), "close append")
+
+	env.engine.SyncPaths([]string{path})
+
+	assertSessionMessageCount(t, env.db, "identity-append", 2)
+	assertSessionState(t, env.db, "identity-append", func(sess *db.Session) {
+		assert.Equal(t, string(parser.AgentClaude), sess.Agent)
+		assert.Equal(t, "triage", sess.AgentLabel)
+		assert.Equal(t, "sdk-cli", sess.Entrypoint)
+	})
+}
+
+func TestIncrementalSync_ClaudeStoredEntrypointAppendStaysIncremental(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Real Claude CLI transcripts carry a top-level entrypoint ("cli") on
+	// most message lines; the first full parse stores it as session
+	// identity.
+	initial := `{"type":"user","timestamp":"2026-06-01T00:00:00Z","uuid":"u1","entrypoint":"cli","message":{"content":"hello"}}` + "\n"
+	path := env.writeClaudeSession(
+		t, "proj", "identity-stored.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	assertSessionState(t, env.db, "identity-stored", func(sess *db.Session) {
+		assert.Equal(t, "cli", sess.Entrypoint)
+		assert.Equal(t, 0, sess.ParserMalformedLines)
+	})
+
+	// The appended batch repeats the already-stored entrypoint and adds a
+	// malformed line. The incremental reader skips malformed lines without
+	// recounting them, while a full-parse escalation re-derives
+	// parser_malformed_lines for the whole file and would store 1. The
+	// count staying 0 proves the append stayed on the incremental path.
+	appended := "not json\n" +
+		`{"type":"user","timestamp":"2026-06-01T00:00:02Z","uuid":"u2","parentUuid":"u1","entrypoint":"cli","message":{"content":"routine append"}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, err = f.WriteString(appended)
+	require.NoError(t, err, "append")
+	require.NoError(t, f.Close(), "close append")
+
+	env.engine.SyncPaths([]string{path})
+
+	assertSessionMessageCount(t, env.db, "identity-stored", 2)
+	assertSessionState(t, env.db, "identity-stored", func(sess *db.Session) {
+		assert.Equal(t, "cli", sess.Entrypoint)
+		assert.Equal(t, "", sess.AgentLabel)
+		assert.Equal(t, 0, sess.ParserMalformedLines,
+			"append with already-stored identity must stay incremental")
+	})
+}
+
 func TestIncrementalSync_ClaudeFilteredTailAdvancesNextOrdinal(t *testing.T) {
 	env := setupSingleAgentTestEnv(t, parser.AgentClaude)
 
@@ -9583,15 +10355,12 @@ func TestIncrementalSync_ClaudeMidStreamSplitFallsBackToFullParse(t *testing.T) 
 	assert.Equal(t, "Hello world", msgs[1].Content, "msgs[1].Content = %q, want exactly %q", msgs[1].Content, "Hello world")
 }
 
-// TestIncrementalSync_ClaudeAgentIDFallbackUpdatesStoredToolCall covers
-// the cross-sync subagent linkage case: the first sync stores an
-// assistant tool_use row with no subagent_session_id, and a later sync
-// appends a tool_result whose toolUseResult.agentId should populate the
-// already-stored tool_call. The parser signals
-// IsIncrementalFullParseFallback, so the full-parse fallback must run
-// with forceReplace=true; otherwise the append-only write path skips
-// the existing row and the linkage is silently dropped.
-func TestIncrementalSync_ClaudeAgentIDFallbackUpdatesStoredToolCall(t *testing.T) {
+// TestIncrementalSync_ClaudeAgentIDLinksIncrementally covers the cross-
+// sync subagent linkage case: the first sync stores an assistant
+// tool_use row with no subagent_session_id, and a later sync appends a
+// tool_result whose toolUseResult.agentId should populate the
+// already-stored tool_call without forcing a full message replacement.
+func TestIncrementalSync_ClaudeAgentIDLinksIncrementally(t *testing.T) {
 	env := setupTestEnv(t)
 
 	parentInitial := testjsonl.JoinJSONL(
@@ -9621,6 +10390,14 @@ func TestIncrementalSync_ClaudeAgentIDFallbackUpdatesStoredToolCall(t *testing.T
 	env.engine.SyncAll(context.Background(), nil)
 
 	// Linkage starts empty (the toolUseResult hasn't appeared yet).
+	var assistantMessageID int64
+	require.NoError(t, env.db.Reader().QueryRow(`
+		SELECT id
+		FROM messages
+		WHERE session_id = ? AND ordinal = 1`,
+		"parent-late-link",
+	).Scan(&assistantMessageID), "query message id before append")
+
 	var got sql.NullString
 	require.NoError(t, env.db.Reader().QueryRow(`
 		SELECT subagent_session_id
@@ -9636,7 +10413,7 @@ func TestIncrementalSync_ClaudeAgentIDFallbackUpdatesStoredToolCall(t *testing.T
 	// the existing subagent session. Incremental parse will return
 	// ErrClaudeIncrementalNeedsFullParse so the engine must full-
 	// parse with forceReplace to update the stored tool_call row.
-	toolResult := `{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_late","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"childlate"}}`
+	toolResult := `{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_late","content":"done\u0000\u0001"}]},"toolUseResult":{"status":"completed","agentId":"childlate"}}`
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	require.NoError(t, err, "open for append")
 	_, writeErr := f.WriteString(toolResult + "\n")
@@ -9645,13 +10422,263 @@ func TestIncrementalSync_ClaudeAgentIDFallbackUpdatesStoredToolCall(t *testing.T
 
 	env.engine.SyncPaths([]string{path})
 
+	var gotMessageID int64
+	require.NoError(t, env.db.Reader().QueryRow(`
+		SELECT id
+		FROM messages
+		WHERE session_id = ? AND ordinal = 1`,
+		"parent-late-link",
+	).Scan(&gotMessageID), "query message id after append")
+
 	require.NoError(t, env.db.Reader().QueryRow(`
 		SELECT subagent_session_id
 		FROM tool_calls
 		WHERE session_id = ? AND tool_use_id = ?`,
 		"parent-late-link", "toolu_late",
 	).Scan(&got), "query after append")
+	assert.Equal(t, assistantMessageID, gotMessageID, "assistant message row should remain in place during incremental linkage")
 	assert.Equal(t, "agent-childlate", got.String, "subagent_session_id = %q, want %q", got.String, "agent-childlate")
+	msgs := fetchMessages(t, env.db, "parent-late-link")
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Equal(t, "done", msgs[1].ToolCalls[0].ResultContent)
+	assert.Equal(t, len("done"), msgs[1].ToolCalls[0].ResultContentLength)
+}
+
+func TestIncrementalSync_ClaudeAgentIDLinkUsesRemotePrefix(t *testing.T) {
+	claudeDir := t.TempDir()
+	database := dbtest.OpenTestDB(t)
+	env := &testEnv{claudeDir: claudeDir, db: database}
+	env.engine = sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {claudeDir},
+		},
+		Machine:  "host",
+		IDPrefix: "host~",
+	})
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"toolu_prefix","name":"Agent","input":{"description":"d","subagent_type":"Explore","prompt":"p"}}]}}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-prefix-link", "parent-prefix-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	toolResult := `{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_prefix","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"childprefix"}}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(toolResult + "\n")
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	var got string
+	require.NoError(t, database.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"host~parent-prefix-link", "toolu_prefix",
+	).Scan(&got), "query prefixed link")
+	assert.Equal(t, "host~agent-childprefix", got)
+}
+
+func TestIncrementalSync_ClaudeAgentIDLinksToolUseFromSameAppend(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-same-append-link", "parent-same-append-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	appended := testjsonl.JoinJSONL(
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"id":"msg_one","content":[{"type":"tool_use","id":"toolu_same_append","name":"Agent","input":{"description":"d","subagent_type":"Explore","prompt":"p"}}],"usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"tool_use"}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_same_append","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"childsameappend"}}`,
+	)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(appended)
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	assertSessionMessageCount(t, env.db, "parent-same-append-link", 2)
+	var got sql.NullString
+	require.NoError(t, env.db.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"parent-same-append-link", "toolu_same_append",
+	).Scan(&got), "query after append")
+	assert.Equal(t, "agent-childsameappend", got.String)
+}
+
+func TestIncrementalSync_ClaudeAgentIDUsesFirstLinkAndLatestResult(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-multiple-links", "parent-multiple-links.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	appended := testjsonl.JoinJSONL(
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"toolu_multiple_links","name":"Agent","input":{"description":"d","subagent_type":"Explore","prompt":"p"}}]}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_multiple_links","content":"partial"}]},"toolUseResult":{"status":"running","agentId":"firstchild"}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:00:03Z","uuid":"r2","parentUuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_multiple_links","content":"final"}]},"toolUseResult":{"status":"completed","agentId":"laterchild"}}`,
+	)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(appended)
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	msgs := fetchMessages(t, env.db, "parent-multiple-links")
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Equal(t, "agent-firstchild", msgs[1].ToolCalls[0].SubagentSessionID)
+	assert.Equal(t, "final", msgs[1].ToolCalls[0].ResultContent)
+	assert.Equal(t, len("final"), msgs[1].ToolCalls[0].ResultContentLength)
+}
+
+func TestIncrementalSync_ClaudeAgentIDPreservesExistingSubagentLink(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"toolu_first_link","name":"Agent","input":{"description":"d","subagent_type":"Explore","prompt":"p"}}]}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2024-01-01T10:00:02Z","sessionId":"parent-first-link","content":"{\"task_id\":\"queuefirst\",\"tool_use_id\":\"toolu_first_link\",\"description\":\"d\",\"task_type\":\"local_agent\"}"}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-first-link", "parent-first-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	toolResult := `{"type":"user","timestamp":"2024-01-01T10:00:03Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_first_link","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"laterresult"}}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(toolResult + "\n")
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	var got string
+	require.NoError(t, env.db.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"parent-first-link", "toolu_first_link",
+	).Scan(&got), "query after append")
+	assert.Equal(t, "agent-queuefirst", got)
+}
+
+func TestIncrementalSync_ClaudeAgentIDDoesNotLinkNonSubagentTool(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-read-link", "parent-read-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	appended := testjsonl.JoinJSONL(
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"toolu_read_link","name":"Read","input":{"file_path":"README.md"}}]}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_read_link","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"notasubagent"}}`,
+	)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(appended)
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	var got sql.NullString
+	require.NoError(t, env.db.Reader().QueryRow(`
+		SELECT subagent_session_id
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"parent-read-link", "toolu_read_link",
+	).Scan(&got), "query after append")
+	assert.False(t, got.Valid)
+}
+
+func TestIncrementalSync_ClaudeAgentIDMissingToolCallAdvancesCursor(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-missing-link", "parent-missing-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	appended := `{"type":"user","isMeta":true,"timestamp":"2024-01-01T10:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_missing","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"missingchild"}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(appended)
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	info, err := os.Stat(path)
+	require.NoError(t, err, "stat appended transcript")
+	sess, err := env.db.GetSessionFull(context.Background(), "parent-missing-link")
+	require.NoError(t, err, "get session after append")
+	require.NotNil(t, sess.FileSize)
+	assert.Equal(t, info.Size(), *sess.FileSize)
+	assert.True(t, sess.LastWriteIncremental)
+	assertSessionMessageCount(t, env.db, "parent-missing-link", 1)
+}
+
+func TestIncrementalSync_ClaudeMetaAgentIDResultMatchesFullParse(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		`{"type":"user","timestamp":"2024-01-01T10:00:00Z","uuid":"u1","message":{"content":"go"},"cwd":"/tmp"}`,
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:01Z","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"toolu_meta_link","name":"Agent","input":{"description":"d","subagent_type":"Explore","prompt":"p"}}]}}`,
+	)
+	path := env.writeClaudeSession(
+		t, "proj-meta-link", "parent-meta-link.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	appended := `{"type":"user","isMeta":true,"timestamp":"2024-01-01T10:00:02Z","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_meta_link","content":"meta-only output"}]},"toolUseResult":{"status":"completed","agentId":"metachild"}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open for append")
+	_, writeErr := f.WriteString(appended)
+	require.NoError(t, f.Close(), "close append")
+	require.NoError(t, writeErr, "append")
+
+	env.engine.SyncPaths([]string{path})
+
+	assertToolCall := func(stage string) {
+		msgs := fetchMessages(t, env.db, "parent-meta-link")
+		require.Len(t, msgs, 2, stage)
+		require.Len(t, msgs[1].ToolCalls, 1, stage)
+		assert.Equal(t, "agent-metachild", msgs[1].ToolCalls[0].SubagentSessionID, stage)
+		assert.Empty(t, msgs[1].ToolCalls[0].ResultContent, stage)
+		assert.Zero(t, msgs[1].ToolCalls[0].ResultContentLength, stage)
+	}
+	assertToolCall("incremental parse")
+
+	env.engine.ResyncAll(context.Background(), nil)
+	assertToolCall("full parse")
 }
 
 func TestIncrementalSync_ClaudeCrossSyncToolResultFallback(t *testing.T) {
@@ -10871,6 +11898,9 @@ func TestResyncAllCancelledPreservesOriginalDB(t *testing.T) {
 	stats := env.engine.ResyncAll(ctx, nil)
 
 	require.True(t, stats.Aborted, "expected ResyncAll to report Aborted")
+	assert.Equal(t, []string{"resync aborted: 0 synced, 0 failed"}, stats.Warnings)
+	assert.Equal(t, stats, env.engine.LastSyncStats(),
+		"legacy LastSyncStats must match the returned cancellation result")
 
 	// Original DB should be preserved — session still
 	// has the original data.

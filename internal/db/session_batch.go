@@ -317,6 +317,18 @@ func writeOneSessionBatchTx(
 	if deletedAt.Valid {
 		return 0, ErrSessionTrashed
 	}
+	replacementTranscriptChanged := false
+	if write.ReplaceMessages && sessionExists {
+		stored, err := sessionMessagesTx(
+			context.Background(), tx, write.Session.ID,
+		)
+		if err != nil {
+			return 0, err
+		}
+		replacementTranscriptChanged = !transcriptMessagesEqual(
+			stored, write.Messages,
+		)
+	}
 
 	if _, err := tx.Exec(
 		upsertSessionSQL,
@@ -357,6 +369,10 @@ func writeOneSessionBatchTx(
 		}
 		msgs = messagesAfterOrdinal(msgs, maxOrd)
 	}
+	transcriptChanged := len(msgs) > 0
+	if write.ReplaceMessages && sessionExists {
+		transcriptChanged = replacementTranscriptChanged
+	}
 
 	if len(msgs) > 0 {
 		ids, err := insertMessagesTx(tx, msgs)
@@ -369,6 +385,11 @@ func writeOneSessionBatchTx(
 		}
 		events := resolveToolResultEvents(msgs)
 		if err := insertToolResultEventsTx(tx, events); err != nil {
+			return 0, err
+		}
+	}
+	if transcriptChanged {
+		if err := bumpTranscriptRevisionTx(tx, write.Session.ID); err != nil {
 			return 0, err
 		}
 	}
@@ -424,6 +445,34 @@ func writeOneSessionBatchTx(
 	}
 
 	return len(msgs), nil
+}
+
+func sessionMessagesTx(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+) ([]Message, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM messages
+		WHERE session_id = ?
+		ORDER BY ordinal ASC`, selectMessageCols), sessionID)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"querying stored batch messages for %s: %w",
+			sessionID, err,
+		)
+	}
+	msgs, scanErr := scanMessages(rows)
+	closeErr := rows.Close()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if err := attachToolCallsWithQuerier(ctx, tx, msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 func maxOrdinalTx(tx *sql.Tx, sessionID string) (int, error) {

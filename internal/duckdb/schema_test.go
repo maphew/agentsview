@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -62,7 +63,7 @@ func TestEnsureSchemaCreatesRequiredMirrorTables(t *testing.T) {
 		`SELECT value FROM sync_metadata WHERE key = ?`,
 		schemaVersionMetadataKey,
 	).Scan(&version))
-	assert.Equal(t, "1", version)
+	assert.Equal(t, strconv.Itoa(SchemaVersion), version)
 	var repaired string
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = ?`,
@@ -269,7 +270,7 @@ func TestEnsureSchemaScrubsProjectIdentityGitRemoteCredentials(t *testing.T) {
 	rawRemote := "https://" + "user:token@" + "github.com/acme/app.git"
 	storedRemote := "https://github.com/acme/app.git"
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO project_identity_observations (
+		INSERT INTO source_project_identity_observations (
 			project, machine, root_path, git_remote, git_remote_name,
 			worktree_name, worktree_root_path, observed_at,
 			normalized_remote, key_source, key
@@ -279,7 +280,7 @@ func TestEnsureSchemaScrubsProjectIdentityGitRemoteCredentials(t *testing.T) {
 	)
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO project_identity_observations (
+		INSERT INTO source_project_identity_observations (
 			project, machine, root_path, git_remote, git_remote_name,
 			worktree_name, worktree_root_path, observed_at,
 			normalized_remote, key_source, key
@@ -293,7 +294,7 @@ func TestEnsureSchemaScrubsProjectIdentityGitRemoteCredentials(t *testing.T) {
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT git_remote, normalized_remote, key_source, key
-		FROM project_identity_observations
+		FROM source_project_identity_observations
 		WHERE project = ? AND machine = ? AND root_path = ?
 		ORDER BY git_remote`,
 		"app", "laptop", "/tmp/app",

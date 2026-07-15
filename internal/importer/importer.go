@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
@@ -103,6 +104,7 @@ func ImportClaudeAI(
 	store db.Store,
 	r io.Reader,
 	cb *ImportCallbacks,
+	machine ...string,
 ) (stats ImportStats, retErr error) {
 	fts := newLazyFTS(store, cb.indexing)
 	defer func() {
@@ -131,6 +133,9 @@ func ImportClaudeAI(
 			return ctx.Err()
 		}
 
+		result.Session.Machine = resolvedImportMachine(
+			result.Session.Machine, machine,
+		)
 		status, err := upsertConversation(
 			ctx, store, result, fts,
 		)
@@ -199,7 +204,6 @@ func upsertConversation(
 		ID:               s.ID,
 		Project:          s.Project,
 		Machine:          s.Machine,
-		Agent:            string(s.Agent),
 		FirstMessage:     strPtr(s.FirstMessage),
 		SessionName:      db.ParsedSessionName(s),
 		StartedAt:        timeStr(s.StartedAt),
@@ -207,6 +211,7 @@ func upsertConversation(
 		MessageCount:     s.MessageCount,
 		UserMessageCount: s.UserMessageCount,
 	}
+	db.ApplyParsedSessionIdentity(&sess, s)
 
 	if err := store.UpsertSession(sess); err != nil {
 		if errors.Is(err, db.ErrSessionExcluded) {
@@ -285,6 +290,7 @@ func ImportChatGPT(
 	dir string,
 	assetsDir string,
 	cb *ImportCallbacks,
+	machine ...string,
 ) (stats ImportStats, retErr error) {
 	fts := newLazyFTS(store, cb.indexing)
 	defer func() {
@@ -319,6 +325,7 @@ func ImportChatGPT(
 			}
 
 			s := result.Session
+			s.Machine = resolvedImportMachine(s.Machine, machine)
 
 			existing, err := store.GetSession(ctx, s.ID)
 			if err != nil {
@@ -350,7 +357,6 @@ func ImportChatGPT(
 				ID:               s.ID,
 				Project:          s.Project,
 				Machine:          s.Machine,
-				Agent:            string(s.Agent),
 				FirstMessage:     strPtr(s.FirstMessage),
 				SessionName:      db.ParsedSessionName(s),
 				StartedAt:        timeStr(s.StartedAt),
@@ -358,6 +364,7 @@ func ImportChatGPT(
 				MessageCount:     s.MessageCount,
 				UserMessageCount: s.UserMessageCount,
 			}
+			db.ApplyParsedSessionIdentity(&sess, s)
 
 			if err := store.UpsertSession(sess); err != nil {
 				if errors.Is(err, db.ErrSessionExcluded) {
@@ -416,6 +423,13 @@ func ImportChatGPT(
 
 	retErr = err
 	return
+}
+
+func resolvedImportMachine(current string, override []string) string {
+	if len(override) > 0 && strings.TrimSpace(override[0]) != "" {
+		return override[0]
+	}
+	return current
 }
 
 func ptrEqual(a, b *string) bool {

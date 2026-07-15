@@ -38,11 +38,14 @@ directory. They ignore read-only `agentsview pg serve` and
 `daemon status` reports that no daemon is running, and `daemon stop` and
 `daemon restart` leave those servers alive.
 
-Status distinguishes running, starting, and stopped states. If startup takes
-longer than the initial readiness wait, the child continues running; use
-`agentsview daemon status` and inspect the reported `serve.log`. If startup
-state remains stuck, follow the error's guidance to verify the owning process
-before terminating it manually and retrying.
+Status distinguishes running, starting, and stopped states. `daemon start`
+returns after its initial readiness wait if a long migration or sync is still
+running; the child continues in the background. `daemon restart` stays attached
+and prints phase, detail, and elapsed-time updates until the replacement daemon
+is ready. Canceling that wait with `Ctrl+C` leaves the child running. Use
+`agentsview daemon status` and inspect the reported `serve.log` when startup is
+slow. If startup state remains stuck, follow the error's guidance to verify the
+owning process before terminating it manually and retrying.
 
 ______________________________________________________________________
 
@@ -234,14 +237,21 @@ url = "http://devbox1.tailnet.ts.net:8080"
 token = "remote-token"
 ```
 
-With hosts configured, `agentsview sync` (no `--host`) runs the local sync
-first, then syncs each configured host in the order declared using its
-configured transport. `--full` applies to every host; for HTTP hosts it
-re-downloads the full archive into the persistent mirror and bypasses the remote
-path/mtime skip cache (see
-[Incremental Sync](/remote-access/#incremental-sync)). A failing host is
-reported on stderr and skipped so the remaining hosts still run; the command
-exits non-zero if any host failed.
+With hosts configured, `agentsview sync` (no `--host`) includes local sources
+and configured HTTP hosts in one coordinated sync. During a full or automatic
+data-version rebuild, AgentsView prepares every HTTP mirror, bulk-ingests the
+local and HTTP sources into one temporary database with FTS updates suspended,
+rebuilds FTS once, and atomically swaps the completed archive into place. SSH
+hosts run through their existing active-archive path only after that swap.
+
+`--full` reparses every discovered local and remote session, but it does not
+force unchanged HTTP mirror files to be transferred again. Manifest-capable
+spokes still send only changed files; older HTTP-capable spokes fall back to
+their existing full-archive endpoint. An HTTP preparation or contributor
+failure aborts the combined rebuild without replacing the active archive or
+running SSH. Ordinary incremental and post-swap SSH failures retain per-host
+reporting, and the command exits non-zero if any host failed. See
+[Incremental Sync](/remote-access/#incremental-sync).
 
 `agentsview sync --host X` syncs one host, not the whole configured list. When
 the local daemon knows a configured host with that identity, it uses the stored
@@ -258,11 +268,13 @@ endpoints. Ad hoc HTTP remotes are not supported. Hosts must be unique within
 the list, since remote sessions are namespaced by host.
 
 During HTTP remote sync, the collector prints durable phase lines for resolving
-remote roots, downloading and extracting the archive, processing sessions, and
-the final per-host summary. Archive downloads also show live byte progress when
-the remote daemon provides a `Content-Length` header. If an upgraded binary does
-not show those phases, restart the local collector daemon; restarting the remote
-daemon as well avoids version skew while smoke testing.
+remote roots, fetching and comparing the manifest, transferring and extracting
+changed files, processing each contributor, rebuilding FTS, and swapping the
+database. Archive downloads also show live compressed-byte progress when the
+remote daemon provides a `Content-Length` header. The new phases and bulk-ingest
+path come from the collector; a spoke upgrade is needed only for manifest-delta
+transfer. If an upgraded binary does not show those phases, restart the local
+collector daemon.
 
 ______________________________________________________________________
 
@@ -306,15 +318,44 @@ ______________________________________________________________________
 
 ### `agentsview version`
 
-Print the version, git commit, and build date.
+Print the version, git commit, and build date. Use `--json` for a stable,
+machine-readable response that does not require a running daemon, configuration,
+or database.
 
 ```bash
 agentsview version
+agentsview version --json
+agentsview version --format json
 ```
 
 ```
-agentsview 0.23.0 (commit d49f1a9, built 2026-04-19)
+agentsview v0.38.0 (commit 5b42bf1c, built 2026-07-13T15:37:17Z)
 ```
+
+```json
+{
+  "schema_version": 1,
+  "name": "agentsview",
+  "version": "v0.38.0",
+  "commit": "5b42bf1c",
+  "build_date": "2026-07-13T15:37:17Z"
+}
+```
+
+The JSON contract uses these fields:
+
+| Field            | Type    | Meaning                                      |
+| ---------------- | ------- | -------------------------------------------- |
+| `schema_version` | integer | Version of this JSON contract; currently `1` |
+| `name`           | string  | Canonical tool name, always `agentsview`     |
+| `version`        | string  | Build version                                |
+| `commit`         | string  | Source commit recorded at build time         |
+| `build_date`     | string  | UTC build timestamp, or an empty string       |
+
+Consumers should require the expected `schema_version` and ignore unknown
+fields. Adding an optional field does not require a schema bump; removing or
+renaming a field, changing a field's type or meaning, or making a previously
+valid response invalid does.
 
 ______________________________________________________________________
 
@@ -881,7 +922,9 @@ agentsview export sessions --all --format ndjson --project agentsview
 
 The JSON top level has `schema_version`, `database_id`, `cursor`, `pricing`,
 `projects`, and `sessions`. NDJSON writes the same metadata as the first line,
-then one session row per following line. The default and maximum page size is
+then one session row per following line. Current builds emit
+`schema_version: 2`; see [Session Export](/session-export/#versioning) for the
+v1 and transitional 0.38 release history. The default and maximum page size is
 `db.MaxSessionLimit`, currently 500.
 
 When `--cursor` is present, only `--format`, `--json`, and `--limit` may be
@@ -1128,6 +1171,7 @@ agentsview help
 | `FORGE_DIR`                       | `~/.forge`                                           | Forge directory (contains `.forge.db`)                                                              |
 | `GEMINI_DIR`                      | `~/.gemini`                                          | Gemini CLI directory                                                                                |
 | `GPTME_DIR`                       | `~/.local/share/gptme/logs`                          | gptme logs directory                                                                                |
+| `GROK_DIR`                        | `~/.grok/sessions`                                   | Grok sessions directory                                                                             |
 | `HERMES_SESSIONS_DIR`             | `~/.hermes/sessions`                                 | Hermes Agent sessions directory                                                                     |
 | `IFLOW_DIR`                       | `~/.iflow/projects`                                  | iFlow projects directory                                                                            |
 | `KILO_DIR`                        | `~/.local/share/kilo`                                | Kilo data directory                                                                                 |

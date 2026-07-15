@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,6 +26,288 @@ import (
 	"go.kenn.io/agentsview/internal/server"
 	agentsync "go.kenn.io/agentsview/internal/sync"
 )
+
+func TestRuntimeWarningHelper(t *testing.T) {
+	logOutput := captureLogOutput(t)
+	var visible bytes.Buffer
+
+	reportRuntimeRecordWrite(
+		&visible, errors.New("permission denied"),
+		"keeping start lock as fallback",
+		"To fix permissions, run: icacls <dir> /setowner <user>",
+	)
+
+	assert.Contains(t, visible.String(), "could not write daemon runtime record")
+	assert.Contains(t, visible.String(), "icacls <dir> /setowner <user>")
+	assert.Contains(t, logOutput.String(), "could not write daemon runtime record")
+}
+
+func TestServeRuntimeRecordWriteFailureWarnsVisibleAfterSlowStartup(t *testing.T) {
+	out, err := runServeRuntimeWarningHelper(t, true, 1200*time.Millisecond)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+	assert.Contains(t, string(out), "icacls <dir> /setowner <user>")
+}
+
+func TestServeRuntimeRecordWriteSuccessDoesNotWarnVisible(t *testing.T) {
+	out, err := runServeRuntimeWarningHelper(t, false, 0)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "runtime record write reached")
+	assert.NotContains(t, string(out), "could not write daemon runtime record")
+}
+
+func TestPGServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
+	out, err := runPGRuntimeWarningHelper(t)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+}
+
+func TestDuckDBServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
+	out, err := runDuckDBRuntimeWarningHelper(t)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+}
+
+func runServeRuntimeWarningHelper(
+	t *testing.T, failWrite bool, startupDelay time.Duration,
+) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	marker := "runtime record write reached"
+	if failWrite {
+		// Wait for the remedy, which is emitted after the warning, so the parent
+		// cannot stop the helper between the two lines under test.
+		marker = "icacls <dir> /setowner <user>"
+	}
+	return runRuntimeWarningHelperProcess(
+		t, "serve", "TestRunServeRuntimeWarningHelperProcess",
+		[]string{
+			"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_HELPER=1",
+			"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL=" + fmt.Sprint(failWrite),
+			"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_DELAY=" + startupDelay.String(),
+			"AGENTSVIEW_DATA_DIR=" + dataDir,
+		},
+		marker,
+	)
+}
+
+func runRuntimeWarningHelperProcess(
+	t *testing.T, helperName, testName string, env []string, marker string,
+) ([]byte, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
+	cmd.Env = append(os.Environ(), env...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("pipe %s helper stdout: %w", helperName, err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %s helper: %w", helperName, err)
+	}
+
+	var stdoutOutput bytes.Buffer
+	observed := false
+	var stopErr error
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		stdoutOutput.WriteString(line)
+		stdoutOutput.WriteByte('\n')
+		if !observed && strings.Contains(line, marker) {
+			observed = true
+			stopErr = cmd.Cancel()
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+
+	combined := append([]byte(nil), stdoutOutput.Bytes()...)
+	combined = append(combined, stderr.Bytes()...)
+	if observed {
+		if scanErr != nil {
+			return combined, fmt.Errorf(
+				"scan %s helper stdout after marker: %w\noutput:\n%s",
+				helperName, scanErr, combined,
+			)
+		}
+		if stopErr != nil {
+			return combined, fmt.Errorf(
+				"stop %s helper after stdout marker: %w\noutput:\n%s",
+				helperName, stopErr, combined,
+			)
+		}
+		if _, ok := waitErr.(*exec.ExitError); waitErr != nil && !ok {
+			return combined, fmt.Errorf(
+				"wait for stopped %s helper after stdout marker: %w\noutput:\n%s",
+				helperName, waitErr, combined,
+			)
+		}
+		return stdoutOutput.Bytes(), nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return combined, fmt.Errorf(
+			"%s helper deadline expired before stdout marker %q: %w\noutput:\n%s",
+			helperName, marker, ctx.Err(), combined,
+		)
+	}
+	if scanErr != nil {
+		return combined, fmt.Errorf(
+			"scan %s helper stdout before marker %q: %w\noutput:\n%s",
+			helperName, marker, scanErr, combined,
+		)
+	}
+	if waitErr != nil {
+		return combined, fmt.Errorf(
+			"%s helper exited nonzero before stdout marker %q: %w\noutput:\n%s",
+			helperName, marker, waitErr, combined,
+		)
+	}
+	return combined, fmt.Errorf(
+		"%s helper exited with status 0 before stdout marker %q\noutput:\n%s",
+		helperName, marker, combined,
+	)
+}
+
+func TestRunServeRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	if os.Getenv("AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL") == "true" {
+		writeDaemonRuntimeWithAuthAndNoSync = func(
+			string, string, int, string, bool, bool, bool, ...int,
+		) (string, error) {
+			return "", errors.New("forced runtime-record write failure")
+		}
+	} else {
+		original := writeDaemonRuntimeWithAuthAndNoSync
+		writeDaemonRuntimeWithAuthAndNoSync = func(
+			dataDir, host string, port int, version string, readOnly,
+			requireAuth, noSync bool, caddyPID ...int,
+		) (string, error) {
+			path, err := original(
+				dataDir, host, port, version, readOnly, requireAuth, noSync,
+				caddyPID...,
+			)
+			fmt.Println("runtime record write reached")
+			return path, err
+		}
+	}
+	// This is only an orphan guard if the parent dies; normal completion is
+	// driven by the parent observing the expected output on stdout.
+	go func() {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
+	}()
+	startupDelay, err := time.ParseDuration(
+		os.Getenv("AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_DELAY"),
+	)
+	require.NoError(t, err)
+	time.Sleep(startupDelay)
+	runServe(config.Config{
+		Host:    "127.0.0.1",
+		Port:    0,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+		DBPath:  filepath.Join(os.Getenv("AGENTSVIEW_DATA_DIR"), "sessions.db"),
+		NoSync:  true,
+	}, serveOptions{})
+}
+
+func runDuckDBRuntimeWarningHelper(t *testing.T) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	return runRuntimeWarningHelperProcess(
+		t, "DuckDB", "TestRunDuckDBRuntimeWarningHelperProcess",
+		[]string{
+			"AGENTSVIEW_RUN_DUCKDB_RUNTIME_WARNING_HELPER=1",
+			"AGENTSVIEW_DATA_DIR=" + dataDir,
+			"AGENTSVIEW_DUCKDB_RUNTIME_WARNING_PATH=" + filepath.Join(dataDir, "mirror.duckdb"),
+		},
+		"could not write daemon runtime record",
+	)
+}
+
+func runPGRuntimeWarningHelper(t *testing.T) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	return runRuntimeWarningHelperProcess(
+		t, "PostgreSQL", "TestRunPGRuntimeWarningHelperProcess",
+		[]string{
+			"AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER=1",
+			"AGENTSVIEW_DATA_DIR=" + dataDir,
+		},
+		"could not write daemon runtime record",
+	)
+}
+
+func TestRunPGRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	writeDaemonRuntimeWithAuth = func(
+		string, string, int, string, bool, bool, ...int,
+	) (string, error) {
+		return "", errors.New("forced runtime-record write failure")
+	}
+	database := dbtest.OpenTestDBAt(
+		t, filepath.Join(os.Getenv("AGENTSVIEW_DATA_DIR"), "pg.db"),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	port := server.FindAvailablePort("127.0.0.1", 0)
+	appCfg := config.Config{
+		Host:    "127.0.0.1",
+		Port:    port,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+	}
+	preparePGServe = func(config.Config, string) (pgServeStartup, error) {
+		return pgServeStartup{
+			cfg: appCfg, ctx: ctx,
+			rtOpts: serveRuntimeOptions{
+				Mode: "pg-serve", RequestedPort: appCfg.Port,
+			},
+			srv: server.New(
+				appCfg, database, nil,
+				server.WithBaseContext(ctx),
+			),
+			cleanup: func() { cancel(); _ = database.Close() },
+		}, nil
+	}
+	// This is only an orphan guard if the parent dies; normal completion is
+	// driven by the parent observing the warning on stdout.
+	go func() {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
+	}()
+	runPGServe(appCfg, "")
+}
+
+func TestRunDuckDBRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_DUCKDB_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	writeDaemonRuntimeWithAuth = func(
+		string, string, int, string, bool, bool, ...int,
+	) (string, error) {
+		return "", errors.New("forced runtime-record write failure")
+	}
+	// This is only an orphan guard if the parent dies; normal completion is
+	// driven by the parent observing the warning on stdout.
+	go func() {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
+	}()
+	runDuckDBServe(config.Config{
+		Host:    "127.0.0.1",
+		Port:    0,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+		DuckDB: config.DuckDBConfig{
+			Path: os.Getenv("AGENTSVIEW_DUCKDB_RUNTIME_WARNING_PATH"),
+		},
+	}, "")
+}
 
 func TestMustLoadConfig(t *testing.T) {
 	tests := []struct {
@@ -394,6 +679,78 @@ func TestRemoteHostSyncFuncSerializesWithEngineExclusiveLock(t *testing.T) {
 	}
 }
 
+type scheduledLockOrderRunner struct {
+	held bool
+}
+
+func (r *scheduledLockOrderRunner) RunExclusive(work func() error) error {
+	if r.held {
+		return errors.New("engine lock acquired recursively")
+	}
+	r.held = true
+	defer func() { r.held = false }()
+	return work()
+}
+
+type scheduledLockOrderCleanup struct {
+	runner  remoteSyncExclusiveRunner
+	retries int
+}
+
+func (c *scheduledLockOrderCleanup) Error() string { return "pending cleanup" }
+
+func (c *scheduledLockOrderCleanup) RetryCleanup() error {
+	c.retries++
+	if c.retries == 1 {
+		return errors.New("retain pending cleanup")
+	}
+	return c.runner.RunExclusive(func() error { return nil })
+}
+
+func TestRemoteHostSyncFuncAcquiresHTTPCleanupBeforeEngine(t *testing.T) {
+	originalRegistry := httpRemoteCleanupRegistry
+	httpRemoteCleanupRegistry = new(remotesync.CleanupRegistry)
+	t.Cleanup(func() { httpRemoteCleanupRegistry = originalRegistry })
+	runner := &scheduledLockOrderRunner{}
+	owner := &scheduledLockOrderCleanup{runner: runner}
+	_, seedErr := httpRemoteCleanupRegistry.Run(
+		func() (remotesync.SyncStats, error) {
+			return remotesync.SyncStats{}, owner
+		},
+	)
+	require.Error(t, seedErr)
+	originalHTTP := runHTTPRemoteSync
+	httpCalls := 0
+	runHTTPRemoteSync = func(
+		context.Context, config.Config, *db.DB, config.RemoteHost, bool,
+	) (remotesync.SyncStats, error) {
+		httpCalls++
+		return remotesync.SyncStats{SessionsSynced: 1}, nil
+	}
+	t.Cleanup(func() { runHTTPRemoteSync = originalHTTP })
+	database := dbtest.OpenTestDB(t)
+	syncFn := remoteHostSyncFunc(
+		context.Background(), config.Config{}, database, runner,
+		config.RemoteHost{Host: "http-host", Transport: config.RemoteTransportHTTP},
+		func(
+			ctx context.Context, cfg config.Config, database *db.DB,
+			rh config.RemoteHost, full bool,
+		) (remotesync.SyncStats, error) {
+			return runRemoteSyncTransportWithCleanup(
+				ctx, cfg, database, rh, full, false,
+			)
+		},
+	)
+
+	synced, err := syncFn()
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, synced)
+	assert.Equal(t, 1, httpCalls)
+	assert.Equal(t, 2, owner.retries,
+		"retained cleanup must acquire the engine before scheduled work")
+}
+
 func TestRemoteHostSyncFuncUsesCallerContext(t *testing.T) {
 	database := dbtest.OpenTestDB(t)
 	engine := agentsync.NewEngine(database, agentsync.EngineConfig{
@@ -448,7 +805,14 @@ func TestRemoteHostSyncFuncDispatchesHTTPTransport(t *testing.T) {
 			Transport: config.RemoteTransportHTTP,
 			URL:       "https://test-host.example.test",
 		},
-		runRemoteSyncTransport,
+		func(
+			ctx context.Context, cfg config.Config, database *db.DB,
+			rh config.RemoteHost, full bool,
+		) (remotesync.SyncStats, error) {
+			return runRemoteSyncTransportWithCleanup(
+				ctx, cfg, database, rh, full, false,
+			)
+		},
 	)
 
 	synced, err := syncFn()

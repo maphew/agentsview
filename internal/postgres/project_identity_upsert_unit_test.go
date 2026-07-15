@@ -27,6 +27,7 @@ func TestPlanProjectIdentityObservationSync(t *testing.T) {
 		name          string
 		observations  []export.ProjectIdentityObservation
 		wantReal      []string // GitRemoteName markers, in order
+		wantAmbiguous []string // RootPath markers, in order
 		wantFallbacks []string // RootPath markers, in order
 		wantRoots     []string // RootPath markers, in order
 	}{
@@ -40,6 +41,33 @@ func TestPlanProjectIdentityObservationSync(t *testing.T) {
 			},
 			wantReal:  []string{"origin", "origin"},
 			wantRoots: []string{"/a", "/b"},
+		},
+		{
+			name: "ambiguous survives alongside real remote",
+			observations: func() []export.ProjectIdentityObservation {
+				ambiguous := identityObs("/a", "", "")
+				ambiguous.RemoteResolution = export.ProjectResolutionAmbiguous
+				ambiguous.RemoteCandidateCount = 2
+				return []export.ProjectIdentityObservation{
+					identityObs("/a", "git@x:a.git", "origin"),
+					ambiguous,
+				}
+			}(),
+			wantReal:      []string{"origin"},
+			wantAmbiguous: []string{"/a"},
+			wantRoots:     []string{"/a"},
+		},
+		{
+			name: "ambiguous wins over later unknown fallback",
+			observations: func() []export.ProjectIdentityObservation {
+				ambiguous := identityObs("/a", "", "")
+				ambiguous.RemoteResolution = export.ProjectResolutionAmbiguous
+				ambiguous.RemoteCandidateCount = 2
+				unknown := identityObs("/a", "", "")
+				unknown.RemoteResolution = export.ProjectResolutionUnknown
+				return []export.ProjectIdentityObservation{ambiguous, unknown}
+			}(),
+			wantAmbiguous: []string{"/a"},
 		},
 		{
 			name: "fallback without real survives to the pg check",
@@ -74,6 +102,12 @@ func TestPlanProjectIdentityObservationSync(t *testing.T) {
 				gotReal = append(gotReal, obs.GitRemoteName)
 			}
 			assert.Equal(t, tt.wantReal, gotReal, "real remote observations")
+
+			var gotAmbiguous []string
+			for _, obs := range plan.ambiguous {
+				gotAmbiguous = append(gotAmbiguous, obs.RootPath)
+			}
+			assert.Equal(t, tt.wantAmbiguous, gotAmbiguous, "ambiguous observations")
 
 			var gotFallbacks []string
 			for _, obs := range plan.fallbacks {

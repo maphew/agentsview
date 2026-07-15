@@ -24,6 +24,8 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/postgres"
+	"go.kenn.io/agentsview/internal/pricingrefresh"
+	"go.kenn.io/agentsview/internal/remotesync"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/web"
@@ -40,6 +42,11 @@ type VersionInfo struct {
 	APIVersion                 int    `json:"api_version"`
 	DataVersion                int    `json:"data_version"`
 }
+
+// APIVersion is shared by HTTP version reporting and local daemon discovery.
+// Bump it when a client-visible contract cannot be decoded safely by an older
+// CLI or daemon.
+const APIVersion = 3
 
 const daemonService = "agentsview"
 
@@ -67,6 +74,8 @@ type Server struct {
 	httpSrv               *http.Server
 	version               VersionInfo
 	dataDir               string
+
+	httpRemoteCleanupRegistry *remotesync.CleanupRegistry
 
 	// baseCtx, when set, is used as the base context for all
 	// incoming requests. Cancelling it causes SSE handlers to
@@ -120,6 +129,8 @@ type Server struct {
 	// generation to the daemon's pg push handler. Nil leaves the vector
 	// push phase skipped, e.g. when [vector] is disabled.
 	vectorPushSource postgres.VectorPushSource
+
+	ensurePricing func(context.Context, *db.DB) error
 }
 
 func (s *Server) lockSessionLifecycle() {
@@ -157,8 +168,10 @@ func New(
 		engine:                    engine,
 		sessions:                  sessions,
 		mux:                       http.NewServeMux(),
+		httpRemoteCleanupRegistry: new(remotesync.CleanupRegistry),
 		insightLogDrainTimeout:    defaultInsightLogDrainTimeout,
 		insightLogStopWaitTimeout: defaultInsightLogStopWaitTimeout,
+		ensurePricing:             pricingrefresh.EnsureCurrent,
 		generateStreamFunc: func(
 			ctx context.Context, agent, prompt string,
 			onLog insight.LogFunc,
@@ -183,7 +196,7 @@ func New(
 		opt(s)
 	}
 	if s.version.APIVersion == 0 {
-		s.version.APIVersion = 2
+		s.version.APIVersion = APIVersion
 	}
 	if s.version.DataVersion == 0 {
 		s.version.DataVersion = db.CurrentDataVersion()
@@ -231,6 +244,16 @@ func WithDataDir(dir string) Option {
 // exit and unblocking graceful shutdown.
 func WithBaseContext(ctx context.Context) Option {
 	return func(s *Server) { s.baseCtx = ctx }
+}
+
+// WithHTTPRemoteCleanupRegistry shares cleanup ownership with other HTTP sync
+// entry points in the same process, such as scheduled daemon syncs.
+func WithHTTPRemoteCleanupRegistry(registry *remotesync.CleanupRegistry) Option {
+	return func(s *Server) {
+		if registry != nil {
+			s.httpRemoteCleanupRegistry = registry
+		}
+	}
 }
 
 // WithBroadcaster wires an event broadcaster into the server so the
@@ -362,6 +385,13 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	f, err := s.spaFS.Open(path)
 	if err == nil {
 		f.Close()
+		if path == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control",
+				"public, max-age=31536000, immutable")
+		}
 		// For index.html with a base path, inject <base href>.
 		if s.basePath != "" && path == "index.html" {
 			s.serveIndexWithBase(w, r)
@@ -371,7 +401,16 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fingerprinted frontend assets are files, not client-side routes.
+	// Returning index.html here disguises stale asset URLs as successful
+	// JavaScript or CSS responses after an upgrade.
+	if strings.HasPrefix(path, "assets/") {
+		http.NotFound(w, r)
+		return
+	}
+
 	// SPA fallback: serve index.html for all routes
+	w.Header().Set("Cache-Control", "no-cache")
 	if s.basePath != "" {
 		s.serveIndexWithBase(w, r)
 		return

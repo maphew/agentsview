@@ -9,6 +9,7 @@ import { mount, tick, unmount } from "svelte";
 import { router } from "../../stores/router.svelte.js";
 import { sessions } from "../../stores/sessions.svelte.js";
 import { usage } from "../../stores/usage.svelte.js";
+import { yokedDates } from "../../stores/yokedDates.svelte.js";
 import source from "./UsagePage.svelte?raw";
 import UsagePage from "./UsagePage.svelte";
 
@@ -58,6 +59,7 @@ afterEach(() => {
     component = undefined;
   }
   vi.restoreAllMocks();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
   router.route = "sessions";
@@ -66,10 +68,97 @@ afterEach(() => {
   usage.summary = null;
   usage.topSessions = null;
   usage.errors.summary = null;
+  usage.isPinned = false;
+  usage.windowDays = 30;
+  usage.from = "";
+  usage.to = "";
   sessions.projects = [];
+  yokedDates.setEnabled(false);
+  localStorage.clear();
 });
 
 describe("UsagePage refresh behavior", () => {
+  it("materializes rolling bounds before fetching a returned bare page", async () => {
+    const fetchStates: Array<{
+      isPinned: boolean;
+      from: string;
+      to: string;
+    }> = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchStates.push({
+        isPinned: usage.isPinned,
+        from: usage.from,
+        to: usage.to,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = true;
+    usage.windowDays = 30;
+    usage.from = "2026-01-01";
+    usage.to = "2026-01-07";
+    yokedDates.setEnabled(false);
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.from).toBe("2026-06-11");
+    expect(usage.to).toBe("2026-07-10");
+    expect(fetchStates[0]).toEqual({
+      isPinned: false,
+      from: "2026-06-11",
+      to: "2026-07-10",
+    });
+  });
+
+  it("refreshes an unpinned rolling range after midnight", async () => {
+    const fetchDates: Array<{ from: string; to: string }> = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-10T12:00:00"));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchDates.push({ from: usage.from, to: usage.to });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = false;
+    usage.windowDays = 30;
+    usage.from = "2026-06-10";
+    usage.to = "2026-07-09";
+    yokedDates.setEnabled(false);
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(false);
+    expect(usage.from).toBe("2026-06-11");
+    expect(usage.to).toBe("2026-07-10");
+    expect(fetchDates[0]).toEqual({
+      from: "2026-06-11",
+      to: "2026-07-10",
+    });
+  });
+
   it("renders the unsupported Copilot note from the summary contract", async () => {
     vi.stubGlobal(
       "ResizeObserver",
@@ -111,6 +200,79 @@ describe("UsagePage refresh behavior", () => {
     await flushEffects();
 
     expect(loadAgents).toHaveBeenCalled();
+  });
+
+  it("ignores response-scoped project keys restored from a URL", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockResolvedValue();
+
+    router.route = "usage";
+    router.params = {
+      model: "fixture-model",
+      exclude_project_key: "pl1:sha256:stale",
+    };
+    usage.excludedProjectKeys = "";
+    usage.selectedModels = "";
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.excludedProjectKeys).toBe("");
+    expect(usage.selectedModels).toBe("fixture-model");
+  });
+
+  it("seeds bare Usage from an enabled fixed range", async () => {
+    const fetchStates: Array<{
+      isPinned: boolean;
+      from: string;
+      to: string;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(usage, "fetchAll").mockImplementation(() => {
+      fetchStates.push({
+        isPinned: usage.isPinned,
+        from: usage.from,
+        to: usage.to,
+      });
+      return Promise.resolve();
+    });
+    vi.spyOn(sessions, "loadAgents").mockResolvedValue();
+    router.route = "usage";
+    router.params = {};
+    usage.isPinned = false;
+    usage.windowDays = 30;
+    usage.from = "2026-05-22";
+    usage.to = "2026-06-20";
+    yokedDates.setEnabled(true);
+    yokedDates.updateFromPanel({
+      from: "2026-06-01",
+      to: "2026-06-07",
+      mode: "fixed",
+    });
+
+    component = mount(UsagePage, { target: document.body });
+    await flushEffects();
+
+    expect(usage.isPinned).toBe(true);
+    expect(usage.from).toBe("2026-06-01");
+    expect(usage.to).toBe("2026-06-07");
+    expect(fetchStates[0]).toEqual({
+      isPinned: true,
+      from: "2026-06-01",
+      to: "2026-06-07",
+    });
   });
 
   it("keeps the note hidden without an unsupported usage signal", async () => {

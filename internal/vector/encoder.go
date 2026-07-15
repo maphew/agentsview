@@ -32,6 +32,13 @@ type EncoderConfig struct {
 	Model string
 	// Dimension is the length every returned vector must have.
 	Dimension int
+	// RequestDimensions, when true, sends Dimension as the OpenAI-compatible
+	// "dimensions" request field, asking the endpoint for Matryoshka-reduced
+	// vectors of exactly that length. When false (the default) the field is
+	// omitted — for models served at their native dimension and endpoints
+	// that do not support dimension selection — and Dimension only validates
+	// response length.
+	RequestDimensions bool
 	// Timeout bounds each individual HTTP request.
 	Timeout time.Duration
 	// MaxRetries is the maximum total attempts on 429/5xx/network errors
@@ -70,6 +77,25 @@ type HTTPStatusError struct {
 	// RetryAfter is the parsed Retry-After delay from a 429 response, or
 	// nil when the response carried none or it could not be parsed.
 	RetryAfter *time.Duration
+}
+
+// InvalidEmbeddingError reports endpoint output that has the expected shape
+// but cannot participate in cosine distance. Index identifies the embedding
+// within the response batch; Component is -1 for a zero-norm vector.
+type InvalidEmbeddingError struct {
+	Index     int
+	Component int
+	Reason    string
+}
+
+func (e *InvalidEmbeddingError) Error() string {
+	if e.Component >= 0 {
+		return fmt.Sprintf(
+			"[vector.embeddings] invalid embedding at index %d component %d: %s",
+			e.Index, e.Component, e.Reason)
+	}
+	return fmt.Sprintf(
+		"[vector.embeddings] invalid embedding at index %d: %s", e.Index, e.Reason)
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -129,6 +155,11 @@ type embeddingsRequestBody struct {
 	// difference dominates round-trip time on slow links. Empty omits the
 	// field for servers that reject it.
 	EncodingFormat string `json:"encoding_format,omitempty"`
+	// Dimensions asks the endpoint to reduce every embedding to exactly this
+	// length (Matryoshka truncation plus renormalization, server-side). Zero
+	// omits the field so native-dimension configurations and endpoints
+	// without dimension selection keep working.
+	Dimensions int `json:"dimensions,omitempty"`
 }
 
 // embeddingsResponseBody is the OpenAI-compatible embeddings response.
@@ -146,6 +177,7 @@ type embeddingsResponseBody struct {
 type embeddingVector []float32
 
 func (v *embeddingVector) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
 	if len(b) > 0 && b[0] == '"' {
 		var s string
 		if err := json.Unmarshal(b, &s); err != nil {
@@ -165,11 +197,46 @@ func (v *embeddingVector) UnmarshalJSON(b []byte) error {
 		*v = out
 		return nil
 	}
-	var floats []float32
-	if err := json.Unmarshal(b, &floats); err != nil {
+	var elements []json.RawMessage
+	if err := json.Unmarshal(b, &elements); err != nil {
 		return err
 	}
+	floats := make([]float32, len(elements))
+	for i, element := range elements {
+		if bytes.Equal(bytes.TrimSpace(element), []byte("null")) {
+			return fmt.Errorf("embedding component %d is null", i)
+		}
+		if err := json.Unmarshal(element, &floats[i]); err != nil {
+			return fmt.Errorf("decode embedding component %d: %w", i, err)
+		}
+	}
 	*v = floats
+	return nil
+}
+
+func validateEmbedding(vector []float32, index int) error {
+	var squaredNorm float64
+	for component, value := range vector {
+		f := float64(value)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return &InvalidEmbeddingError{
+				Index: index, Component: component, Reason: "non-finite component",
+			}
+		}
+		squaredNorm += f * f
+	}
+	if squaredNorm == 0 {
+		return &InvalidEmbeddingError{Index: index, Component: -1, Reason: "zero norm"}
+	}
+	return nil
+}
+
+func validateEmbeddings(vectors [][]float32) error {
+	for index, vector := range vectors {
+		if err := validateEmbedding(vector, index); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -218,6 +285,9 @@ func (ec *encoderClient) marshalRequest(texts []string) ([]byte, error) {
 	if !ec.floatMode.Load() {
 		body.EncodingFormat = "base64"
 	}
+	if ec.cfg.RequestDimensions {
+		body.Dimensions = ec.cfg.Dimension
+	}
 	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("[vector.embeddings] marshal request: %w", err)
@@ -252,6 +322,17 @@ func (ec *encoderClient) encode(ctx context.Context, texts []string) ([][]float3
 			ec.floatMode.Store(true)
 			return ec.encode(ctx, texts)
 		}
+		if ec.cfg.RequestDimensions && isDimensionsRejection(err) {
+			// Unlike encoding_format there is no safe downgrade: dropping the
+			// dimensions field would change the embedding space, so fail with
+			// the fix spelled out instead of retrying an identical request.
+			return nil, fmt.Errorf(
+				"[vector.embeddings] endpoint rejected the dimensions field "+
+					"(model %q or this endpoint may not support reduced output dimensions): "+
+					"unset [vector.embeddings] request_dimensions or set dimension to the "+
+					"model's native output length: %w",
+				ec.cfg.Model, err)
+		}
 		lastErr = err
 		if !retryable || attempt == attempts {
 			return nil, lastErr
@@ -277,6 +358,22 @@ func isEncodingFormatRejection(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(statusErr.Body), "encoding_format")
+}
+
+// isDimensionsRejection reports whether err is a client-error response whose
+// body names the dimensions field, i.e. a server refusing the reduced-output
+// request rather than the input. Callers must only consult it when the
+// request actually carried the field; the match is body-text based and a
+// request without the field cannot be rejected for it.
+func isDimensionsRejection(err error) bool {
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	if statusErr.Status < 400 || statusErr.Status >= 500 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(statusErr.Body), "dimensions")
 }
 
 // attemptEncode makes a single HTTP request and decodes the response. The
@@ -322,18 +419,23 @@ func (ec *encoderClient) attemptEncode(
 		return nil, true, fmt.Errorf("[vector.embeddings] decode response: %w", err)
 	}
 
-	vectors, err := reorderAndValidate(decoded, texts, cfg.Dimension)
+	vectors, err := reorderAndValidate(decoded, texts, cfg)
 	if err != nil {
-		return nil, false, err
+		var invalidErr *InvalidEmbeddingError
+		return nil, errors.As(err, &invalidErr), err
 	}
 	return vectors, false, nil
 }
 
 // reorderAndValidate reorders the decoded embeddings by their reported
-// index and validates counts and dimensions against the request.
+// index and validates counts and dimensions against the request. A
+// wrong-length vector is always an error — reduction happens server-side or
+// not at all, never by client-side truncation — and when the request carried
+// the dimensions field the error says the endpoint ignored it.
 func reorderAndValidate(
-	decoded embeddingsResponseBody, texts []string, dimension int,
+	decoded embeddingsResponseBody, texts []string, cfg EncoderConfig,
 ) ([][]float32, error) {
+	dimension := cfg.Dimension
 	if len(decoded.Data) != len(texts) {
 		return nil, fmt.Errorf(
 			"[vector.embeddings] count mismatch: got %d embeddings, want %d",
@@ -348,6 +450,15 @@ func reorderAndValidate(
 				"[vector.embeddings] index %d out of range for %d texts", d.Index, len(texts))
 		}
 		if len(d.Embedding) != dimension {
+			if cfg.RequestDimensions {
+				return nil, fmt.Errorf(
+					"[vector.embeddings] dimension mismatch at index %d: got %d, want %d "+
+						"(the endpoint ignored the requested dimensions field; model %q or "+
+						"this endpoint may not support reduced output dimensions — unset "+
+						"[vector.embeddings] request_dimensions or set dimension to the "+
+						"model's native output length)",
+					d.Index, len(d.Embedding), dimension, cfg.Model)
+			}
 			return nil, fmt.Errorf(
 				"[vector.embeddings] dimension mismatch at index %d: got %d, want %d",
 				d.Index, len(d.Embedding), dimension)
@@ -359,6 +470,9 @@ func reorderAndValidate(
 		if !ok {
 			return nil, fmt.Errorf("[vector.embeddings] missing embedding for index %d", i)
 		}
+	}
+	if err := validateEmbeddings(out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

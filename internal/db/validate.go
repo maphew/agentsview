@@ -224,6 +224,14 @@ func sanitizeToolCallContent(
 	}
 }
 
+// SanitizeToolCall applies the parser-derived content contract to one tool
+// call that is being updated outside a normal message write.
+func SanitizeToolCall(tc *ToolCall) ValidationStats {
+	var stats ValidationStats
+	sanitizeToolCallContent(tc, &stats)
+	return stats
+}
+
 // SanitizeUsageEvent applies the contract to a single usage event row.
 func SanitizeUsageEvent(ev *UsageEvent) ValidationStats {
 	var stats ValidationStats
@@ -293,6 +301,8 @@ func SanitizeSession(s *Session) ValidationStats {
 	sanitizeStringField(&s.Project, &stats)
 	sanitizeStringField(&s.Machine, &stats)
 	sanitizeStringField(&s.Agent, &stats)
+	sanitizeStringField(&s.AgentLabel, &stats)
+	sanitizeStringField(&s.Entrypoint, &stats)
 	sanitizeStringField(&s.Cwd, &stats)
 	sanitizeStringField(&s.GitBranch, &stats)
 	sanitizeStringField(&s.SourceSessionID, &stats)

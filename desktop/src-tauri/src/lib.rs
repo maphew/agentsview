@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use tauri::async_runtime::Receiver;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::plugin::Builder as PluginBuilder;
+#[cfg(target_os = "macos")]
+use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Emitter, Manager, RunEvent, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
@@ -35,12 +37,23 @@ const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(1250);
 const STATUS_PROBE_FAILURE_NOTICE_AFTER: u32 = 10;
 const STATUS_PROBE_FAILURE_FAIL_AFTER: u32 = 30;
 const LOGIN_SHELL_ENV_TIMEOUT: Duration = Duration::from_secs(3);
-const UPDATE_SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+// Stopping the detached daemon before an update install must outlast
+// both a daemon that is still mid-startup (serve stop refuses with
+// "retry once it is ready" while the startup sync runs, which takes
+// tens of seconds on large archives) and serve stop's own 10s graceful
+// shutdown window before it escalates to a forced kill.
+const UPDATE_SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(120);
+const UPDATE_STOP_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const SERVE_STOP_STARTING_RETRY_HINT: &str = "a server is starting; retry once it is ready";
 const DATA_VERSION_TOO_NEW_EXIT_CODE: i32 = 3;
 const DESKTOP_LOG_FILE_NAME: &str = "agentsview-desktop.log";
 const DESKTOP_LOG_QUEUE_CAPACITY: usize = 64;
 const STARTUP_OUTPUT_MAX_CHARS: usize = 12_000;
+const ABOUT_MENU_ID: &str = "about";
+const CHECK_UPDATES_MENU_ID: &str = "check_updates";
 const OPEN_LOGS_FOLDER_MENU_ID: &str = "open_logs_folder";
+const SHOW_MAIN_WINDOW_MENU_ID: &str = "show_main_window";
+const QUIT_FROM_STATUS_ITEM_MENU_ID: &str = "quit_from_status_item";
 // Delay after navigating to the backend before probing whether the
 // Linux WebKitGTK web content process is actually alive. Gives the
 // process time to spawn so we don't false-positive on slow startup.
@@ -67,6 +80,15 @@ struct SidecarState {
 struct SidecarProcess {
     child: CommandChild,
     generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopMenuAction {
+    About,
+    CheckUpdates,
+    OpenLogsFolder,
+    Quit,
+    ShowMainWindow,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,6 +157,14 @@ pub fn run() {
             if let Err(err) = setup_menu(app) {
                 eprintln!("[agentsview] failed to set up desktop menu: {err}");
             }
+            #[cfg(target_os = "macos")]
+            if let Err(err) = setup_macos_status_item(app) {
+                eprintln!("[agentsview] failed to set up macOS status item: {err}");
+            }
+            #[cfg(target_os = "macos")]
+            if let Err(err) = setup_macos_window_lifecycle(app) {
+                eprintln!("[agentsview] failed to set up macOS window lifecycle: {err}");
+            }
             match tauri::async_runtime::block_on(run_data_version_preflight(app.handle())) {
                 Ok(()) => {
                     if let Err(err) = launch_backend(app) {
@@ -180,22 +210,83 @@ pub fn run() {
         .expect("failed to build tauri app")
         .run(|app_handle, event| {
             if let RunEvent::MenuEvent(event) = &event {
-                if event.id().0 == "about" {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.eval("window.dispatchEvent(new CustomEvent('show-about'));");
-                    }
-                }
-                if event.id().0 == OPEN_LOGS_FOLDER_MENU_ID {
-                    open_logs_folder(app_handle);
-                }
-                if event.id().0 == "check_updates" {
-                    let handle = app_handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        check_for_updates(&handle, false).await;
-                    });
-                }
+                handle_desktop_menu_event(app_handle, event.id().0.as_str());
             }
         });
+}
+
+fn desktop_menu_action(id: &str) -> Option<DesktopMenuAction> {
+    match id {
+        ABOUT_MENU_ID => Some(DesktopMenuAction::About),
+        CHECK_UPDATES_MENU_ID => Some(DesktopMenuAction::CheckUpdates),
+        OPEN_LOGS_FOLDER_MENU_ID => Some(DesktopMenuAction::OpenLogsFolder),
+        QUIT_FROM_STATUS_ITEM_MENU_ID => Some(DesktopMenuAction::Quit),
+        SHOW_MAIN_WINDOW_MENU_ID => Some(DesktopMenuAction::ShowMainWindow),
+        _ => None,
+    }
+}
+
+fn handle_desktop_menu_event(handle: &AppHandle, id: &str) {
+    match desktop_menu_action(id) {
+        Some(DesktopMenuAction::About) => {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.eval("window.dispatchEvent(new CustomEvent('show-about'));");
+            }
+        }
+        Some(DesktopMenuAction::CheckUpdates) => {
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                check_for_updates(&handle, false).await;
+            });
+        }
+        Some(DesktopMenuAction::OpenLogsFolder) => open_logs_folder(handle),
+        Some(DesktopMenuAction::Quit) => handle.exit(0),
+        Some(DesktopMenuAction::ShowMainWindow) => show_main_window(handle),
+        None => {}
+    }
+}
+
+fn show_main_window(handle: &AppHandle) {
+    let Some(window) = handle.get_webview_window("main") else {
+        return;
+    };
+    restore_main_window(&window);
+}
+
+trait MainWindowVisibility {
+    fn hide_main_window(&self);
+    fn show_main_window(&self);
+    fn unminimize_main_window(&self);
+    fn focus_main_window(&self);
+}
+
+impl MainWindowVisibility for WebviewWindow {
+    fn hide_main_window(&self) {
+        let _ = self.hide();
+    }
+
+    fn show_main_window(&self) {
+        let _ = self.show();
+    }
+
+    fn unminimize_main_window(&self) {
+        let _ = self.unminimize();
+    }
+
+    fn focus_main_window(&self) {
+        let _ = self.set_focus();
+    }
+}
+
+fn hide_main_window_on_close(window: &impl MainWindowVisibility, prevent_close: impl FnOnce()) {
+    prevent_close();
+    window.hide_main_window();
+}
+
+fn restore_main_window(window: &impl MainWindowVisibility) {
+    window.show_main_window();
+    window.unminimize_main_window();
+    window.focus_main_window();
 }
 
 fn launch_backend(app: &mut App) -> Result<(), DynError> {
@@ -256,6 +347,8 @@ fn sidecar_args() -> Vec<String> {
         "--background".to_string(),
         "--host".to_string(),
         HOST.to_string(),
+        "--port".to_string(),
+        "0".to_string(),
     ]
 }
 
@@ -399,7 +492,10 @@ fn is_allowed_navigation_url(url: &Url, backend_port: Option<u16>) -> bool {
 }
 
 fn is_allowed_external_open_url(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https" | "mailto")
+    matches!(
+        url.scheme(),
+        "http" | "https" | "mailto" | "codex" | "claude"
+    )
 }
 
 // sidecar_env returns the environment passed to the backend
@@ -1867,11 +1963,11 @@ fn parse_writable_listening_port_from_status(buffer: &str) -> Option<u16> {
 }
 
 fn setup_menu(app: &mut App) -> Result<(), DynError> {
-    let about = MenuItemBuilder::with_id("about", "About AgentsView").build(app)?;
+    let about = MenuItemBuilder::with_id(ABOUT_MENU_ID, "About AgentsView").build(app)?;
     let open_logs_folder =
         MenuItemBuilder::with_id(OPEN_LOGS_FOLDER_MENU_ID, "Open Logs Folder").build(app)?;
     let check_updates =
-        MenuItemBuilder::with_id("check_updates", "Check for Updates...").build(app)?;
+        MenuItemBuilder::with_id(CHECK_UPDATES_MENU_ID, "Check for Updates...").build(app)?;
 
     let builder = SubmenuBuilder::new(app, "File")
         .item(&about)
@@ -1901,6 +1997,53 @@ fn setup_menu(app: &mut App) -> Result<(), DynError> {
         .build()?;
     app.set_menu(menu)?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn setup_macos_status_item(app: &mut App) -> Result<(), DynError> {
+    let show = MenuItemBuilder::with_id(SHOW_MAIN_WINDOW_MENU_ID, "Show AgentsView").build(app)?;
+    let open_logs =
+        MenuItemBuilder::with_id(OPEN_LOGS_FOLDER_MENU_ID, "Open Logs Folder").build(app)?;
+    let check_updates =
+        MenuItemBuilder::with_id(CHECK_UPDATES_MENU_ID, "Check for Updates...").build(app)?;
+    let quit =
+        MenuItemBuilder::with_id(QUIT_FROM_STATUS_ITEM_MENU_ID, "Quit AgentsView").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .separator()
+        .item(&open_logs)
+        .item(&check_updates)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let icon = macos_status_item_icon()?;
+    TrayIconBuilder::with_id("agentsview")
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("AgentsView")
+        .menu(&menu)
+        .build(app)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn setup_macos_window_lifecycle(app: &App) -> Result<(), DynError> {
+    let window = main_window(app)?;
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            hide_main_window_on_close(&close_window, || api.prevent_close());
+        }
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_status_item_icon() -> Result<tauri::image::Image<'static>, DynError> {
+    Ok(tauri::image::Image::from_bytes(include_bytes!(
+        "../icons/trayTemplate.png"
+    ))?)
 }
 
 fn open_logs_folder(handle: &AppHandle) {
@@ -2401,13 +2544,21 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
         |bytes| update.install(bytes),
     ) {
         eprintln!("[agentsview] update install failed: {err}");
+        let message = match err {
+            InstallDownloadedUpdateError::BackendStopTimedOut => {
+                "The update was downloaded, but the local backend \
+                 could not be stopped in time. Please try again in \
+                 a moment."
+            }
+            InstallDownloadedUpdateError::Install(_) => {
+                "Failed to install the update. \
+                 Please try downloading manually from the releases page."
+            }
+        };
         let h = handle.clone();
         handle
             .dialog()
-            .message(
-                "Failed to install the update. \
-                 Please try downloading manually from the releases page.",
-            )
+            .message(message)
             .title("Update Failed")
             .show(move |_| restore_webview_focus(&h));
         return;
@@ -2518,6 +2669,7 @@ async fn stop_backend_and_wait(app: AppHandle, timeout: Duration) -> bool {
 fn stop_backend_inner(app: &AppHandle, wait_timeout: Option<Duration>) -> bool {
     let state = app.state::<SidecarState>();
     if let Some(timeout) = wait_timeout {
+        let deadline = Instant::now() + timeout;
         begin_update_stop_wait(&state);
         let mut waited_generation = None;
         let detached_port = current_backend_port(app);
@@ -2541,22 +2693,22 @@ fn stop_backend_inner(app: &AppHandle, wait_timeout: Option<Duration>) -> bool {
                 app,
                 &state,
                 generation,
-                wait_for_sidecar_termination(&state, generation, timeout),
+                wait_for_sidecar_termination(&state, generation, remaining_timeout(deadline)),
             );
             launcher_stopped
-                && stop_detached_backend_for_update_with_port(app, timeout, detached_port)
+                && stop_detached_backend_for_update_with_port(app, deadline, detached_port)
         } else if let Some(generation) = current_stopping_generation(&state) {
             waited_generation = Some(generation);
             let launcher_stopped = finish_backend_stop_wait(
                 app,
                 &state,
                 generation,
-                wait_for_sidecar_termination(&state, generation, timeout),
+                wait_for_sidecar_termination(&state, generation, remaining_timeout(deadline)),
             );
             launcher_stopped
-                && stop_detached_backend_for_update_with_port(app, timeout, detached_port)
+                && stop_detached_backend_for_update_with_port(app, deadline, detached_port)
         } else {
-            stop_detached_backend_for_update(app, timeout)
+            stop_detached_backend_for_update_with_port(app, deadline, detached_port)
         };
         end_update_stop_wait(&state);
         if let Some(generation) = waited_generation {
@@ -2596,29 +2748,42 @@ fn current_backend_port(app: &AppHandle) -> Option<u16> {
         .and_then(|guard| *guard)
 }
 
-fn stop_detached_backend_for_update(app: &AppHandle, timeout: Duration) -> bool {
-    stop_detached_backend_for_update_with_port(app, timeout, current_backend_port(app))
-}
-
 fn stop_detached_backend_for_update_with_port(
     app: &AppHandle,
-    timeout: Duration,
+    deadline: Instant,
     port: Option<u16>,
 ) -> bool {
-    let deadline = Instant::now() + timeout;
-    let (mut rx, child) = match spawn_sidecar_with_args(app, sidecar_stop_args()) {
-        Ok(spawned) => spawned,
-        Err(err) => {
-            eprintln!("[agentsview] failed to run serve stop before update install: {err}");
-            return false;
-        }
-    };
-    if !wait_for_stop_launcher(&mut rx, remaining_timeout(deadline)) {
-        let _ = child.kill();
+    // serve stop exits non-zero while the daemon is still starting up
+    // ("a server is starting; retry once it is ready"), so a single
+    // failed attempt must not abort the update. Retry until the
+    // deadline passes.
+    let result = retry_stop_launcher(
+        deadline,
+        UPDATE_STOP_RETRY_INTERVAL,
+        |remaining| {
+            let (mut rx, child) = match spawn_sidecar_with_args(app, sidecar_stop_args()) {
+                Ok(spawned) => spawned,
+                Err(err) => {
+                    eprintln!("[agentsview] failed to run serve stop before update install: {err}");
+                    return StopLauncherResult::Fatal;
+                }
+            };
+            let result = wait_for_stop_launcher(&mut rx, remaining);
+            if result != StopLauncherResult::Success {
+                let _ = child.kill();
+            }
+            result
+        },
+        thread::sleep,
+    );
+    if result != StopLauncherResult::Success {
         if port.is_none() {
             eprintln!(
                 "[agentsview] serve stop did not report success, but no detached daemon port is known"
             );
+        }
+        if result == StopLauncherResult::RetryableStartup {
+            eprintln!("[agentsview] gave up stopping the backend before update install");
         }
         return false;
     }
@@ -2634,38 +2799,85 @@ fn stop_detached_backend_for_update_with_port(
     true
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopLauncherResult {
+    Success,
+    RetryableStartup,
+    Fatal,
+}
+
+fn retry_stop_launcher<A, S>(
+    deadline: Instant,
+    retry_interval: Duration,
+    mut attempt: A,
+    mut sleep: S,
+) -> StopLauncherResult
+where
+    A: FnMut(Duration) -> StopLauncherResult,
+    S: FnMut(Duration),
+{
+    loop {
+        let result = attempt(remaining_timeout(deadline));
+        if result != StopLauncherResult::RetryableStartup {
+            return result;
+        }
+        if remaining_timeout(deadline) <= retry_interval {
+            return result;
+        }
+        sleep(retry_interval);
+    }
+}
+
 fn remaining_timeout(deadline: Instant) -> Duration {
     deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_default()
 }
 
-fn wait_for_stop_launcher(rx: &mut CommandRx, timeout: Duration) -> bool {
+fn wait_for_stop_launcher(rx: &mut CommandRx, timeout: Duration) -> StopLauncherResult {
     let deadline = Instant::now() + timeout;
+    let mut output = String::new();
     loop {
         match rx.try_recv() {
-            Ok(CommandEvent::Terminated(payload)) => return payload.code.unwrap_or(1) == 0,
+            Ok(CommandEvent::Terminated(payload)) => {
+                return classify_stop_launcher_termination(payload.code, &output);
+            }
             Ok(CommandEvent::Stdout(bytes)) => {
                 let line = String::from_utf8_lossy(&bytes);
                 eprintln!("[agentsview] {}", line.trim_end());
+                output.push_str(&line);
             }
             Ok(CommandEvent::Stderr(bytes)) => {
                 let line = String::from_utf8_lossy(&bytes);
                 eprintln!("[agentsview:stderr] {}", line.trim_end());
+                output.push_str(&line);
             }
             Ok(CommandEvent::Error(err)) => {
                 eprintln!("[agentsview:error] {err}");
+                return StopLauncherResult::Fatal;
             }
             Ok(_) => {}
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return false,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                return StopLauncherResult::Fatal;
+            }
         }
         if Instant::now() >= deadline {
             eprintln!("[agentsview] timed out waiting for serve stop before update install");
-            return false;
+            return StopLauncherResult::Fatal;
         }
         thread::sleep(READY_POLL_INTERVAL);
     }
+}
+
+fn classify_stop_launcher_termination(code: Option<i32>, output: &str) -> StopLauncherResult {
+    if code == Some(0) {
+        return StopLauncherResult::Success;
+    }
+    if output.contains(SERVE_STOP_STARTING_RETRY_HINT) {
+        return StopLauncherResult::RetryableStartup;
+    }
+    StopLauncherResult::Fatal
 }
 
 fn finish_backend_stop_wait(
@@ -2817,7 +3029,7 @@ fn version_response_looks_valid(response: &[u8]) -> bool {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
@@ -2836,6 +3048,8 @@ mod tests {
                 "--background".to_string(),
                 "--host".to_string(),
                 HOST.to_string(),
+                "--port".to_string(),
+                "0".to_string(),
             ]
         );
     }
@@ -3684,11 +3898,111 @@ agentsview running at http://127.0.0.1:18082
         let mailto = Url::parse("mailto:test@example.com").expect("valid mailto url");
         assert!(is_allowed_external_open_url(&mailto));
 
+        let codex = Url::parse("codex://threads/session-123").expect("valid codex url");
+        assert!(is_allowed_external_open_url(&codex));
+
+        let claude =
+            Url::parse("claude://code/new?folder=%2Ftmp%2Fproject").expect("valid Claude Code url");
+        assert!(is_allowed_external_open_url(&claude));
+
+        let obsolete_claude =
+            Url::parse("claude-cli://open?cwd=%2Ftmp%2Fproject").expect("valid obsolete URL");
+        assert!(!is_allowed_external_open_url(&obsolete_claude));
+
         let file = Url::parse("file:///tmp/foo").expect("valid file url");
         assert!(!is_allowed_external_open_url(&file));
 
         let custom = Url::parse("custom-scheme://foo").expect("valid custom url");
         assert!(!is_allowed_external_open_url(&custom));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_status_item_actions_share_desktop_menu_routing() {
+        assert_eq!(
+            desktop_menu_action(ABOUT_MENU_ID),
+            Some(DesktopMenuAction::About)
+        );
+        assert_eq!(
+            desktop_menu_action(SHOW_MAIN_WINDOW_MENU_ID),
+            Some(DesktopMenuAction::ShowMainWindow)
+        );
+        assert_eq!(
+            desktop_menu_action(OPEN_LOGS_FOLDER_MENU_ID),
+            Some(DesktopMenuAction::OpenLogsFolder)
+        );
+        assert_eq!(
+            desktop_menu_action(CHECK_UPDATES_MENU_ID),
+            Some(DesktopMenuAction::CheckUpdates)
+        );
+        assert_eq!(
+            desktop_menu_action(QUIT_FROM_STATUS_ITEM_MENU_ID),
+            Some(DesktopMenuAction::Quit)
+        );
+        assert_eq!(desktop_menu_action("unknown"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Clone, Default)]
+    struct FakeMainWindow {
+        calls: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl MainWindowVisibility for FakeMainWindow {
+        fn hide_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("hide");
+        }
+
+        fn show_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("show");
+        }
+
+        fn unminimize_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("unminimize");
+        }
+
+        fn focus_main_window(&self) {
+            self.calls.lock().expect("lock calls").push("focus");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_close_hides_the_existing_window_and_show_restores_it() {
+        let window = FakeMainWindow::default();
+        let close_calls = window.calls.clone();
+
+        hide_main_window_on_close(&window, move || {
+            close_calls
+                .lock()
+                .expect("lock close calls")
+                .push("prevent_close");
+        });
+        restore_main_window(&window);
+
+        assert_eq!(
+            *window.calls.lock().expect("lock calls for assertion"),
+            vec!["prevent_close", "hide", "show", "unminimize", "focus"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_status_item_icon_is_a_key_only_template() {
+        let icon = macos_status_item_icon().expect("load macOS status item icon");
+
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        assert_eq!(image_alpha_at(&icon, 3, 3), 0, "tile stays transparent");
+        assert!(image_alpha_at(&icon, 8, 8) > 200, "key head is opaque");
+        assert_eq!(image_alpha_at(&icon, 20, 9), 0, "keyhole is transparent");
+        assert!(image_alpha_at(&icon, 16, 24) > 200, "key stem is opaque");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn image_alpha_at(icon: &tauri::image::Image<'_>, x: u32, y: u32) -> u8 {
+        let offset = ((y * icon.width() + x) * 4 + 3) as usize;
+        icon.rgba()[offset]
     }
 
     #[test]
@@ -3889,6 +4203,114 @@ agentsview running at http://127.0.0.1:18082
         assert_eq!(
             events.lock().expect("lock events").as_slice(),
             ["install", "restart"]
+        );
+    }
+
+    #[test]
+    fn stop_launcher_retries_startup_refusal_then_succeeds() {
+        let attempts = Mutex::new(VecDeque::from([
+            StopLauncherResult::RetryableStartup,
+            StopLauncherResult::Success,
+        ]));
+        let sleeps = Mutex::new(Vec::new());
+
+        let result = retry_stop_launcher(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(2),
+            |_| {
+                attempts
+                    .lock()
+                    .expect("lock attempts")
+                    .pop_front()
+                    .expect("configured attempt")
+            },
+            |duration| sleeps.lock().expect("lock sleeps").push(duration),
+        );
+
+        assert_eq!(result, StopLauncherResult::Success);
+        assert!(attempts.lock().expect("lock attempts").is_empty());
+        assert_eq!(
+            sleeps.lock().expect("lock sleeps").as_slice(),
+            [Duration::from_secs(2)]
+        );
+    }
+
+    #[test]
+    fn stop_launcher_does_not_retry_fatal_failure() {
+        let attempts = Mutex::new(0);
+        let sleeps = Mutex::new(Vec::new());
+
+        let result = retry_stop_launcher(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(2),
+            |_| {
+                *attempts.lock().expect("lock attempts") += 1;
+                StopLauncherResult::Fatal
+            },
+            |duration| sleeps.lock().expect("lock sleeps").push(duration),
+        );
+
+        assert_eq!(result, StopLauncherResult::Fatal);
+        assert_eq!(*attempts.lock().expect("lock attempts"), 1);
+        assert!(sleeps.lock().expect("lock sleeps").is_empty());
+    }
+
+    #[test]
+    fn stop_launcher_stops_retrying_when_deadline_is_exhausted() {
+        let attempts = Mutex::new(0);
+
+        let result = retry_stop_launcher(
+            Instant::now(),
+            Duration::from_secs(2),
+            |_| {
+                *attempts.lock().expect("lock attempts") += 1;
+                StopLauncherResult::RetryableStartup
+            },
+            |_| panic!("deadline must prevent another retry"),
+        );
+
+        assert_eq!(result, StopLauncherResult::RetryableStartup);
+        assert_eq!(*attempts.lock().expect("lock attempts"), 1);
+    }
+
+    #[test]
+    fn stop_launcher_classifies_only_startup_refusal_as_retryable() {
+        assert_eq!(
+            classify_stop_launcher_termination(
+                Some(1),
+                "serve stop: a server is starting; retry once it is ready",
+            ),
+            StopLauncherResult::RetryableStartup
+        );
+        assert_eq!(
+            classify_stop_launcher_termination(
+                Some(1),
+                "serve stop: stopping pid 42: access denied",
+            ),
+            StopLauncherResult::Fatal
+        );
+        assert_eq!(
+            classify_stop_launcher_termination(Some(0), ""),
+            StopLauncherResult::Success
+        );
+    }
+
+    #[test]
+    fn stop_launcher_treats_command_error_as_fatal() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        tx.try_send(CommandEvent::Error("wait failed".to_string()))
+            .expect("send command error");
+        tx.try_send(CommandEvent::Terminated(
+            tauri_plugin_shell::process::TerminatedPayload {
+                code: Some(0),
+                signal: None,
+            },
+        ))
+        .expect("send misleading success");
+
+        assert_eq!(
+            wait_for_stop_launcher(&mut rx, Duration::from_secs(1)),
+            StopLauncherResult::Fatal
         );
     }
 

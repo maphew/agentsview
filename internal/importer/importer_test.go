@@ -13,6 +13,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 const testConversationsJSON = `[
@@ -125,7 +126,7 @@ func TestImportClaudeAI(t *testing.T) {
 	ctx := context.Background()
 
 	stats, err := ImportClaudeAI(
-		ctx, d, strings.NewReader(testConversationsJSON), nil,
+		ctx, d, strings.NewReader(testConversationsJSON), nil, "workstation",
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.Imported)
@@ -136,6 +137,7 @@ func TestImportClaudeAI(t *testing.T) {
 	require.NotNil(t, s)
 	assert.Equal(t, "claude.ai", s.Project)
 	assert.Equal(t, "claude-ai", s.Agent)
+	assert.Equal(t, "workstation", s.Machine)
 	require.NotNil(t, s.DisplayName)
 	assert.Equal(t, "First Chat", *s.DisplayName)
 
@@ -287,7 +289,7 @@ func TestImportChatGPT(t *testing.T) {
 	assetsDir := filepath.Join(t.TempDir(), "assets")
 
 	stats, err := ImportChatGPT(
-		ctx, d, dir, assetsDir, nil,
+		ctx, d, dir, assetsDir, nil, "workstation",
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.Imported)
@@ -297,6 +299,7 @@ func TestImportChatGPT(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	assert.Equal(t, "chatgpt.com", s.Project)
+	assert.Equal(t, "workstation", s.Machine)
 }
 
 func TestImportChatGPTSanitizesParserRows(t *testing.T) {
@@ -348,6 +351,50 @@ func TestImportChatGPTSanitizesParserRows(t *testing.T) {
 	assert.Empty(t, msgs[0].Timestamp)
 	assert.Empty(t, msgs[1].Timestamp)
 	assert.Len(t, msgs[1].Model, db.MaxModelLen)
+}
+
+func TestUpsertConversationPreservesSessionIdentity(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	status, err := upsertConversation(
+		ctx,
+		d,
+		parser.ParseResult{
+			Session: parser.ParsedSession{
+				ID:               "import-identity-001",
+				Project:          "claude.ai",
+				Machine:          "workstation",
+				Agent:            parser.AgentClaude,
+				AgentLabel:       " Claude Code ",
+				Entrypoint:       " claude-sdk ",
+				FirstMessage:     "hello",
+				StartedAt:        time.Unix(1706745600, 0).UTC(),
+				EndedAt:          time.Unix(1706745660, 0).UTC(),
+				MessageCount:     1,
+				UserMessageCount: 1,
+			},
+			Messages: []parser.ParsedMessage{
+				{
+					Ordinal:       0,
+					Role:          parser.RoleUser,
+					Content:       "hello",
+					Timestamp:     time.Unix(1706745600, 0).UTC(),
+					ContentLength: len("hello"),
+				},
+			},
+		},
+		newLazyFTS(d, nil),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, importNew, status)
+
+	s, err := d.GetSession(ctx, "import-identity-001")
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	assert.Equal(t, "claude", s.Agent)
+	assert.Equal(t, " Claude Code ", s.AgentLabel)
+	assert.Equal(t, " claude-sdk ", s.Entrypoint)
 }
 
 func TestImportAdvancesLocalModifiedAt(t *testing.T) {

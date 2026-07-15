@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -77,6 +78,64 @@ func (p *hermesProvider) Fingerprint(
 	source SourceRef,
 ) (SourceFingerprint, error) {
 	return p.sources.Fingerprint(ctx, source)
+}
+
+func WriteHermesSessionJSONL(
+	w io.Writer, storedPath string, roots []string, rawSessionID string,
+) error {
+	var storedStateErr error
+	if path := ResolveSourceFilePath(storedPath); filepath.Base(path) == "state.db" {
+		if _, err := os.Stat(path); err == nil {
+			err = writeHermesStateSessionJSONL(w, path, rawSessionID)
+			if err == nil {
+				return nil
+			}
+			var lookupErr hermesStateLookupError
+			if !errors.Is(err, os.ErrNotExist) &&
+				!errors.As(err, &lookupErr) {
+				return err
+			}
+			storedStateErr = err
+		}
+		if transcript := findHermesSourceFile(
+			filepath.Join(filepath.Dir(path), "sessions"),
+			rawSessionID,
+		); transcript != "" {
+			return copyHermesTranscriptFile(w, transcript)
+		}
+	}
+	provider, ok := NewProvider(AgentHermes, ProviderConfig{Roots: roots})
+	if !ok {
+		return fmt.Errorf("hermes provider unavailable")
+	}
+	hp, ok := provider.(*hermesProvider)
+	if !ok {
+		return fmt.Errorf("hermes provider unavailable")
+	}
+	source, found, err := hp.FindSource(
+		context.Background(),
+		FindSourceRequest{RawSessionID: rawSessionID},
+	)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if storedStateErr != nil && !errors.Is(storedStateErr, os.ErrNotExist) {
+			return storedStateErr
+		}
+		return fmt.Errorf(
+			"hermes session %s source not found: %w",
+			rawSessionID, os.ErrNotExist,
+		)
+	}
+	path, ok := hp.sources.pathFromSource(source)
+	if !ok {
+		return fmt.Errorf("hermes source path unavailable")
+	}
+	if filepath.Base(path) == "state.db" {
+		return writeHermesStateSessionJSONL(w, path, rawSessionID)
+	}
+	return copyHermesTranscriptFile(w, path)
 }
 
 func (p *hermesProvider) Parse(
@@ -248,7 +307,6 @@ func (s hermesSourceSet) FindSource(
 						"falling back to transcripts", stateDB, err,
 				)
 			case !found:
-				continue
 			default:
 				if source, ok := s.sourceRef(root, stateDB); ok {
 					return source, true, nil
@@ -265,6 +323,18 @@ func (s hermesSourceSet) FindSource(
 		}
 	}
 	return SourceRef{}, false, nil
+}
+
+type hermesStateLookupError struct {
+	err error
+}
+
+func (e hermesStateLookupError) Error() string {
+	return e.err.Error()
+}
+
+func (e hermesStateLookupError) Unwrap() error {
+	return e.err
 }
 
 func hermesStateDBHasSession(stateDB string, rawID string) (bool, error) {

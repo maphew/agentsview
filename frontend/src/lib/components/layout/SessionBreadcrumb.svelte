@@ -30,6 +30,7 @@
     agentColor,
     agentForeground,
     agentLabel,
+    entrypointBadge,
   } from "../../utils/agents.js";
   import { formatCost, formatTokenUsage } from "../../utils/format.js";
   import { normalizeMessagePreview } from "../../utils/messages.js";
@@ -43,6 +44,8 @@
     buildResumeCommand,
     formatResumeResponseCommand,
   } from "../../utils/resume.js";
+  import { codexDesktopLink } from "../../utils/codex.js";
+  import { claudeCodeLink } from "../../utils/claude.js";
 
   import { inSessionSearch } from "../../stores/inSessionSearch.svelte.js";
   import { messages as messagesStore } from "../../stores/messages.svelte.js";
@@ -300,6 +303,10 @@
       : "",
   );
 
+  let resumeModel = $derived(
+    session ? messagesStore.resumeModelFor(session.id) : "",
+  );
+
   const gradeStyle = $derived(
     getGradeStyle(session?.health_grade),
   );
@@ -455,7 +462,9 @@
     } catch {
       // Fall back to local command build.
     }
-    const cmd = buildResumeCommand(session.agent, session.id);
+    const cmd = buildResumeCommand(session.agent, session.id, {
+      model: resumeModel,
+    });
     if (cmd) {
       const ok = await copyToClipboard(cmd);
       showFeedback(ok
@@ -487,7 +496,9 @@
     } catch {
       // Fall back to local build.
     }
-    const cmd = buildResumeCommand(session.agent, session.id);
+    const cmd = buildResumeCommand(session.agent, session.id, {
+      model: resumeModel,
+    });
     if (cmd) {
       const ok = await copyToClipboard(cmd);
       showFeedback(ok
@@ -640,7 +651,9 @@
     } catch {
       // Fall back to local command build.
     }
-    const cmd = buildResumeCommand(session.agent, session.id);
+    const cmd = buildResumeCommand(session.agent, session.id, {
+      model: resumeModel,
+    });
     if (cmd) {
       const ok = await copyToClipboard(cmd);
       showFeedback(ok
@@ -660,6 +673,16 @@
     session
       ? supportsResume(session.agent) && isLocal
       : false,
+  );
+
+  const codexLink = $derived(
+    session ? codexDesktopLink(session.agent, session.id) : null,
+  );
+
+  const claudeLink = $derived(
+    session?.agent === "claude" && isLocal
+      ? claudeCodeLink(sessionDir)
+      : null,
   );
 
   const terminalOpeners = $derived(
@@ -682,6 +705,7 @@
 
   const showDropdown = $derived(
     canResume ||
+    codexLink !== null ||
     (isLocal && (
       editorOpeners.length > 0 ||
       fileOpeners.length > 0 ||
@@ -776,7 +800,10 @@
         class="agent-badge"
         style:background={agentColor(session.agent)}
         style:color={agentForeground(session.agent)}
-      >{agentLabel(session.agent)}</span>
+      >{agentLabel(session.agent, session.agent_label)}</span>
+      {#if entrypointBadge(session.entrypoint)}
+        <span class="agent-badge entrypoint-badge">{entrypointBadge(session.entrypoint)}</span>
+      {/if}
       {#if session.agent === "antigravity-cli" && session.transcript_fidelity === "summary"}
         <a
           class="summary-badge"
@@ -922,6 +949,34 @@
                   </span>
                   <span class="open-menu-name">{m.session_breadcrumb_default_terminal()}</span>
                 </button>
+                {#if codexLink}
+                  <div class="open-menu-divider"></div>
+                  <a
+                    class="open-menu-item"
+                    data-testid="codex-desktop-link"
+                    href={codexLink}
+                    title={m.session_breadcrumb_open_in_codex_desktop()}
+                  >
+                    <span class="open-menu-num">
+                      <CirclePlayIcon size="10" strokeWidth="2" aria-hidden="true" />
+                    </span>
+                    <span class="open-menu-name">{m.session_breadcrumb_open_in_codex_desktop()}</span>
+                  </a>
+                {/if}
+                {#if claudeLink}
+                  <div class="open-menu-divider"></div>
+                  <a
+                    class="open-menu-item"
+                    data-testid="claude-code-link"
+                    href={claudeLink}
+                    title={m.session_breadcrumb_open_in_claude_code()}
+                  >
+                    <span class="open-menu-num">
+                      <CirclePlayIcon size="10" strokeWidth="2" aria-hidden="true" />
+                    </span>
+                    <span class="open-menu-name">{m.session_breadcrumb_open_in_claude_code()}</span>
+                  </a>
+                {/if}
                 <div class="open-menu-divider"></div>
                 <button class="open-menu-item" onclick={handleCopyResumeCommand}>
                   <span class="open-menu-num">
@@ -1211,6 +1266,10 @@
     background: var(--text-muted);
   }
 
+  .entrypoint-badge {
+    opacity: 0.8;
+  }
+
   .summary-badge {
     font-size: 9px;
     font-weight: 600;
@@ -1440,6 +1499,7 @@
     padding: 6px 10px;
     font-size: 13px;
     color: var(--text-primary);
+    text-decoration: none;
     border-radius: 5px;
     cursor: pointer;
     transition: background 0.1s;

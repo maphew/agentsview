@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	kitvec "go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/sqlitevec"
@@ -42,6 +43,11 @@ func (e *refusalError) Is(target error) bool { return target == ErrGenerationRef
 // offending name.
 var ErrUnknownServer = errors.New("unknown embeddings server")
 
+// ErrInvalidBuildRequest indicates caller-selected build modes conflict. The
+// manager returns it before changing build status so asynchronous callers can
+// reject the request synchronously.
+var ErrInvalidBuildRequest = errors.New("invalid embeddings build request")
+
 type unknownServerError struct {
 	name string
 }
@@ -51,6 +57,18 @@ func (e *unknownServerError) Error() string {
 }
 
 func (e *unknownServerError) Is(target error) bool { return target == ErrUnknownServer }
+
+func validateBuildRequest(req BuildRequest) error {
+	if req.RepairInvalid && req.FullRebuild {
+		return fmt.Errorf("%w: repair-invalid and full-rebuild are mutually exclusive",
+			ErrInvalidBuildRequest)
+	}
+	if req.RepairInvalid && req.Backstop {
+		return fmt.Errorf("%w: repair-invalid and backstop are mutually exclusive",
+			ErrInvalidBuildRequest)
+	}
+	return nil
+}
 
 // Manager serializes embedding builds over one Index: only one Build call
 // may run at a time, whether triggered via StartBuild (async, for the HTTP
@@ -75,6 +93,11 @@ type Manager struct {
 	mu      sync.Mutex
 	running bool
 	status  BuildStatus
+	eta     buildETAEstimator
+
+	// now stamps BuildStatus.StartedAt when a build begins; a test hook
+	// defaulting to time.Now.
+	now func() time.Time
 }
 
 // BuildRequest is the caller-controlled subset of BuildOptions the manager
@@ -82,6 +105,9 @@ type Manager struct {
 type BuildRequest struct {
 	FullRebuild bool `json:"full_rebuild,omitempty"`
 	Backstop    bool `json:"backstop,omitempty"`
+	// RepairInvalid scans only the selected target generation and queues
+	// documents containing unusable stored vectors for regeneration.
+	RepairInvalid bool `json:"repair_invalid,omitempty"`
 	// IncludeAutomated is the resolved include-automated scope for this
 	// build (caller-resolved from config and, for the CLI's one-off
 	// --include-automated flag, its override). See BuildOptions.IncludeAutomated.
@@ -96,12 +122,32 @@ type BuildRequest struct {
 // BuildStatus reports the manager's current build state, for polling
 // clients (CLI and HTTP API).
 type BuildStatus struct {
-	Running    bool         `json:"running"`
-	Phase      string       `json:"phase,omitempty"`
-	Done       int64        `json:"done"`
-	Total      int64        `json:"total"`
-	LastError  string       `json:"last_error,omitempty"`
-	LastResult *BuildResult `json:"last_result,omitempty"`
+	Running bool `json:"running"`
+	// BuildID identifies one build within this daemon process: it increments
+	// each time a build starts, so a polling client can tell two builds
+	// apart (e.g. to reset a progress-rate estimator across page reloads)
+	// instead of treating unrelated builds as continuous. Zero until the
+	// first build of the process.
+	BuildID int64 `json:"build_id,omitempty"`
+	// StartedAt is when the current (or, once it finished, most recent)
+	// build began, RFC3339 UTC. Empty until the first build of the process.
+	StartedAt string `json:"started_at,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	Done      int64  `json:"done"`
+	Total     int64  `json:"total"`
+	// EstimateReady is true once the daemon has enough positive progress
+	// samples to publish a stable rate and ETA for the current build phase.
+	EstimateReady   bool         `json:"estimate_ready,omitempty"`
+	RatePerSecond   float64      `json:"rate_per_second,omitempty"`
+	ETAMilliseconds int64        `json:"eta_milliseconds"`
+	LastError       string       `json:"last_error,omitempty"`
+	LastResult      *BuildResult `json:"last_result,omitempty"`
+	// Model and Dimension identify the configured embedding space the
+	// manager builds ([vector.embeddings] model/dimension), so status
+	// consumers can display the target space even before any generation
+	// exists. They describe config, not a specific build.
+	Model     string `json:"model,omitempty"`
+	Dimension int    `json:"dimension,omitempty"`
 }
 
 // EncodeSettings groups the encode-shape knobs of one embeddings server,
@@ -143,7 +189,7 @@ func NewManager(
 		me.Encode = recoveringEncoder(me.Encode)
 		wrapped.ByName[name] = me
 	}
-	return &Manager{ix: ix, src: src, encoders: wrapped, gen: gen}
+	return &Manager{ix: ix, src: src, encoders: wrapped, gen: gen, now: time.Now}
 }
 
 // resolveEncoder picks the encoder a build request encodes with: the named
@@ -183,6 +229,9 @@ func recoveringEncoder(enc kitvec.EncodeFunc) kitvec.EncodeFunc {
 // The goroutine runs against context.Background() so it outlives the HTTP
 // request that triggered it.
 func (m *Manager) StartBuild(req BuildRequest) error {
+	if err := validateBuildRequest(req); err != nil {
+		return err
+	}
 	me, err := m.resolveEncoder(req)
 	if err != nil {
 		return err
@@ -201,6 +250,9 @@ func (m *Manager) StartBuild(req BuildRequest) error {
 // should drop a scheduled run rather than queue it: it returns (false, nil)
 // without starting anything if a build is already running.
 func (m *Manager) TryBuild(ctx context.Context, req BuildRequest) (bool, error) {
+	if err := validateBuildRequest(req); err != nil {
+		return false, err
+	}
 	me, err := m.resolveEncoder(req)
 	if err != nil {
 		return false, err
@@ -213,7 +265,8 @@ func (m *Manager) TryBuild(ctx context.Context, req BuildRequest) (bool, error) 
 	return true, err
 }
 
-// Status returns a snapshot of the manager's current build state.
+// Status returns a snapshot of the manager's current build state, stamped
+// with the configured embedding space's identity.
 func (m *Manager) Status() BuildStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -222,6 +275,8 @@ func (m *Manager) Status() BuildStatus {
 		result := *status.LastResult
 		status.LastResult = &result
 	}
+	status.Model = m.gen.Model
+	status.Dimension = m.gen.Dimensions
 	return status
 }
 
@@ -291,9 +346,12 @@ func (m *Manager) begin() error {
 	}
 	m.running = true
 	m.status.Running = true
+	m.status.BuildID++
+	m.status.StartedAt = m.now().UTC().Format(time.RFC3339)
 	m.status.Phase = ""
 	m.status.Done = 0
 	m.status.Total = 0
+	m.clearETA()
 	return nil
 }
 
@@ -315,6 +373,7 @@ func (m *Manager) runBuild(
 	return m.ix.Build(ctx, m.src, me.Encode, m.gen, BuildOptions{
 		FullRebuild:      req.FullRebuild,
 		Backstop:         req.Backstop,
+		RepairInvalid:    req.RepairInvalid,
 		IncludeAutomated: req.IncludeAutomated,
 		BatchSize:        me.Settings.BatchSize,
 		Concurrency:      me.Settings.Concurrency,
@@ -330,24 +389,38 @@ func (m *Manager) reportProgress(p BuildProgress) {
 	m.status.Phase = p.Phase
 	m.status.Done = p.Done
 	m.status.Total = p.Total
+	estimate := m.eta.sample(p.Phase, p.Done, p.Total, m.now())
+	m.status.EstimateReady = estimate.Ready
+	m.status.RatePerSecond = estimate.RatePerSecond
+	m.status.ETAMilliseconds = estimate.Remaining.Milliseconds()
 }
 
 // finish records a completed build's outcome and clears the running state.
-// A successful build sets LastResult and clears any previous LastError; a
-// failed build sets LastError and leaves the last successful LastResult (if
-// any) untouched.
+// LastResult always describes the most recent attempt, including its partial
+// progress when the attempt failed, so status consumers never pair a new
+// LastError with a stale successful result.
 func (m *Manager) finish(result BuildResult, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.running = false
 	m.status.Running = false
+	m.clearETA()
+	r := result
+	m.status.LastResult = &r
 	if err != nil {
 		m.status.LastError = err.Error()
 		return
 	}
 	m.status.LastError = ""
-	r := result
-	m.status.LastResult = &r
+}
+
+// clearETA resets both the private accumulator and its public status snapshot.
+// The caller must hold m.mu.
+func (m *Manager) clearETA() {
+	m.eta.reset()
+	m.status.EstimateReady = false
+	m.status.RatePerSecond = 0
+	m.status.ETAMilliseconds = 0
 }
 
 func (m *Manager) isRunning() bool {

@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     owner_marker       TEXT NOT NULL DEFAULT '',
     project            TEXT NOT NULL,
     agent              TEXT NOT NULL,
+    agent_label        TEXT NOT NULL DEFAULT '',
+    entrypoint         TEXT NOT NULL DEFAULT '',
     first_message      TEXT,
     display_name       TEXT,
     source_display_name TEXT,
@@ -82,6 +84,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     no_code_context_count     INT NOT NULL DEFAULT 0,
     runaway_tool_loop_count   INT NOT NULL DEFAULT 0,
     termination_status        TEXT,
+    transcript_revision       TEXT NOT NULL DEFAULT '0',
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -228,23 +231,67 @@ CREATE TABLE IF NOT EXISTS model_pricing (
     updated_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS project_identity_observations (
+CREATE TABLE IF NOT EXISTS source_archives (
+    source_archive_id   TEXT PRIMARY KEY,
+    source_archive_salt TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_project_identity_observations (
+    source_archive_id   TEXT NOT NULL DEFAULT '',
+    source_archive_salt TEXT NOT NULL DEFAULT '',
     project            TEXT NOT NULL,
     machine            TEXT NOT NULL,
     root_path          TEXT NOT NULL DEFAULT '',
     git_remote         TEXT NOT NULL DEFAULT '',
     git_remote_name    TEXT NOT NULL DEFAULT '',
+    repository_path    TEXT NOT NULL DEFAULT '',
     worktree_name      TEXT NOT NULL DEFAULT '',
     worktree_root_path TEXT NOT NULL DEFAULT '',
+    worktree_relationship TEXT NOT NULL DEFAULT 'unknown',
+    checkout_state     TEXT NOT NULL DEFAULT 'unknown',
+    git_branch         TEXT NOT NULL DEFAULT '',
+    remote_resolution  TEXT NOT NULL DEFAULT 'unknown',
+    remote_candidate_count INT NOT NULL DEFAULT 0,
     observed_at        TIMESTAMPTZ NOT NULL,
     normalized_remote  TEXT NOT NULL DEFAULT '',
     key_source         TEXT NOT NULL DEFAULT '',
     key                TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (project, machine, root_path, git_remote)
+    PRIMARY KEY (source_archive_id, project, machine, root_path, git_remote)
 );
 
-CREATE INDEX IF NOT EXISTS idx_project_identity_observations_project
-    ON project_identity_observations (project);
+CREATE INDEX IF NOT EXISTS idx_source_project_identity_observations_project
+    ON source_project_identity_observations (project);
+
+CREATE TABLE IF NOT EXISTS source_session_project_identity_snapshots (
+    source_archive_id          TEXT NOT NULL,
+    source_database_generation TEXT NOT NULL,
+    source_session_id          TEXT NOT NULL,
+    project                    TEXT NOT NULL,
+    machine                    TEXT NOT NULL,
+    root_path                  TEXT NOT NULL DEFAULT '',
+    git_remote                 TEXT NOT NULL DEFAULT '',
+    git_remote_name            TEXT NOT NULL DEFAULT '',
+    repository_path            TEXT NOT NULL DEFAULT '',
+    worktree_name              TEXT NOT NULL DEFAULT '',
+    worktree_root_path         TEXT NOT NULL DEFAULT '',
+    worktree_relationship      TEXT NOT NULL DEFAULT 'unknown',
+    checkout_state             TEXT NOT NULL DEFAULT 'unknown',
+    git_branch                 TEXT NOT NULL DEFAULT '',
+    remote_resolution          TEXT NOT NULL DEFAULT 'unknown',
+    remote_candidate_count     INT NOT NULL DEFAULT 0,
+    observed_at                TIMESTAMPTZ NOT NULL,
+    normalized_remote          TEXT NOT NULL DEFAULT '',
+    key_source                 TEXT NOT NULL DEFAULT '',
+    key                        TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (
+        source_archive_id, source_database_generation, source_session_id
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_session_project_identity_snapshots_project
+    ON source_session_project_identity_snapshots (
+        source_archive_id, project
+    );
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     id                    BIGSERIAL PRIMARY KEY,
@@ -394,6 +441,11 @@ func EnsureSchema(
 
 	// Idempotent column additions for forward compatibility.
 	alters := []columnMigration{
+		{
+			"sessions", "transcript_revision",
+			`transcript_revision TEXT NOT NULL DEFAULT '0'`,
+			"adding sessions.transcript_revision",
+		},
 		{
 			"sessions", "owner_marker",
 			`owner_marker TEXT NOT NULL DEFAULT ''`,
@@ -714,6 +766,56 @@ func EnsureSchema(
 			`session_name TEXT`,
 			"adding sessions.session_name",
 		},
+		{
+			"sessions", "agent_label",
+			`agent_label TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.agent_label",
+		},
+		{
+			"sessions", "entrypoint",
+			`entrypoint TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.entrypoint",
+		},
+		{
+			"source_project_identity_observations", "source_archive_id",
+			`source_archive_id TEXT NOT NULL DEFAULT ''`,
+			"adding source_project_identity_observations.source_archive_id",
+		},
+		{
+			"source_project_identity_observations", "source_archive_salt",
+			`source_archive_salt TEXT NOT NULL DEFAULT ''`,
+			"adding source_project_identity_observations.source_archive_salt",
+		},
+		{
+			"source_project_identity_observations", "repository_path",
+			`repository_path TEXT NOT NULL DEFAULT ''`,
+			"adding source_project_identity_observations.repository_path",
+		},
+		{
+			"source_project_identity_observations", "worktree_relationship",
+			`worktree_relationship TEXT NOT NULL DEFAULT 'unknown'`,
+			"adding source_project_identity_observations.worktree_relationship",
+		},
+		{
+			"source_project_identity_observations", "checkout_state",
+			`checkout_state TEXT NOT NULL DEFAULT 'unknown'`,
+			"adding source_project_identity_observations.checkout_state",
+		},
+		{
+			"source_project_identity_observations", "git_branch",
+			`git_branch TEXT NOT NULL DEFAULT ''`,
+			"adding source_project_identity_observations.git_branch",
+		},
+		{
+			"source_project_identity_observations", "remote_resolution",
+			`remote_resolution TEXT NOT NULL DEFAULT 'unknown'`,
+			"adding source_project_identity_observations.remote_resolution",
+		},
+		{
+			"source_project_identity_observations", "remote_candidate_count",
+			`remote_candidate_count INT NOT NULL DEFAULT 0`,
+			"adding source_project_identity_observations.remote_candidate_count",
+		},
 	}
 	step = time.Now()
 	existingColumns, err := loadExistingColumns(ctx, db, alters)
@@ -990,108 +1092,8 @@ func createContentSearchIndexesPG(ctx context.Context, db *sql.DB) {
 func backfillIsAutomatedPG(
 	ctx context.Context, pg *sql.DB,
 ) error {
-	current := db.ClassifierHash()
-	var stored string
-	err := pg.QueryRowContext(ctx,
-		`SELECT value FROM sync_metadata WHERE key = $1`,
-		db.ClassifierHashKey,
-	).Scan(&stored)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf(
-			"probing PG classifier hash: %w", err,
-		)
-	}
-
-	rows, err := pg.QueryContext(ctx,
-		`SELECT
-			s.id,
-			s.first_message,
-			s.user_message_count,
-			s.is_automated,
-			(
-				SELECT m.content
-				FROM messages m
-				WHERE m.session_id = s.id
-				  AND m.role = 'user'
-				  AND COALESCE(m.is_system, false) = false
-				  AND btrim(m.content) <> ''
-				ORDER BY m.ordinal
-				LIMIT 1
-			) AS first_user_message
-		 FROM sessions s`)
-	if err != nil {
-		return fmt.Errorf(
-			"querying PG automated backfill candidates: %w",
-			err,
-		)
-	}
-	defer rows.Close()
-
-	var setIDs, clearIDs []string
-	for rows.Next() {
-		var id string
-		var fm sql.NullString
-		var firstUser sql.NullString
-		var umc int
-		var rowAutomated bool
-		if err := rows.Scan(
-			&id, &fm, &umc, &rowAutomated, &firstUser,
-		); err != nil {
-			return fmt.Errorf(
-				"scanning PG backfill candidate: %w", err,
-			)
-		}
-		want := false
-		if umc <= 1 {
-			if firstUser.Valid &&
-				strings.TrimSpace(firstUser.String) != "" {
-				want = db.IsAutomatedSession(firstUser.String)
-			}
-			if !want && fm.Valid {
-				want = db.IsAutomatedSession(fm.String)
-			}
-		}
-		if want && !rowAutomated {
-			setIDs = append(setIDs, id)
-		} else if !want && rowAutomated {
-			clearIDs = append(clearIDs, id)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	if err := batchUpdateAutomatedPG(
-		ctx, pg, setIDs, true,
-	); err != nil {
-		return err
-	}
-	if err := batchUpdateAutomatedPG(
-		ctx, pg, clearIDs, false,
-	); err != nil {
-		return err
-	}
-
-	if len(setIDs) > 0 || len(clearIDs) > 0 {
-		log.Printf(
-			"pg migration: recomputed is_automated"+
-				" (set %d, cleared %d)",
-			len(setIDs), len(clearIDs),
-		)
-	}
-
-	if _, err := pg.ExecContext(ctx,
-		`INSERT INTO sync_metadata (key, value)
-		 VALUES ($1, $2)
-		 ON CONFLICT (key) DO UPDATE
-		 SET value = EXCLUDED.value`,
-		db.ClassifierHashKey, current,
-	); err != nil {
-		return fmt.Errorf(
-			"storing PG classifier hash: %w", err,
-		)
-	}
-	return nil
+	_, err := backfillIsAutomatedPGWithProgress(ctx, pg)
+	return err
 }
 
 // runSchemaDataRepairsPG runs the non-DDL correctness repairs that
@@ -1228,10 +1230,13 @@ func scrubProjectIdentityGitRemoteCredentialsPG(
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT project, machine, root_path, git_remote, git_remote_name,
-			worktree_name, worktree_root_path, observed_at,
+		SELECT source_archive_id, source_archive_salt,
+			project, machine, root_path, git_remote, git_remote_name,
+			repository_path, worktree_name, worktree_root_path,
+			worktree_relationship, checkout_state, git_branch,
+			remote_resolution, remote_candidate_count, observed_at,
 			normalized_remote, key_source, key
-		FROM project_identity_observations
+		FROM source_project_identity_observations
 		WHERE git_remote != ''
 		ORDER BY project, machine, root_path, git_remote`)
 	if err != nil {
@@ -1248,13 +1253,21 @@ func scrubProjectIdentityGitRemoteCredentialsPG(
 	for rows.Next() {
 		var obs export.ProjectIdentityObservation
 		if err := rows.Scan(
+			&obs.SourceArchiveID,
+			&obs.SourceArchiveSalt,
 			&obs.Project,
 			&obs.Machine,
 			&obs.RootPath,
 			&obs.GitRemote,
 			&obs.GitRemoteName,
+			&obs.RepositoryPath,
 			&obs.WorktreeName,
 			&obs.WorktreeRootPath,
+			&obs.WorktreeRelationship,
+			&obs.CheckoutState,
+			&obs.GitBranch,
+			&obs.RemoteResolution,
+			&obs.RemoteCandidateCount,
 			&obs.ObservedAt,
 			&obs.NormalizedRemote,
 			&obs.KeySource,
@@ -1296,11 +1309,11 @@ func scrubProjectIdentityGitRemoteCredentialsPG(
 			)
 		}
 		if _, err := db.ExecContext(ctx, `
-			DELETE FROM project_identity_observations
-			WHERE project = $1 AND machine = $2 AND root_path = $3
-			  AND git_remote = $4`,
-			scrub.obs.Project, scrub.obs.Machine, scrub.obs.RootPath,
-			scrub.rawRemote,
+			DELETE FROM source_project_identity_observations
+			WHERE source_archive_id = $1 AND project = $2 AND machine = $3
+			  AND root_path = $4 AND git_remote = $5`,
+			scrub.obs.SourceArchiveID, scrub.obs.Project, scrub.obs.Machine,
+			scrub.obs.RootPath, scrub.rawRemote,
 		); err != nil {
 			return false, fmt.Errorf(
 				"removing raw pg project identity remote: %w", err,
@@ -1906,6 +1919,15 @@ func CheckSchemaCompat(
 	}
 	rows.Close()
 	rows, err = db.QueryContext(ctx,
+		`SELECT source_archive_id, source_archive_salt
+		 FROM source_archives LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"source_archives table missing required columns: %w", err,
+		)
+	}
+	rows.Close()
+	rows, err = db.QueryContext(ctx,
 		`SELECT session_id, created_at
 		 FROM starred_sessions LIMIT 0`)
 	if err != nil {
@@ -2012,13 +2034,31 @@ func CheckSchemaCompat(
 	}
 	rows.Close()
 	rows, err = db.QueryContext(ctx,
-		`SELECT project, machine, root_path, git_remote, git_remote_name,
-			worktree_name, worktree_root_path, observed_at,
+		`SELECT source_archive_id, source_archive_salt,
+			project, machine, root_path, git_remote, git_remote_name,
+			repository_path, worktree_name, worktree_root_path,
+			worktree_relationship, checkout_state, git_branch,
+			remote_resolution, remote_candidate_count, observed_at,
 			normalized_remote, key_source, key
-		 FROM project_identity_observations LIMIT 0`)
+		 FROM source_project_identity_observations LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf(
-			"project_identity_observations table missing required columns: %w",
+			"source_project_identity_observations table missing required columns: %w",
+			err,
+		)
+	}
+	rows.Close()
+	rows, err = db.QueryContext(ctx,
+		`SELECT source_archive_id, source_database_generation,
+			source_session_id, project, machine, root_path, git_remote,
+			git_remote_name, repository_path, worktree_name,
+			worktree_root_path, worktree_relationship, checkout_state,
+			git_branch, remote_resolution, remote_candidate_count,
+			observed_at, normalized_remote, key_source, key
+		 FROM source_session_project_identity_snapshots LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"source session project identity snapshots missing required columns: %w",
 			err,
 		)
 	}
@@ -2066,7 +2106,9 @@ func pushSchemaCurrent(ctx context.Context, db *sql.DB) bool {
 		return false
 	}
 	if !pgHasTable(ctx, db, "model_pricing") ||
-		!pgHasTable(ctx, db, "project_identity_observations") ||
+		!pgHasTable(ctx, db, "source_archives") ||
+		!pgHasTable(ctx, db, "source_project_identity_observations") ||
+		!pgHasTable(ctx, db, "source_session_project_identity_snapshots") ||
 		!pgHasTable(ctx, db, "cursor_usage_events") {
 		return false
 	}

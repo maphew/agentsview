@@ -187,28 +187,35 @@ func (d *DB) CopyOrphanedDataFromExcluding(
 			"counting orphaned sessions: %w", err,
 		)
 	}
-	if count == 0 {
-		return 0, nil
-	}
-
 	t := time.Now()
 
-	// Use a transaction so all three inserts are atomic.
-	// Partial orphan copies would leave dangling sessions
-	// without messages or tool_calls.
+	// Reconcile revisions and copy orphans in one transaction. Partial
+	// orphan copies would leave dangling sessions without messages or
+	// tool_calls, while a revision update without the matching archive copy
+	// could make a failed resync look complete.
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin orphan tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := copySessionDataForIDs(ctx, tx, "_orphaned_ids"); err != nil {
-		return 0, fmt.Errorf("copying orphaned data: %w", err)
+	if err := reconcileTranscriptRevisionsTx(ctx, tx); err != nil {
+		return 0, fmt.Errorf("reconciling transcript revisions: %w", err)
 	}
-	if err := sanitizeCopiedSessionContent(
-		ctx, tx, "_orphaned_ids", copiedSourceDataVersion(ctx, tx),
-	); err != nil {
-		return 0, fmt.Errorf("sanitizing orphaned data: %w", err)
+	if count > 0 {
+		if err := copySessionDataForIDs(ctx, tx, "_orphaned_ids"); err != nil {
+			return 0, fmt.Errorf("copying orphaned data: %w", err)
+		}
+		if err := removeGeneratedIdentitySnapshotsWithoutSource(
+			ctx, tx, "_orphaned_ids",
+		); err != nil {
+			return 0, fmt.Errorf("repairing orphan identity snapshots: %w", err)
+		}
+		if err := sanitizeCopiedSessionContent(
+			ctx, tx, "_orphaned_ids", copiedSourceDataVersion(ctx, tx),
+		); err != nil {
+			return 0, fmt.Errorf("sanitizing orphaned data: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -217,10 +224,12 @@ func (d *DB) CopyOrphanedDataFromExcluding(
 		)
 	}
 
-	log.Printf(
-		"resync: copied %d orphaned sessions in %s",
-		count, time.Since(t).Round(time.Millisecond),
-	)
+	if count > 0 {
+		log.Printf(
+			"resync: copied %d orphaned sessions in %s",
+			count, time.Since(t).Round(time.Millisecond),
+		)
+	}
 
 	return count, nil
 }
@@ -296,6 +305,11 @@ func (d *DB) CopyTrashedDataFrom(sourcePath string) (int, error) {
 
 	if err := copySessionDataForIDs(ctx, tx, "_trashed_ids"); err != nil {
 		return 0, fmt.Errorf("copying trashed data: %w", err)
+	}
+	if err := removeGeneratedIdentitySnapshotsWithoutSource(
+		ctx, tx, "_trashed_ids",
+	); err != nil {
+		return 0, fmt.Errorf("repairing trashed identity snapshots: %w", err)
 	}
 	if err := sanitizeCopiedSessionContent(
 		ctx, tx, "_trashed_ids", copiedSourceDataVersion(ctx, tx),
@@ -622,9 +636,16 @@ func (d *DB) CopySessionMetadataFrom(
 			INSERT INTO main.archive_metadata (key, value, created_at, updated_at)
 			SELECT key, value, created_at, updated_at
 			FROM old_db.archive_metadata
-			WHERE true
+			WHERE key != 'database_id'
 			ON CONFLICT(key) DO UPDATE SET
-				value = excluded.value,
+				value = CASE
+					WHEN excluded.key = 'project_identity_publication_revision'
+					THEN CAST(max(
+						CAST(archive_metadata.value AS INTEGER),
+						CAST(excluded.value AS INTEGER)
+					) AS TEXT)
+					ELSE excluded.value
+				END,
 				created_at = excluded.created_at,
 				updated_at = excluded.updated_at`); err != nil {
 			return fmt.Errorf("copying archive metadata: %w", err)
@@ -632,14 +653,31 @@ func (d *DB) CopySessionMetadataFrom(
 	}
 
 	if oldDBHasTable(ctx, tx, "project_identity_observations") {
+		identityColumn := func(name, fallback string) string {
+			if oldDBHasColumn(ctx, tx, "project_identity_observations", name) {
+				return name
+			}
+			return fallback
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO main.project_identity_observations (
+				source_archive_id, source_archive_salt,
 				project, machine, root_path, git_remote, git_remote_name,
-				worktree_name, worktree_root_path, observed_at,
+				repository_path, worktree_name, worktree_root_path,
+				worktree_relationship, checkout_state, git_branch,
+				remote_resolution, remote_candidate_count, observed_at,
 				normalized_remote, key_source, key
 			)
-			SELECT project, machine, root_path, git_remote, git_remote_name,
-				worktree_name, worktree_root_path, observed_at,
+			SELECT `+identityColumn("source_archive_id", "''")+`,
+				`+identityColumn("source_archive_salt", "''")+`,
+				project, machine, root_path, git_remote, git_remote_name,
+				`+identityColumn("repository_path", "''")+`,
+				worktree_name, worktree_root_path,
+				`+identityColumn("worktree_relationship", "'unknown'")+`,
+				`+identityColumn("checkout_state", "'unknown'")+`,
+				`+identityColumn("git_branch", "''")+`,
+				`+identityColumn("remote_resolution", "'unknown'")+`,
+				`+identityColumn("remote_candidate_count", "0")+`, observed_at,
 				normalized_remote, key_source, key
 			FROM old_db.project_identity_observations
 			WHERE true
@@ -662,6 +700,44 @@ func (d *DB) CopySessionMetadataFrom(
 		}
 		if err := scrubProjectIdentityGitRemoteCredentialsTx(ctx, tx); err != nil {
 			return err
+		}
+	}
+
+	if oldDBHasTable(ctx, tx, "session_project_identity_snapshots") {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO main.session_project_identity_snapshots (
+				session_id, project, machine, root_path, git_remote,
+				git_remote_name, repository_path, worktree_name,
+				worktree_root_path, worktree_relationship, checkout_state,
+				git_branch, remote_resolution, remote_candidate_count,
+				observed_at, normalized_remote, key_source, key
+			)
+			SELECT session_id, project, machine, root_path, git_remote,
+				git_remote_name, repository_path, worktree_name,
+				worktree_root_path, worktree_relationship, checkout_state,
+				git_branch, remote_resolution, remote_candidate_count,
+				observed_at, normalized_remote, key_source, key
+			FROM old_db.session_project_identity_snapshots
+			WHERE session_id IN (SELECT id FROM main.sessions)
+			ON CONFLICT(session_id) DO UPDATE SET
+				project = excluded.project,
+				machine = excluded.machine,
+				root_path = excluded.root_path,
+				git_remote = excluded.git_remote,
+				git_remote_name = excluded.git_remote_name,
+				repository_path = excluded.repository_path,
+				worktree_name = excluded.worktree_name,
+				worktree_root_path = excluded.worktree_root_path,
+				worktree_relationship = excluded.worktree_relationship,
+				checkout_state = excluded.checkout_state,
+				git_branch = excluded.git_branch,
+				remote_resolution = excluded.remote_resolution,
+				remote_candidate_count = excluded.remote_candidate_count,
+					observed_at = excluded.observed_at,
+					normalized_remote = excluded.normalized_remote,
+					key_source = excluded.key_source,
+					key = excluded.key`); err != nil {
+			return fmt.Errorf("copying session project identity snapshots: %w", err)
 		}
 	}
 
@@ -737,6 +813,11 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		"file_mtime", "file_hash", "parent_session_id",
 		"relationship_type",
 	)
+	for _, c := range []string{"agent_label", "entrypoint"} {
+		if oldDBHasColumn(ctx, tx, "sessions", c) {
+			cols = append(cols, c)
+		}
+	}
 	if oldDBHasColumn(ctx, tx, "sessions", "deleted_at") {
 		cols = append(cols, "deleted_at")
 	}
@@ -763,6 +844,7 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		"cwd", "git_branch", "source_session_id",
 		"source_version", "transcript_fidelity", "parser_malformed_lines",
 		"is_truncated", "last_write_incremental",
+		"transcript_revision",
 		"secret_leak_count", "secrets_rules_version",
 	} {
 		if oldDBHasColumn(ctx, tx, "sessions", c) {
@@ -770,6 +852,135 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		}
 	}
 	return strings.Join(cols, ", ")
+}
+
+// reconcileTranscriptRevisionsTx preserves read-progress identity across a
+// full resync. Reparsed sessions start with fresh local counters, so matching
+// transcript rows inherit the old counter and changed rows advance it once.
+// The comparison covers the user-visible message and tool-result fields while
+// deliberately excluding session metadata and token/source bookkeeping.
+func reconcileTranscriptRevisionsTx(
+	ctx context.Context, tx *sql.Tx,
+) error {
+	if !oldDBHasColumn(ctx, tx, "sessions", "transcript_revision") {
+		return nil
+	}
+	for table, columns := range map[string][]string{
+		"messages": {
+			"thinking_text", "is_system", "model",
+			"context_tokens", "output_tokens",
+			"has_context_tokens", "has_output_tokens",
+			"source_subtype", "is_compact_boundary",
+		},
+		"tool_calls": {
+			"call_index", "result_content", "file_path",
+		},
+		"tool_result_events": {
+			"call_index", "event_index",
+		},
+	} {
+		if !oldDBHasTable(ctx, tx, table) {
+			return nil
+		}
+		for _, column := range columns {
+			if !oldDBHasColumn(ctx, tx, table, column) {
+				return nil
+			}
+		}
+	}
+
+	_, err := tx.ExecContext(ctx, `
+		UPDATE main.sessions AS current
+		SET transcript_revision = (
+			SELECT CASE WHEN
+				NOT EXISTS (
+					SELECT ordinal, role, content, thinking_text, timestamp,
+						has_thinking, has_tool_use, is_system, model,
+						context_tokens, output_tokens, has_context_tokens,
+						has_output_tokens, source_subtype, is_compact_boundary
+					FROM main.messages WHERE session_id = current.id
+					EXCEPT
+					SELECT ordinal, role, content, thinking_text, timestamp,
+						has_thinking, has_tool_use, is_system, model,
+						context_tokens, output_tokens, has_context_tokens,
+						has_output_tokens, source_subtype, is_compact_boundary
+					FROM old_db.messages WHERE session_id = current.id
+				)
+				AND NOT EXISTS (
+					SELECT ordinal, role, content, thinking_text, timestamp,
+						has_thinking, has_tool_use, is_system, model,
+						context_tokens, output_tokens, has_context_tokens,
+						has_output_tokens, source_subtype, is_compact_boundary
+					FROM old_db.messages WHERE session_id = current.id
+					EXCEPT
+					SELECT ordinal, role, content, thinking_text, timestamp,
+						has_thinking, has_tool_use, is_system, model,
+						context_tokens, output_tokens, has_context_tokens,
+						has_output_tokens, source_subtype, is_compact_boundary
+					FROM main.messages WHERE session_id = current.id
+				)
+				AND NOT EXISTS (
+					SELECT m.ordinal, tc.call_index, tc.tool_name, tc.category,
+						tc.tool_use_id, tc.input_json, tc.skill_name,
+						tc.result_content, tc.subagent_session_id, tc.file_path
+					FROM main.tool_calls tc
+					JOIN main.messages m ON m.id = tc.message_id
+					WHERE tc.session_id = current.id
+					EXCEPT
+					SELECT m.ordinal, tc.call_index, tc.tool_name, tc.category,
+						tc.tool_use_id, tc.input_json, tc.skill_name,
+						tc.result_content, tc.subagent_session_id, tc.file_path
+					FROM old_db.tool_calls tc
+					JOIN old_db.messages m ON m.id = tc.message_id
+					WHERE tc.session_id = current.id
+				)
+				AND NOT EXISTS (
+					SELECT m.ordinal, tc.call_index, tc.tool_name, tc.category,
+						tc.tool_use_id, tc.input_json, tc.skill_name,
+						tc.result_content, tc.subagent_session_id, tc.file_path
+					FROM old_db.tool_calls tc
+					JOIN old_db.messages m ON m.id = tc.message_id
+					WHERE tc.session_id = current.id
+					EXCEPT
+					SELECT m.ordinal, tc.call_index, tc.tool_name, tc.category,
+						tc.tool_use_id, tc.input_json, tc.skill_name,
+						tc.result_content, tc.subagent_session_id, tc.file_path
+					FROM main.tool_calls tc
+					JOIN main.messages m ON m.id = tc.message_id
+					WHERE tc.session_id = current.id
+				)
+				AND NOT EXISTS (
+					SELECT tool_call_message_ordinal, call_index, tool_use_id,
+						agent_id, subagent_session_id, source, status, content,
+						timestamp, event_index
+					FROM main.tool_result_events WHERE session_id = current.id
+					EXCEPT
+					SELECT tool_call_message_ordinal, call_index, tool_use_id,
+						agent_id, subagent_session_id, source, status, content,
+						timestamp, event_index
+					FROM old_db.tool_result_events WHERE session_id = current.id
+				)
+				AND NOT EXISTS (
+					SELECT tool_call_message_ordinal, call_index, tool_use_id,
+						agent_id, subagent_session_id, source, status, content,
+						timestamp, event_index
+					FROM old_db.tool_result_events WHERE session_id = current.id
+					EXCEPT
+					SELECT tool_call_message_ordinal, call_index, tool_use_id,
+						agent_id, subagent_session_id, source, status, content,
+						timestamp, event_index
+					FROM main.tool_result_events WHERE session_id = current.id
+				)
+			THEN old.transcript_revision
+			ELSE CAST(CAST(old.transcript_revision AS INTEGER) + 1 AS TEXT)
+			END
+			FROM old_db.sessions AS old
+			WHERE old.id = current.id
+		)
+		WHERE EXISTS (
+			SELECT 1 FROM old_db.sessions AS old WHERE old.id = current.id
+		)`)
+	return err
 }
 
 func copySessionDataForIDs(
@@ -922,6 +1133,33 @@ func copySessionDataForIDs(
 
 	if err := copyPinnedMessagesForIDs(ctx, tx, tempIDsTable); err != nil {
 		return err
+	}
+	return nil
+}
+
+// removeGeneratedIdentitySnapshotsWithoutSource removes only placeholder
+// snapshots created by the session-insert trigger for the current copy batch.
+// Real source snapshots are overlaid later by CopySessionMetadataFrom. The
+// temporary ID table and both snapshot primary keys keep the work proportional
+// to copied rows rather than total archive size.
+func removeGeneratedIdentitySnapshotsWithoutSource(
+	ctx context.Context,
+	tx *sql.Tx,
+	tempIDsTable string,
+) error {
+	missingSourceSnapshot := "true"
+	if oldDBHasTable(ctx, tx, "session_project_identity_snapshots") {
+		missingSourceSnapshot = `NOT EXISTS (
+			SELECT 1 FROM old_db.session_project_identity_snapshots old_snapshot
+			WHERE old_snapshot.session_id =
+				session_project_identity_snapshots.session_id
+		)`
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM main.session_project_identity_snapshots
+		WHERE session_id IN (SELECT id FROM `+tempIDsTable+`)
+		  AND `+missingSourceSnapshot); err != nil {
+		return fmt.Errorf("removing generated identity snapshots: %w", err)
 	}
 	return nil
 }

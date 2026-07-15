@@ -23,6 +23,7 @@
   import SessionFilterControl from "../filters/SessionFilterControl.svelte";
   import FilterDropdown from "../usage/FilterDropdown.svelte";
   import { analytics } from "../../stores/analytics.svelte.js";
+  import { analyticsPageDates } from "../../stores/analyticsPageDates.js";
   import {
     sessions,
     filtersToParams,
@@ -34,8 +35,8 @@
   import {
     yokedDates,
     panelDateState,
-    panelStateToRange,
-    rangeToSessionParams,
+    panelDateToSessionFilterParams,
+    rangeToPanelDate,
     sessionParamsToPanelDate,
     type PanelDateState,
   } from "../../stores/yokedDates.svelte.js";
@@ -60,6 +61,7 @@
 
   function applyRange(sel: RangeSelection) {
     if (sel.mode === "relative" && sel.days > 0) {
+      sessionDateIntentEstablished = true;
       analytics.setRollingWindow(sel.days);
       const state = panelDateState(analytics.from, analytics.to, {
         mode: "rolling",
@@ -71,6 +73,7 @@
       }
     } else {
       const range = resolveRange(sel, earliestSession);
+      sessionDateIntentEstablished = true;
       analytics.setDateRange(range.from, range.to);
       const state = panelDateState(range.from, range.to, {
         mode: "fixed",
@@ -166,18 +169,10 @@
   ): boolean {
     const before = JSON.stringify(filtersToParams(sessions.filters));
     clearSessionDateFilters();
-    const range = panelStateToRange(
-      state.mode === "rolling"
-        ? { ...state, mode: "fixed", windowDays: undefined }
-        : state,
-      Date.now(),
-    );
-    if (range) {
-      const params = rangeToSessionParams(range);
-      sessions.filters.date = params["date"] ?? "";
-      sessions.filters.dateFrom = params["date_from"] ?? "";
-      sessions.filters.dateTo = params["date_to"] ?? "";
-    }
+    const params = panelDateToSessionFilterParams(state);
+    sessions.filters.date = params["date"] ?? "";
+    sessions.filters.dateFrom = params["date_from"] ?? "";
+    sessions.filters.dateTo = params["date_to"] ?? "";
     const after = JSON.stringify(filtersToParams(sessions.filters));
     return before !== after;
   }
@@ -241,6 +236,7 @@
   function handleDateRangeChange(from: string, to: string) {
     const state = panelDateState(from, to, { mode: "fixed" });
     if (!state) return;
+    sessionDateIntentEstablished = true;
     analytics.setDateRange(from, to);
     yokedDates.updateFromPanel(state);
     writeSessionDateParams(state);
@@ -301,6 +297,7 @@
   let analyticsDateUrlInitRan = $state(false);
   let analyticsDateUrlInitComplete = $state(false);
   let lastAnalyticsDateUrlSignature: string | null = $state(null);
+  let sessionDateIntentEstablished = false;
 
   onMount(() => {
     // The URL-date effect owns the initial load so deep links and stored yoke
@@ -443,19 +440,25 @@
         let changed = false;
         if (firstRun) {
           const seed = yokedDates.seedForPanel();
+          const retained = seed
+            ? null
+            : analyticsPageDates.restoreWithIntent("sessions");
           state = seed
-            ? panelDateState(seed.from, seed.to, {
-                mode: seed.mode,
-                windowDays: seed.windowDays,
-              })
-            : null;
+            ? rangeToPanelDate(seed)
+            : retained?.state ?? null;
+          sessionDateIntentEstablished = seed !== null ||
+            retained?.explicitDateIntent === true;
           if (state) {
             changed = applyAnalyticsPanelDate(state);
-            writeSessionDateParams(state);
+            if (sessionDateIntentEstablished) {
+              writeSessionDateParams(state);
+            }
           }
         } else if (dateChanged && sessionDateFiltersAreClear()) {
+          sessionDateIntentEstablished = false;
           yokedDates.clear();
         } else if (dateChanged) {
+          sessionDateIntentEstablished = true;
           state = rollingPanelDate(analytics.windowDays);
           if (state) {
             changed = applyAnalyticsPanelDate(state);
@@ -477,6 +480,7 @@
       let changed = false;
       let sessionChanged = false;
       if (dateChanged) {
+        sessionDateIntentEstablished = true;
         changed = applyAnalyticsPanelDate(state);
         sessionChanged = syncSessionFiltersForDateState(state);
         yokedDates.updateFromPanel(state);
@@ -494,6 +498,14 @@
   });
 
   onDestroy(() => {
+    const state = currentAnalyticsPanelDate();
+    if (state) {
+      analyticsPageDates.retain(
+        "sessions",
+        state,
+        sessionDateIntentEstablished,
+      );
+    }
     unsubEvents?.();
   });
 </script>

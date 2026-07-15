@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { expectActiveNavTab } from "./helpers/nav";
+import { clickNavTab, expectActiveNavTab } from "./helpers/nav";
 
 test.describe("Usage page", () => {
   test.beforeEach(async ({ page }) => {
@@ -175,5 +175,53 @@ test.describe("Usage page", () => {
 
     // URL should contain the exclude_project param.
     await expect(page).toHaveURL(/exclude_project=/);
+  });
+
+  test("returning bare refreshes rolling bounds after midnight", async ({
+    page,
+  }) => {
+    await page.clock.setFixedTime(new Date("2026-07-09T23:59:00"));
+    await page.goto("/usage?window_days=30");
+    await expect(page.locator(".usage-page")).toBeVisible();
+    await expect(
+      page.locator(".kit-date-range-picker__trigger"),
+    ).toContainText("Last 30 days");
+
+    await clickNavTab(page, "Sessions");
+    await page.clock.setFixedTime(new Date("2026-07-10T00:01:00"));
+    const requestPromise = page.waitForRequest((request) =>
+      new URL(request.url()).pathname.endsWith("/api/v1/usage/summary")
+    );
+    await clickNavTab(page, "Usage");
+    const requestUrl = new URL((await requestPromise).url());
+
+    expect(requestUrl.searchParams.get("from")).toBe("2026-06-11");
+    expect(requestUrl.searchParams.get("to")).toBe("2026-07-10");
+    await expect(
+      page.locator(".kit-date-range-picker__trigger"),
+    ).toContainText("Last 30 days");
+  });
+
+  test("adopts a retained Insights range after linking is enabled", async ({
+    page,
+  }) => {
+    await page.goto("/insights");
+    await expect(page.locator(".insights-page")).toBeVisible();
+
+    await page.locator(".kit-date-range-picker__trigger").click();
+    await page.getByRole("button", { name: "90d", exact: true }).click();
+    await expect(page).toHaveURL(/window_days=90/);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page
+      .getByRole("checkbox", { name: "Link date ranges across pages" })
+      .check();
+
+    await clickNavTab(page, "Usage");
+
+    await expect(page.locator(".usage-page")).toBeVisible();
+    await expect(
+      page.locator(".kit-date-range-picker__trigger"),
+    ).toContainText("Last 90 days");
   });
 });

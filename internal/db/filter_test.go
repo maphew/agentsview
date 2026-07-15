@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -1188,6 +1189,48 @@ func TestSidebarSessionIndexIncludeAutomated(t *testing.T) {
 	requireNoError(t, err, "GetSidebarSessionIndex")
 	requireSidebarIndexIDs(t, index.Sessions, []string{"normal", "review"})
 	require.Equal(t, 2, index.Total, "total")
+}
+
+func TestSessionReadProgressRevisionUsesTranscriptContent(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "revision", "proj")
+
+	session, err := d.GetSession(context.Background(), "revision")
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assertJSONTranscriptRevision(t, session, "0")
+
+	require.NoError(t, d.InsertMessages([]Message{{
+		SessionID: "revision", Ordinal: 0, Role: "user",
+		Content: "content", ContentLength: len("content"),
+	}}))
+	updated, err := d.GetSession(context.Background(), "revision")
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	assertJSONTranscriptRevision(t, updated, "1")
+
+	name := "metadata-only rename"
+	require.NoError(t, d.RenameSession("revision", &name))
+	renamed, err := d.GetSession(context.Background(), "revision")
+	require.NoError(t, err)
+	require.NotNil(t, renamed)
+	assertJSONTranscriptRevision(t, renamed, "1")
+
+	index, err := d.GetSidebarSessionIndex(context.Background(), SessionFilter{})
+	require.NoError(t, err)
+	require.Len(t, index.Sessions, 1)
+	assertJSONTranscriptRevision(t, index.Sessions[0], "1")
+}
+
+func assertJSONTranscriptRevision(t *testing.T, value any, want string) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	assert.Equal(t, want, fields["transcript_revision"])
+	assert.NotContains(t, fields, "file_hash")
+	assert.NotContains(t, fields, "local_modified_at")
 }
 
 func TestSidebarSessionIndexExcludeOneShotWithAutomatedIncluded(t *testing.T) {

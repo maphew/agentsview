@@ -211,6 +211,8 @@
   "session_breadcrumb_path_copied": "경로가 복사되었습니다!",
   "session_breadcrumb_opened_in": "{target}에서 열림",
   "session_breadcrumb_failed_to_open": "열기 실패",
+  "session_breadcrumb_open_in_codex_desktop": "Codex Desktop에서 열기",
+  "session_breadcrumb_open_in_claude_code": "Claude Code에서 열기",
   "session_breadcrumb_summary_mode": "요약 모드",
   "session_breadcrumb_summary_mode_tooltip": "이 transcript에는 도구 결과, 사고 내용, 변경 사항(diff)이 없습니다. 전체 충실도를 보려면 agy-reader 사이드카가 필요합니다 — 설치하거나, 이미 설치했다면 따라잡을 때까지 기다리세요. 방법을 알아보려면 클릭하세요.",
   "session_breadcrumb_malformed_lines": [
@@ -256,6 +258,10 @@
   "session_find_close": "찾기 바 닫기",
   "message_list_empty": "메시지를 보려면 세션을 선택하세요",
   "message_list_loading": "메시지 불러오는 중...",
+  "read_progress_boundary": "읽기 진행 경계",
+  "read_progress_new_messages": "새 메시지",
+  "read_progress_earlier_messages": "이전 메시지",
+  "read_progress_unread_messages": "읽지 않은 메시지",
   "code_block_copy_code_block": "코드 블록 복사",
   "code_block_copied_code_block": "코드 블록이 복사되었습니다",
   "code_block_copy_code": "코드 복사",
@@ -875,6 +881,9 @@
   "usage_top_sessions_by_cost": "비용 상위 세션",
   "settings_title": "설정",
   "settings_loading": "설정을 불러오는 중...",
+  "settings_date_ranges_title": "날짜 범위",
+  "settings_date_ranges_description": "세션, 사용량, 활동, 트렌드, 인사이트 페이지에서 선택한 날짜 범위를 공유합니다.",
+  "settings_date_ranges_link": "페이지 간 날짜 범위 연결",
   "settings_resync_title_unavailable": "읽기 전용 모드에서는 전체 재동기화를 사용할 수 없습니다",
   "settings_resync_unavailable_hint": "읽기 전용 백엔드에 연결된 동안에는 사용할 수 없습니다",
   "settings_resync_hint": "모든 세션 파일을 처음부터 다시 스캔합니다",
@@ -1583,6 +1592,65 @@
   "settings_github_not_configured": "설정되지 않음",
   "settings_github_saving": "저장 중...",
   "settings_github_save_token": "토큰 저장",
+  "settings_embeddings_title": "시맨틱 임베딩",
+  "settings_embeddings_description": "세션 콘텐츠 시맨틱 검색 인덱스의 빌드 상태입니다.",
+  "settings_embeddings_loading": "임베딩 상태를 불러오는 중...",
+  "settings_embeddings_unavailable": "이 서버에서는 시맨틱 검색 임베딩을 사용할 수 없습니다.",
+  "settings_embeddings_load_failed": "임베딩 상태를 불러오지 못했습니다",
+  "settings_embeddings_model_label": "모델",
+  "settings_embeddings_dimension_label": "차원",
+  "settings_embeddings_status_label": "상태",
+  "settings_embeddings_status_idle": "대기",
+  "settings_embeddings_status_scanning": "스캔 중",
+  "settings_embeddings_status_embedding": "임베딩 중",
+  "settings_embeddings_status_running": "실행 중",
+  "settings_embeddings_scanning_hint": "세션 변경 사항을 스캔하는 중입니다 - 전체 작업량은 아직 알 수 없습니다.",
+  "settings_embeddings_progress_chunks": [
+    {
+      "declarations": [
+        "input count",
+        "input doneLabel",
+        "input totalLabel",
+        "local countPlural = count: plural"
+      ],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=other": "{doneLabel} / {totalLabel} 청크"
+      }
+    }
+  ],
+  "settings_embeddings_rate": [
+    {
+      "declarations": [
+        "input count",
+        "input rateLabel",
+        "local countPlural = count: plural"
+      ],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=other": "초당 {rateLabel} 청크"
+      }
+    }
+  ],
+  "settings_embeddings_elapsed": "경과 {duration}",
+  "settings_embeddings_eta": "예상 남은 시간 {duration}",
+  "settings_embeddings_eta_estimating": "남은 시간을 추정하는 중...",
+  "settings_embeddings_duration_hours_minutes": "{hours}시간 {minutes}분",
+  "settings_embeddings_duration_minutes_seconds": "{minutes}분 {seconds}초",
+  "settings_embeddings_duration_seconds": "{seconds}초",
+  "settings_embeddings_last_build_label": "마지막 빌드",
+  "settings_embeddings_last_build_completed": "완료됨",
+  "settings_embeddings_last_build_failed": "실패",
+  "settings_embeddings_last_build_activated": "새 세대가 활성화됨",
+  "settings_embeddings_last_build_documents": "임베딩된 문서 수",
+  "settings_embeddings_last_build_chunks": "임베딩된 청크 수",
+  "settings_embeddings_generations_title": "임베딩 세대",
+  "settings_embeddings_generations_empty": "아직 임베딩 세대가 없습니다.",
+  "settings_embeddings_state_active": "활성",
+  "settings_embeddings_state_building": "빌드 중",
+  "settings_embeddings_state_retired": "사용 중지됨",
+  "settings_embeddings_coverage": "임베딩됨 {embeddedLabel} · 누락 {missingLabel}",
+  "settings_embeddings_progress_aria": "임베딩 진행률",
   "settings_remote_connected_version": "연결됨 (v{version})",
   "settings_remote_server_returned": "서버가 {status}를 반환했습니다",
   "settings_remote_connection_failed": "연결 실패",

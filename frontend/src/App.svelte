@@ -74,7 +74,14 @@
   import { starred } from "./lib/stores/starred.svelte.js";
   import { pins } from "./lib/stores/pins.svelte.js";
   import { settings } from "./lib/stores/settings.svelte.js";
-  import { yokedDates } from "./lib/stores/yokedDates.svelte.js";
+  import { analyticsPageDates } from "./lib/stores/analyticsPageDates.js";
+  import {
+    yokedDates,
+    panelDateToSessionFilterParams,
+    rangeToPanelDate,
+    sessionParamsToPanelDate,
+    type PanelDateState,
+  } from "./lib/stores/yokedDates.svelte.js";
   import { m } from "./lib/i18n/index.js";
   import { setAuthToken, getAuthToken, setServerUrl, getBase } from "./lib/api/runtime.js";
   import { setupVisibilityHealthCheck } from "./lib/utils/health.js";
@@ -83,6 +90,8 @@
   import {
     filterParamsEqual,
     hasFilterParams,
+    hasSessionDateIntent,
+    SESSION_ANALYTICS_WINDOW_PARAM,
     sessionDateIntentCleared,
     sessionRouteParamsForDetailExit,
     sessionRouteParamsForFilters,
@@ -293,20 +302,81 @@
     }
   }
 
+  function applySessionDateState(
+    state: PanelDateState,
+    routeParams: Record<string, string>,
+  ): Record<string, string> | null {
+    const dateParams = panelDateToSessionFilterParams(state);
+    if (Object.keys(dateParams).length === 0) return null;
+    sessions.filters.date = dateParams["date"] ?? "";
+    sessions.filters.dateFrom = dateParams["date_from"] ?? "";
+    sessions.filters.dateTo = dateParams["date_to"] ?? "";
+    const params = { ...routeParams };
+    for (const key of [
+      "date",
+      "date_from",
+      "date_to",
+      SESSION_ANALYTICS_WINDOW_PARAM,
+    ]) {
+      delete params[key];
+    }
+    Object.assign(params, filtersToParams(sessions.filters));
+    if (
+      state.mode === "rolling" &&
+      state.windowDays
+    ) {
+      params[SESSION_ANALYTICS_WINDOW_PARAM] = String(
+        state.windowDays,
+      );
+    }
+    return params;
+  }
+
+  function sessionEntryDateParams(
+    routeParams: Record<string, string>,
+  ): Record<string, string> | null {
+    if (hasSessionDateIntent(routeParams)) return null;
+    const retained = analyticsPageDates.restoreWithIntent("sessions");
+    const shared = yokedDates.seedForPanel();
+    const state = shared
+      ? rangeToPanelDate(shared)
+      : retained.explicitDateIntent
+        ? retained.state
+        : null;
+    return state ? applySessionDateState(state, routeParams) : null;
+  }
+
   let lastDetailFilterParamsSignature: string | null = $state(null);
+  let previousDateRestoreRoute: string | null = null;
 
   // React to route changes: reload sessions and apply URL params.
   // Only apply URL deep-link params (initFromParams) when the URL
   // actually contains filter keys — a bare /sessions preserves the
   // current store state (restored from localStorage).
   // Only track route and params — NOT sessionId.
-  $effect(() => {
+  $effect.pre(() => {
     const route = router.route;
     const params = router.params;
+    const enteringSessions =
+      route === "sessions" && previousDateRestoreRoute !== "sessions";
     untrack(() => {
+      previousDateRestoreRoute = route;
       const sid = router.sessionId;
-      if (!sid && route === "sessions" && hasFilterParams(params)) {
+      if (
+        route === "sessions" &&
+        hasFilterParams(params) &&
+        (!sid || enteringSessions)
+      ) {
         sessions.initFromParams(params);
+      }
+      if (enteringSessions) {
+        const explicitState = sessionParamsToPanelDate(params);
+        if (explicitState) yokedDates.updateFromPanel(explicitState);
+        const entryParams =
+          explicitState?.mode === "rolling"
+            ? applySessionDateState(explicitState, params)
+            : sessionEntryDateParams(params);
+        if (entryParams) router.replaceParams(entryParams);
       }
       if (route === "sessions") {
         sessions.load();

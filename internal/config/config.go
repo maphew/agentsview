@@ -134,15 +134,24 @@ type VectorConfig struct {
 // VectorEmbeddingsConfig describes the embedding space — the model identity
 // every server must share — and the named servers that can encode it.
 //
-// Model identity (model, dimension, max_input_chars, input_suffix) is
-// deliberately global rather than per-server: it joins the generation
-// fingerprint, and query vectors are only comparable to stored document
-// vectors from the same space. Servers differ only in transport and
+// Model identity (model, dimension, request_dimensions, max_input_chars,
+// input_suffix) is deliberately global rather than per-server: it joins the
+// generation fingerprint, and query vectors are only comparable to stored
+// document vectors from the same space. Servers differ only in transport and
 // capacity, so a build run on any server produces vectors every other
 // server's queries can search.
 type VectorEmbeddingsConfig struct {
 	Model     string `toml:"model" json:"model"`
 	Dimension int    `toml:"dimension" json:"dimension"`
+	// RequestDimensions, when true, sends Dimension as the OpenAI-compatible
+	// "dimensions" request field — for documents at build time and queries at
+	// search time alike — asking the endpoint for Matryoshka-reduced vectors
+	// of exactly that length (e.g. Qwen3-Embedding through Ollama). Requires
+	// a model and endpoint that support dimension selection; when false (the
+	// default) the field is never sent and Dimension only validates response
+	// length. Part of the generation fingerprint: enabling it re-embeds the
+	// archive on the next build.
+	RequestDimensions bool `toml:"request_dimensions" json:"request_dimensions,omitempty"`
 	// MaxInputChars caps the rune length of each chunk sent for
 	// embedding. Default 8192.
 	MaxInputChars int `toml:"max_input_chars" json:"max_input_chars"`
@@ -444,6 +453,7 @@ type Config struct {
 	NoBrowser            bool                   `json:"no_browser" toml:"no_browser"`
 	DisableUpdateCheck   bool                   `json:"disable_update_check" toml:"disable_update_check"`
 	NoSync               bool                   `json:"-" toml:"-"`
+	SkipInitialSync      bool                   `json:"-" toml:"-"`
 	PG                   PGConfig               `json:"pg,omitempty" toml:"pg"`
 	DefaultPG            string                 `json:"default_pg,omitempty" toml:"default_pg"`
 	PGTargets            map[string]PGConfig    `json:"-" toml:"-"`
@@ -452,6 +462,11 @@ type Config struct {
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
 	WriteTimeout         time.Duration          `json:"-" toml:"-"`
+	// LocalMachineName is the operating-system hostname used to identify
+	// sessions ingested from this machine. It is runtime-derived rather than
+	// persisted configuration so local and remote source labels share the same
+	// hostname namespace.
+	LocalMachineName string `json:"-" toml:"-"`
 
 	// AgentDirs maps each AgentType to its configured
 	// directories. Single-dir agents store a one-element
@@ -658,6 +673,13 @@ func Default() (Config, error) {
 		)
 	}
 	dataDir := filepath.Join(home, ".agentsview")
+	hostname, err := os.Hostname()
+	if err != nil {
+		return Config{}, fmt.Errorf("identify local sync machine: %w", err)
+	}
+	if strings.TrimSpace(hostname) == "" {
+		return Config{}, fmt.Errorf("identify local sync machine: hostname is empty")
+	}
 
 	agentDirs := make(map[parser.AgentType][]string)
 	agentDirSource := make(map[parser.AgentType]dirSource)
@@ -684,6 +706,7 @@ func Default() (Config, error) {
 		DataDir:                        dataDir,
 		DBPath:                         filepath.Join(dataDir, "sessions.db"),
 		WriteTimeout:                   30 * time.Second,
+		LocalMachineName:               hostname,
 		AgentDirs:                      agentDirs,
 		agentDirSource:                 agentDirSource,
 		WatchExcludePatterns:           []string{".git", "node_modules", "__pycache__", ".venv", "venv", "vendor", ".next"},
@@ -1120,6 +1143,9 @@ func (c *Config) applyConfigTOML(data string) error {
 	if file.Vector.Embeddings.Dimension != 0 {
 		c.Vector.Embeddings.Dimension = file.Vector.Embeddings.Dimension
 	}
+	if file.Vector.Embeddings.RequestDimensions {
+		c.Vector.Embeddings.RequestDimensions = true
+	}
 	if meta.IsDefined("vector", "embeddings", "max_input_chars") {
 		c.Vector.Embeddings.MaxInputChars = file.Vector.Embeddings.MaxInputChars
 	}
@@ -1462,6 +1488,10 @@ func RegisterServeFlags(fs *flag.FlagSet) {
 		"events-coalesce-interval", 10*time.Second,
 		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
 	)
+	fs.Duration(
+		"write-timeout", 30*time.Second,
+		"Max time to write an API response before a 503 request-timed-out; raise for slow aggregates over large datasets (0 disables)",
+	)
 }
 
 // RegisterServePFlags registers serve-command flags on fs.
@@ -1526,6 +1556,10 @@ func RegisterServePFlags(fs *pflag.FlagSet) {
 		"events-coalesce-interval", 10*time.Second,
 		"Minimum interval between SSE data_changed broadcasts (0 disables coalescing)",
 	)
+	fs.Duration(
+		"write-timeout", 30*time.Second,
+		"Max time to write an API response before a 503 request-timed-out; raise for slow aggregates over large datasets (0 disables)",
+	)
 }
 
 // applyFlags copies explicitly-set flags from fs into cfg.
@@ -1585,6 +1619,10 @@ func applyFlagValue(cfg *Config, name, value string) {
 		if d, err := time.ParseDuration(value); err == nil {
 			cfg.EventsCoalesceInterval = d
 		}
+	case "write-timeout":
+		if d, err := time.ParseDuration(value); err == nil {
+			cfg.WriteTimeout = d
+		}
 	case "pg":
 		// Read-routing only. The CLI resolver combines this flag
 		// with cfg.PG from env/config and does not persist a new
@@ -1609,6 +1647,9 @@ func splitFlagList(value string) []string {
 
 func finalize(cfg *Config) error {
 	var err error
+	if strings.TrimSpace(cfg.LocalMachineName) == "" {
+		return fmt.Errorf("identify local sync machine: hostname is empty")
+	}
 	if err := normalizeProxyConfig(&cfg.Proxy); err != nil {
 		return err
 	}

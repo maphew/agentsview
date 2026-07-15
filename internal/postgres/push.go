@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,12 +24,14 @@ import (
 )
 
 const (
-	lastPushBoundaryStateKey     = "last_push_boundary_state"
-	lastPushTargetFingerprintKey = "pg_target_fingerprint_v1"
-	sessionAliasBackfillStateKey = "pg_session_alias_backfill_v1"
-	artifactIdentityModeStateKey = "pg_artifact_identity_v1"
-	artifactOwnerMarkerPrefix    = "artifact-origin:"
-	legacyArtifactIdentityMode   = "legacy"
+	lastPushBoundaryStateKey           = "last_push_boundary_state"
+	lastPushTargetFingerprintKey       = "pg_target_fingerprint_v1"
+	sessionAliasBackfillStateKey       = "pg_session_alias_backfill_v1"
+	projectIdentityPublicationStateKey = "project_identity_publication_revision_v2"
+	transcriptRevisionBackfillStateKey = "pg_transcript_revision_backfill_v1"
+	artifactIdentityModeStateKey       = "pg_artifact_identity_v1"
+	artifactOwnerMarkerPrefix          = "artifact-origin:"
+	legacyArtifactIdentityMode         = "legacy"
 )
 
 // pushMarkerIDStateKey names the local sync-state entry holding this DB's
@@ -215,6 +218,17 @@ func (s *Sync) Push(
 			"pgsync: session alias backfill marker missing; forcing full push",
 		)
 	}
+	transcriptRevisionBackfillNeeded := false
+	full, transcriptRevisionBackfillNeeded, err =
+		applyTranscriptRevisionBackfillRequirement(state, full)
+	if err != nil {
+		return result, err
+	}
+	if transcriptRevisionBackfillNeeded {
+		log.Printf(
+			"pgsync: transcript revision backfill marker missing; forcing full push",
+		)
+	}
 	if full {
 		lastPush = ""
 		// Caller requested a full push — the PG schema
@@ -282,11 +296,6 @@ func (s *Sync) Push(
 		func() error { return s.syncCursorUsageEvents(ctx) }); err != nil {
 		return result, err
 	}
-	if err := timedPushSetupStep("project identity observation sync",
-		func() error { return s.syncProjectIdentityObservations(ctx) }); err != nil {
-		return result, err
-	}
-
 	cutoff := time.Now().UTC().Format(LocalSyncTimestampLayout)
 
 	allSessions, err := s.local.ListSessionsModifiedBetween(
@@ -533,6 +542,14 @@ func (s *Sync) Push(
 		); err != nil {
 			return result, err
 		}
+		if err := completeTranscriptRevisionBackfill(
+			state, transcriptRevisionBackfillNeeded, result,
+		); err != nil {
+			return result, err
+		}
+		if err := s.syncProjectIdentityObservations(ctx, full); err != nil {
+			return result, err
+		}
 		result.Vectors, err = s.runVectorPushPhase(ctx, full, nil, onProgress)
 		if err != nil {
 			return result, err
@@ -614,6 +631,21 @@ func (s *Sync) Push(
 	); err != nil {
 		return result, err
 	}
+	if err := completeTranscriptRevisionBackfill(
+		state, transcriptRevisionBackfillNeeded, result,
+	); err != nil {
+		return result, err
+	}
+	if result.Errors == 0 {
+		if err := s.syncProjectIdentityObservations(ctx, full); err != nil {
+			return result, err
+		}
+	} else {
+		log.Printf(
+			"pgsync: skipping project identity publication after %d session push errors",
+			result.Errors,
+		)
+	}
 	result.Vectors, err = s.runVectorPushPhase(ctx, full, failedSessions, onProgress)
 	if err != nil {
 		return result, err
@@ -646,34 +678,121 @@ func (s *Sync) runVectorPushPhase(
 	return res, nil
 }
 
-func (s *Sync) syncProjectIdentityObservations(ctx context.Context) error {
-	observations, err := s.local.ListProjectIdentityObservations(ctx, nil)
+func (s *Sync) syncProjectIdentityObservations(
+	ctx context.Context, force bool,
+) error {
+	revision, err := s.local.ProjectIdentityPublicationRevision(ctx)
 	if err != nil {
-		return fmt.Errorf("loading project identity observations: %w", err)
+		return err
 	}
-	observations = filterProjectIdentityObservations(
-		observations, s.projects, s.excludeProjects,
+	databaseGeneration, err := s.local.GetDatabaseID(ctx)
+	if err != nil {
+		return fmt.Errorf("loading source database generation: %w", err)
+	}
+	revisionValue := strconv.FormatInt(revision, 10)
+	state := s.effectiveSyncState()
+	stateKey := projectIdentityPublicationStateKey + ":" + databaseGeneration
+	publishedRevisionValue, err := state.GetSyncState(stateKey)
+	if err != nil {
+		return fmt.Errorf("reading project identity publication revision: %w", err)
+	}
+	fullPublication := force || publishedRevisionValue == ""
+	var publishedRevision int64
+	if !fullPublication {
+		publishedRevision, err = strconv.ParseInt(publishedRevisionValue, 10, 64)
+		if err != nil || publishedRevision < 0 || publishedRevision > revision {
+			fullPublication = true
+		} else if publishedRevision == revision {
+			return nil
+		}
+	}
+
+	var observations []export.ProjectIdentityObservation
+	var snapshots []export.ProjectIdentityObservation
+	var delta db.ProjectIdentityPublicationDelta
+	if fullPublication {
+		observations, err = s.local.ListProjectIdentityObservations(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("loading project identity observations: %w", err)
+		}
+		observations = filterProjectIdentityObservations(
+			observations, s.projects, s.excludeProjects,
+		)
+		snapshots, err = s.local.ListSessionProjectIdentitySnapshots(ctx)
+		if err != nil {
+			return fmt.Errorf("loading session project identity snapshots: %w", err)
+		}
+		snapshots = filterProjectIdentityObservations(
+			snapshots, s.projects, s.excludeProjects,
+		)
+	} else {
+		delta, err = s.local.LoadProjectIdentityPublicationDelta(
+			ctx, publishedRevision, revision, s.projects, s.excludeProjects,
+		)
+		if err != nil {
+			return err
+		}
+		observations = delta.Observations
+		snapshots = delta.Snapshots
+	}
+
+	archiveID, err := s.local.GetArchiveID(ctx)
+	if err != nil {
+		return fmt.Errorf("loading source archive id: %w", err)
+	}
+	archiveSalt, err := s.local.GetArchiveSalt(ctx)
+	if err != nil {
+		return fmt.Errorf("loading source archive salt: %w", err)
+	}
+	log.Printf(
+		"pgsync: syncing %d project identity observation(s), %d snapshot(s), "+
+			"and %d tombstone(s)",
+		len(observations), len(snapshots),
+		len(delta.ObservationDeletes)+len(delta.SnapshotDeletes),
 	)
-	if len(observations) == 0 {
-		return nil
-	}
-	log.Printf("pgsync: syncing %d project identity observation(s)",
-		len(observations))
-	for i, obs := range observations {
-		observations[i] = export.SanitizeStoredProjectIdentityObservation(obs)
-	}
 	tx, err := s.pg.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning project identity observation sync: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := upsertSourceArchiveScope(ctx, tx, archiveID, archiveSalt); err != nil {
+		return err
+	}
+	if fullPublication {
+		if err := deleteProjectIdentityScope(
+			ctx, tx, archiveID, s.projects, s.excludeProjects,
+		); err != nil {
+			return err
+		}
+	} else if err := deleteProjectIdentityDelta(
+		ctx, tx, archiveID, databaseGeneration,
+		delta.ObservationDeletes, delta.SnapshotDeletes,
+	); err != nil {
+		return err
+	}
+	for i, obs := range observations {
+		obs.SourceArchiveID = archiveID
+		obs.SourceArchiveSalt = archiveSalt
+		observations[i] = export.SanitizeStoredProjectIdentityObservation(obs)
+	}
 	if err := syncProjectIdentityObservationsBatch(
 		ctx, tx, observations,
 	); err != nil {
 		return fmt.Errorf("syncing project identity observations: %w", err)
 	}
+	for i := range snapshots {
+		snapshots[i] = export.SanitizeStoredProjectIdentityObservation(snapshots[i])
+	}
+	if err := insertSessionProjectIdentitySnapshots(
+		ctx, tx, archiveID, databaseGeneration, snapshots,
+	); err != nil {
+		return fmt.Errorf("syncing session project identity snapshots: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing project identity observation sync: %w", err)
+	}
+	if err := state.SetSyncState(stateKey, revisionValue); err != nil {
+		return fmt.Errorf("recording project identity publication revision: %w", err)
 	}
 	return nil
 }
@@ -1368,6 +1487,41 @@ func completeArtifactIdentityMode(
 	return nil
 }
 
+func applyTranscriptRevisionBackfillRequirement(
+	local syncStateStore, full bool,
+) (bool, bool, error) {
+	done, err := local.GetSyncState(transcriptRevisionBackfillStateKey)
+	if err != nil {
+		return full, false, fmt.Errorf(
+			"reading %s: %w", transcriptRevisionBackfillStateKey, err,
+		)
+	}
+	if done == "1" {
+		return full, false, nil
+	}
+	return true, true, nil
+}
+
+func markTranscriptRevisionBackfillDone(local syncStateStore) error {
+	if err := local.SetSyncState(
+		transcriptRevisionBackfillStateKey, "1",
+	); err != nil {
+		return fmt.Errorf(
+			"updating %s: %w", transcriptRevisionBackfillStateKey, err,
+		)
+	}
+	return nil
+}
+
+func completeTranscriptRevisionBackfill(
+	local syncStateStore, needed bool, result PushResult,
+) error {
+	if !needed || result.Errors > 0 {
+		return nil
+	}
+	return markTranscriptRevisionBackfillDone(local)
+}
+
 func persistPushTargetFingerprint(
 	local syncStateStore,
 	fingerprint string,
@@ -1701,6 +1855,8 @@ func sessionPushFingerprint(
 		ownerMarker,
 		dependencyFingerprint,
 		sess.Agent,
+		sess.AgentLabel,
+		sess.Entrypoint,
 		stringValue(sess.FirstMessage),
 		stringValue(sess.DisplayName),
 		stringValue(sess.SessionName),
@@ -1749,6 +1905,7 @@ func sessionPushFingerprint(
 		sess.SourceSessionID,
 		sess.SourceVersion,
 		sess.TranscriptFidelity,
+		stringValue(sess.TranscriptRevision),
 		fmt.Sprintf("%d", sess.ParserMalformedLines),
 		fmt.Sprintf("%t", sess.IsTruncated),
 		stringValue(sess.TerminationStatus),
@@ -2482,6 +2639,13 @@ func stringValue(value *string) string {
 	return *value
 }
 
+func transcriptRevisionValue(value *string) string {
+	if value == nil || *value == "" {
+		return "0"
+	}
+	return *value
+}
+
 func float64Value(value *float64) string {
 	if value == nil {
 		return ""
@@ -2524,10 +2688,9 @@ func nilStrTS(s *string) any {
 }
 
 // pushSession upserts a single session into PG.
-// File-level metadata (file_hash, file_path, file_size,
-// file_mtime) is intentionally not synced to PG -- it is
-// local-only and used solely by the sync engine to detect
-// re-parsed sessions.
+// Local file metadata remains SQLite-only. The file hash is copied into the
+// backend-neutral transcript_revision column so PG readers can observe
+// transcript content changes without depending on local sync metadata.
 func (s *Sync) pushSession(
 	ctx context.Context, tx *sql.Tx, sess db.Session,
 	identity pushedSessionIdentity, markerID string,
@@ -2611,7 +2774,8 @@ func (s *Sync) pushSession(
 			missing_success_criteria_count,
 			missing_verification_count, duplicate_prompt_count,
 			no_code_context_count, runaway_tool_loop_count,
-			transcript_fidelity,
+			transcript_fidelity, transcript_revision,
+			agent_label, entrypoint,
 			updated_at
 			)
 			SELECT
@@ -2628,7 +2792,8 @@ func (s *Sync) pushSession(
 			$43,
 			$44, $45, $46, $47,
 			$48, $49,
-				$50, $51, $52, $53, $54, $55, $56, $57, $58,
+				$50, $51, $52, $53, $54, $55, $56, $57, $58, $59,
+				$60, $61,
 				NOW()
 			WHERE NOT EXISTS (
 				SELECT 1 FROM excluded_sessions WHERE id = $1
@@ -2638,6 +2803,8 @@ func (s *Sync) pushSession(
 			owner_marker = EXCLUDED.owner_marker,
 			project = EXCLUDED.project,
 			agent = EXCLUDED.agent,
+			agent_label = EXCLUDED.agent_label,
+			entrypoint = EXCLUDED.entrypoint,
 			first_message = EXCLUDED.first_message,
 			display_name = CASE
 				WHEN sessions.display_name IS DISTINCT FROM
@@ -2668,6 +2835,7 @@ func (s *Sync) pushSession(
 			source_session_id = EXCLUDED.source_session_id,
 			source_version = EXCLUDED.source_version,
 			transcript_fidelity = EXCLUDED.transcript_fidelity,
+			transcript_revision = EXCLUDED.transcript_revision,
 			parser_malformed_lines = EXCLUDED.parser_malformed_lines,
 			is_truncated = EXCLUDED.is_truncated,
 			termination_status = EXCLUDED.termination_status,
@@ -2706,12 +2874,12 @@ func (s *Sync) pushSession(
 					OR sessions.machine = 'local'
 					OR sessions.machine = ''
 					OR sessions.machine IN (
-						SELECT jsonb_array_elements_text($59::jsonb)
+					SELECT jsonb_array_elements_text($62::jsonb)
 					))
 			)
 			OR sessions.owner_marker = EXCLUDED.owner_marker
 			OR sessions.owner_marker IN (
-				SELECT jsonb_array_elements_text($60::jsonb)
+				SELECT jsonb_array_elements_text($63::jsonb)
 			))
 			AND NOT EXISTS (
 				SELECT 1 FROM excluded_sessions
@@ -2722,6 +2890,8 @@ func (s *Sync) pushSession(
 			OR sessions.owner_marker IS DISTINCT FROM EXCLUDED.owner_marker
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
 			OR sessions.agent IS DISTINCT FROM EXCLUDED.agent
+			OR sessions.agent_label IS DISTINCT FROM EXCLUDED.agent_label
+			OR sessions.entrypoint IS DISTINCT FROM EXCLUDED.entrypoint
 			OR sessions.first_message IS DISTINCT FROM EXCLUDED.first_message
 			OR sessions.source_display_name IS DISTINCT FROM EXCLUDED.display_name
 			OR sessions.session_name IS DISTINCT FROM EXCLUDED.session_name
@@ -2742,6 +2912,7 @@ func (s *Sync) pushSession(
 			OR sessions.source_session_id IS DISTINCT FROM EXCLUDED.source_session_id
 			OR sessions.source_version IS DISTINCT FROM EXCLUDED.source_version
 			OR sessions.transcript_fidelity IS DISTINCT FROM EXCLUDED.transcript_fidelity
+			OR sessions.transcript_revision IS DISTINCT FROM EXCLUDED.transcript_revision
 			OR sessions.parser_malformed_lines IS DISTINCT FROM EXCLUDED.parser_malformed_lines
 			OR sessions.is_truncated IS DISTINCT FROM EXCLUDED.is_truncated
 			OR sessions.termination_status IS DISTINCT FROM EXCLUDED.termination_status
@@ -2812,6 +2983,9 @@ func (s *Sync) pushSession(
 		sess.MissingVerificationCount, sess.DuplicatePromptCount,
 		sess.NoCodeContextCount, sess.RunawayToolLoopCount,
 		sanitizePG(sess.TranscriptFidelity),
+		transcriptRevisionValue(sess.TranscriptRevision),
+		sanitizePG(sess.AgentLabel),
+		sanitizePG(sess.Entrypoint),
 		string(legacyMarkerMachinesJSON),
 		string(legacyOwnerMarkersJSON),
 	)

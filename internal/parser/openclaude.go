@@ -339,6 +339,7 @@ func parseOpenClaudeSession(
 	defer f.Close()
 
 	lr := newLineReader(f, maxLineSize)
+	defer releaseLineReader(lr)
 	lastLine := ""
 	malformedLines := 0
 	ordinal := 0
@@ -527,7 +528,9 @@ func parseOpenClaudeSession(
 	}
 
 	if len(queuedCommands) > 0 {
-		messages = mergeQueuedCommands(messages, queuedCommands, 0)
+		messages = mergeQueuedCommands(
+			messages, queuedCommands, 0, openClaudeQueuedCommandMessage,
+		)
 		firstUser, userCount = firstMessageAndUserCount(messages)
 		for _, qc := range queuedCommands {
 			if qc.timestamp.After(endedAt) {
@@ -577,7 +580,7 @@ func parseOpenClaudeSession(
 	}
 	accumulateMessageTokenUsage(sess, messages)
 	sess.TerminationStatus = Classify(
-		openClaudeSemanticMessages(messages),
+		messages,
 		lastAssistantStopReason(openClaudeSemanticMessages(messages)),
 		isTruncated,
 	)
@@ -626,6 +629,17 @@ func extractOpenClaudeQueuedCommand(line string) (claudeQueuedCommand, bool) {
 		prompt:    prompt,
 		timestamp: extractTimestamp(line),
 	}, true
+}
+
+func openClaudeQueuedCommandMessage(q claudeQueuedCommand) ParsedMessage {
+	return ParsedMessage{
+		Role:          RoleUser,
+		Content:       q.prompt,
+		Timestamp:     q.timestamp,
+		ContentLength: len(q.prompt),
+		SourceType:    "user",
+		SourceSubtype: "queued_command",
+	}
 }
 
 func openClaudeSessionID(id string) string {

@@ -1,0 +1,476 @@
+package parser
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func writeGrokFixtureFile(t *testing.T, path, body string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
+func grokSummaryPath(root, cwdKey, sessionID string) string {
+	return filepath.Join(root, cwdKey, sessionID, "summary.json")
+}
+
+func newGrokTestProvider(t *testing.T, root string) Provider {
+	t.Helper()
+	provider, ok := NewProvider(AgentGrok, ProviderConfig{Roots: []string{root}})
+	require.True(t, ok)
+	return provider
+}
+
+func TestGrokProviderSummarySource(t *testing.T) {
+	root := t.TempDir()
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", "sess-1"), `{
+			"summary": "Fix parser regression",
+			"firstPrompt": "Investigate the failing Grok session import",
+			"modelId": "grok-code-fast",
+			"createdAt": "2026-07-08T10:00:00Z",
+			"updatedAt": "2026-07-08T10:30:00Z",
+			"lastActiveAt": "2026-07-08T10:31:00Z",
+			"hostname": "devbox",
+			"numMessages": 6,
+			"worktreeLabel": "agentsview"
+		}`)
+	writeGrokFixtureFile(t, filepath.Join(root, "cwd-key", "sess-1", "signals.json"), `{
+			"tokenUsage": {
+				"totalOutputTokens": 321,
+				"peakContextTokens": 4096
+			}
+		}`)
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{
+		Source: sources[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	session := outcome.Results[0].Result.Session
+	assert.Equal(t, "grok:sess-1", session.ID)
+	assert.Equal(t, AgentGrok, session.Agent)
+	assert.Equal(t, "sess-1", session.SourceSessionID)
+	assert.Equal(t, "grok-summary-v1", session.SourceVersion)
+	assert.Equal(t, "summary", session.TranscriptFidelity)
+	assert.Equal(t, "Investigate the failing Grok session import", session.FirstMessage)
+	assert.Equal(t, "Fix parser regression", session.SessionName)
+	assert.Equal(t, "agentsview", session.Project)
+	assert.Equal(t, 6, session.MessageCount)
+	assert.Equal(t, 1, session.UserMessageCount)
+	assert.Equal(t, 321, session.TotalOutputTokens)
+	assert.Equal(t, 4096, session.PeakContextTokens)
+	assert.Equal(t, filepath.Clean(grokSummaryPath(root, "cwd-key", "sess-1")), filepath.Clean(session.File.Path))
+	require.Len(t, outcome.Results[0].Result.Messages, 1)
+	assert.Equal(t, RoleUser, outcome.Results[0].Result.Messages[0].Role)
+	assert.Equal(t, "Investigate the failing Grok session import", outcome.Results[0].Result.Messages[0].Content)
+}
+
+func TestGrokProviderCurrentBuildSummarySchema(t *testing.T) {
+	root := t.TempDir()
+	cwdKey := "%2FUsers%2Fdev%2Frepos%2Fwp-devops"
+	sessionID := "019f542b-45b0-7720-8184-e790ac116d20"
+	writeGrokFixtureFile(t, grokSummaryPath(root, cwdKey, sessionID), `{
+			"info": {
+				"id": "019f542b-45b0-7720-8184-e790ac116d20",
+				"cwd": "/Users/dev/repos/wp-devops"
+			},
+			"session_summary": "\u5ba1\u67e5\u4ed3\u5e93\u4ee3\u7801",
+			"generated_title": "\u5ba1\u67e5\u4ed3\u5e93\u4ee3\u7801",
+			"created_at": "2026-07-12T02:32:29.874617Z",
+			"updated_at": "2026-07-12T04:29:01.847426Z",
+			"last_active_at": "2026-07-12T04:09:52.574304Z",
+			"num_messages": 927,
+			"num_chat_messages": 104,
+			"current_model_id": "grok-4.5",
+			"git_root_dir": "/Users/dev/repos/wp-devops/",
+			"head_branch": "refactor/shared-proxy-csv-utils",
+			"agent_name": "grok-build-plan"
+		}`)
+	writeGrokFixtureFile(t, filepath.Join(root, cwdKey, sessionID, "signals.json"), `{
+			"userMessageCount": 7,
+			"assistantMessageCount": 48,
+			"contextTokensUsed": 106663,
+			"contextWindowTokens": 200000,
+			"primaryModelId": "grok-4.5"
+		}`)
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+	assert.Equal(t, cwdKey, sources[0].ProjectHint)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{
+		Source: sources[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	session := outcome.Results[0].Result.Session
+	assert.Equal(t, "grok:"+sessionID, session.ID)
+	assert.Equal(t, AgentGrok, session.Agent)
+	assert.Equal(t, sessionID, session.SourceSessionID)
+	assert.Equal(t, "summary", session.TranscriptFidelity)
+	assert.Equal(t, "\u5ba1\u67e5\u4ed3\u5e93\u4ee3\u7801", session.SessionName)
+	assert.Equal(t, "\u5ba1\u67e5\u4ed3\u5e93\u4ee3\u7801", session.FirstMessage)
+	assert.Equal(t, "wp_devops", session.Project)
+	assert.Equal(t, "/Users/dev/repos/wp-devops", session.Cwd)
+	assert.Equal(t, "refactor/shared-proxy-csv-utils", session.GitBranch)
+	// Without chat_history.jsonl, counts fall back to summary/signals.
+	// Prefer num_chat_messages (104) over the broader num_messages (927),
+	// which includes non-chat events and would inflate analytics filters.
+	assert.Equal(t, TranscriptFidelitySummary, session.TranscriptFidelity)
+	assert.Equal(t, "grok-summary-v1", session.SourceVersion)
+	assert.Equal(t, 104, session.MessageCount)
+	assert.Equal(t, 7, session.UserMessageCount)
+	assert.Equal(t, 106663, session.PeakContextTokens)
+	assert.True(t, session.HasPeakContextTokens)
+	assert.False(t, session.HasTotalOutputTokens)
+	require.Len(t, outcome.Results[0].Result.Messages, 1)
+	assert.Equal(t, RoleUser, outcome.Results[0].Result.Messages[0].Role)
+	assert.Equal(t, "\u5ba1\u67e5\u4ed3\u5e93\u4ee3\u7801", outcome.Results[0].Result.Messages[0].Content)
+}
+
+func TestGrokProviderParsesChatHistoryTranscript(t *testing.T) {
+	root := t.TempDir()
+	cwdKey := "%2FUsers%2Fdev%2Frepos%2Fwp-devops"
+	sessionID := "019f5483-db23-74c1-9d35-7df33f1c3ddc"
+	writeGrokFixtureFile(t, grokSummaryPath(root, cwdKey, sessionID), `{
+			"info": {"id": "019f5483-db23-74c1-9d35-7df33f1c3ddc", "cwd": "/Users/dev/repos/wp-devops"},
+			"session_summary": "review branch",
+			"created_at": "2026-07-12T04:09:15.439384Z",
+			"updated_at": "2026-07-12T05:23:48.317854Z",
+			"last_active_at": "2026-07-12T05:23:48.317854Z",
+			"num_messages": 864,
+			"git_root_dir": "/Users/dev/repos/wp-devops/",
+			"head_branch": "refactor/shared-proxy-csv-utils"
+		}`)
+	writeGrokFixtureFile(t, filepath.Join(root, cwdKey, sessionID, "chat_history.jsonl"), strings.Join([]string{
+		`{"type":"system","content":"You are Grok"}`,
+		`{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: macos\n</user_info>"}]}`,
+		`{"type":"user","content":[{"type":"text","text":"<user_query>review branch vs main</user_query>"}]}`,
+		`{"type":"reasoning","id":"","summary":[{"type":"summary_text","text":"Need to review the branch."}]}`,
+		`{"type":"assistant","content":"Loading review skill.","tool_calls":[{"id":"call-1","name":"read_file","arguments":"{\"target_file\":\"SKILL.md\"}"}],"model_id":"grok-4.5"}`,
+		`{"type":"tool_result","tool_call_id":"call-1","content":"skill body"}`,
+		`{"type":"assistant","content":"Review complete.","model_id":"grok-4.5"}`,
+		`{"type":"user","content":[{"type":"text","text":"<user_query>fix the issues</user_query>"}]}`,
+	}, "\n")+"\n")
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{
+		Source: sources[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	result := outcome.Results[0].Result
+	session := result.Session
+	assert.Equal(t, TranscriptFidelityFull, session.TranscriptFidelity)
+	assert.Equal(t, "grok-chat-v1", session.SourceVersion)
+	assert.Equal(t, "review branch vs main", session.FirstMessage)
+	assert.Equal(t, 2, session.UserMessageCount)
+	// user, assistant(+thinking+tool), tool_result, assistant, user
+	require.Len(t, result.Messages, 5)
+
+	assert.Equal(t, RoleUser, result.Messages[0].Role)
+	assert.Equal(t, "review branch vs main", result.Messages[0].Content)
+
+	assert.Equal(t, RoleAssistant, result.Messages[1].Role)
+	assert.True(t, result.Messages[1].HasThinking)
+	assert.Equal(t, "Need to review the branch.", result.Messages[1].ThinkingText)
+	assert.True(t, result.Messages[1].HasToolUse)
+	require.Len(t, result.Messages[1].ToolCalls, 1)
+	assert.Equal(t, "call-1", result.Messages[1].ToolCalls[0].ToolUseID)
+	assert.Equal(t, "read_file", result.Messages[1].ToolCalls[0].ToolName)
+	assert.Equal(t, "Read", result.Messages[1].ToolCalls[0].Category)
+	assert.JSONEq(t, `{"target_file":"SKILL.md"}`, result.Messages[1].ToolCalls[0].InputJSON)
+	assert.Equal(t, "grok-4.5", result.Messages[1].Model)
+
+	assert.Equal(t, RoleUser, result.Messages[2].Role)
+	require.Len(t, result.Messages[2].ToolResults, 1)
+	assert.Equal(t, "call-1", result.Messages[2].ToolResults[0].ToolUseID)
+	assert.Equal(t, 10, result.Messages[2].ToolResults[0].ContentLength)
+
+	assert.Equal(t, RoleAssistant, result.Messages[3].Role)
+	assert.Equal(t, "Review complete.", result.Messages[3].Content)
+
+	assert.Equal(t, RoleUser, result.Messages[4].Role)
+	assert.Equal(t, "fix the issues", result.Messages[4].Content)
+}
+
+func TestGrokProviderUnwrapsOpenAIStyleToolArguments(t *testing.T) {
+	// OpenAI-style tool calls nest name/arguments under "function" and encode
+	// arguments as a JSON string. InputJSON must be the decoded object so
+	// path extraction and skill inference can read fields.
+	root := t.TempDir()
+	sessionID := "sess-openai-tools"
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", sessionID), `{
+		"info": {"id": "sess-openai-tools", "cwd": "/tmp/proj"},
+		"session_summary": "tool args",
+		"created_at": "2026-07-12T04:00:00Z",
+		"updated_at": "2026-07-12T04:01:00Z"
+	}`)
+	writeGrokFixtureFile(t, filepath.Join(root, "cwd-key", sessionID, "chat_history.jsonl"), strings.Join([]string{
+		`{"type":"user","content":"read the skill"}`,
+		`{"type":"assistant","content":"","tool_calls":[{"id":"call-fn","type":"function","function":{"name":"read_file","arguments":"{\"target_file\":\"SKILL.md\",\"offset\":10}"}}],"model_id":"grok-4.5"}`,
+	}, "\n")+"\n")
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{Source: sources[0]})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	msgs := outcome.Results[0].Result.Messages
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	assert.Equal(t, "call-fn", tc.ToolUseID)
+	assert.Equal(t, "read_file", tc.ToolName)
+	assert.Equal(t, "Read", tc.Category)
+	assert.JSONEq(t, `{"target_file":"SKILL.md","offset":10}`, tc.InputJSON)
+	// Must not retain the outer JSON-string quotes.
+	assert.NotContains(t, tc.InputJSON, `\"target_file\"`)
+	assert.False(t, strings.HasPrefix(strings.TrimSpace(tc.InputJSON), `"`))
+}
+
+func TestGrokProviderKeepsUserPromptBesideMetadata(t *testing.T) {
+	// Mixed context-injection + real prompt must keep the prompt instead of
+	// dropping the whole user turn when any meta marker is present.
+	root := t.TempDir()
+	sessionID := "sess-mixed-meta"
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", sessionID), `{
+		"info": {"id": "sess-mixed-meta", "cwd": "/tmp/proj"},
+		"session_summary": "mixed meta",
+		"created_at": "2026-07-12T04:00:00Z",
+		"updated_at": "2026-07-12T04:01:00Z"
+	}`)
+	mixed := `<user_info>
+OS Version: macos
+</user_info>
+<git_status>
+## main
+</git_status>
+
+Please fix the flaky test in grok_test.go`
+	// Escape for JSON string embedding.
+	mixedJSON, err := json.Marshal(mixed)
+	require.NoError(t, err)
+	writeGrokFixtureFile(t, filepath.Join(root, "cwd-key", sessionID, "chat_history.jsonl"), strings.Join([]string{
+		`{"type":"user","content":` + string(mixedJSON) + `}`,
+		`{"type":"user","content":[{"type":"text","text":"<system-reminder>skills loaded</system-reminder>\n\nrun the suite"}]}`,
+		`{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: macos\n</user_info>"}]}`,
+	}, "\n")+"\n")
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{Source: sources[0]})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	result := outcome.Results[0].Result
+	// Meta-only third message is dropped; two real prompts remain.
+	require.Len(t, result.Messages, 2)
+	assert.Equal(t, 2, result.Session.UserMessageCount)
+	assert.Equal(t, "Please fix the flaky test in grok_test.go", result.Messages[0].Content)
+	assert.Equal(t, "run the suite", result.Messages[1].Content)
+	assert.Equal(t, "Please fix the flaky test in grok_test.go", result.Session.FirstMessage)
+}
+
+func TestGrokProviderFindSource(t *testing.T) {
+	root := t.TempDir()
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", "sess-1"), `{
+		"summary": "Find source",
+		"firstPrompt": "Locate the Grok source",
+		"createdAt": "2026-07-08T10:00:00Z"
+	}`)
+
+	provider := newGrokTestProvider(t, root)
+	source, ok, err := provider.FindSource(context.Background(), FindSourceRequest{
+		RawSessionID: "sess-1",
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, filepath.Clean(grokSummaryPath(root, "cwd-key", "sess-1")), filepath.Clean(source.FingerprintKey))
+
+	_, ok, err = provider.FindSource(context.Background(), FindSourceRequest{
+		RawSessionID: "missing",
+	})
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestGrokProviderFirstPromptKeepsSessionVisibleWithoutNumMessages(t *testing.T) {
+	root := t.TempDir()
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", "sess-1"), `{
+		"summary": "Find source",
+		"firstPrompt": "Locate the Grok source",
+		"createdAt": "2026-07-08T10:00:00Z"
+	}`)
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{
+		Source: sources[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+
+	session := outcome.Results[0].Result.Session
+	assert.Equal(t, 1, session.MessageCount)
+	assert.Equal(t, 1, session.UserMessageCount)
+	require.Len(t, outcome.Results[0].Result.Messages, 1)
+	assert.Equal(t, RoleUser, outcome.Results[0].Result.Messages[0].Role)
+	assert.Equal(t, "Locate the Grok source", outcome.Results[0].Result.Messages[0].Content)
+}
+
+func TestGrokProviderFingerprintTracksParsedFiles(t *testing.T) {
+	root := t.TempDir()
+	summary := grokSummaryPath(root, "cwd-key", "sess-1")
+	signals := filepath.Join(root, "cwd-key", "sess-1", "signals.json")
+	updates := filepath.Join(root, "cwd-key", "sess-1", "updates.jsonl")
+	chat := filepath.Join(root, "cwd-key", "sess-1", "chat_history.jsonl")
+	unrelated := filepath.Join(root, "cwd-key", "sess-1", "notes.txt")
+	writeGrokFixtureFile(t, summary, `{"summary":"Fingerprint","firstPrompt":"hello","createdAt":"2026-07-08T10:00:00Z"}`)
+	writeGrokFixtureFile(t, signals, `{"tokenUsage":{"totalOutputTokens":1}}`)
+	writeGrokFixtureFile(t, updates, "{}\n")
+	writeGrokFixtureFile(t, chat, "{}\n")
+	writeGrokFixtureFile(t, unrelated, "ignored")
+
+	provider := newGrokTestProvider(t, root)
+	source, ok, err := provider.FindSource(context.Background(), FindSourceRequest{
+		RawSessionID: "sess-1",
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	base, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+
+	writeGrokFixtureFile(t, summary, `{"summary":"Fingerprint changed","firstPrompt":"hello","createdAt":"2026-07-08T10:00:00Z"}`)
+	afterSummary, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+	assert.NotEqual(t, base.Hash, afterSummary.Hash)
+
+	writeGrokFixtureFile(t, signals, `{"tokenUsage":{"totalOutputTokens":2}}`)
+	afterSignals, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+	assert.NotEqual(t, afterSummary.Hash, afterSignals.Hash)
+
+	writeGrokFixtureFile(t, chat, "{\"message\":1}\n")
+	afterChat, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+	assert.NotEqual(t, afterSignals.Hash, afterChat.Hash)
+
+	writeGrokFixtureFile(t, updates, "{\"delta\":1}\n")
+	afterUpdates, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+	assert.Equal(t, afterChat.Hash, afterUpdates.Hash)
+
+	writeGrokFixtureFile(t, unrelated, "still ignored")
+	afterUnrelated, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+	assert.Equal(t, afterUpdates.Hash, afterUnrelated.Hash)
+}
+
+func TestGrokProviderChangedPathTracksParsedFiles(t *testing.T) {
+	root := t.TempDir()
+	summary := grokSummaryPath(root, "cwd-key", "sess-1")
+	writeGrokFixtureFile(t, summary, `{"summary":"Changed path","firstPrompt":"hello","createdAt":"2026-07-08T10:00:00Z"}`)
+	provider := newGrokTestProvider(t, root)
+
+	for _, name := range []string{"summary.json", "signals.json", "chat_history.jsonl"} {
+		changed, err := provider.SourcesForChangedPath(context.Background(), ChangedPathRequest{
+			Path: filepath.Join(root, "cwd-key", "sess-1", name),
+		})
+		require.NoError(t, err)
+		require.Len(t, changed, 1)
+		assert.Equal(t, filepath.Clean(summary), filepath.Clean(changed[0].FingerprintKey))
+	}
+
+	changed, err := provider.SourcesForChangedPath(context.Background(), ChangedPathRequest{
+		Path: filepath.Join(root, "cwd-key", "sess-1", "updates.jsonl"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, changed)
+}
+
+func TestGrokProviderArtifactBoundaries(t *testing.T) {
+	root := t.TempDir()
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", "sess-1"), `{
+		"summary": "Valid",
+		"firstPrompt": "valid prompt",
+		"createdAt": "2026-07-08T10:00:00Z"
+	}`)
+	writeGrokFixtureFile(t, filepath.Join(root, "cwd-key", "not.a.grok.session", "summary.json"), `{
+		"summary": "Ignored",
+		"firstPrompt": "ignored",
+		"createdAt": "2026-07-08T10:00:00Z"
+	}`)
+	writeGrokFixtureFile(t, grokSummaryPath(root, "cwd-key", "sess-bad"), `{not json`)
+
+	provider := newGrokTestProvider(t, root)
+	sources, err := provider.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sources, 2)
+
+	changed, err := provider.SourcesForChangedPath(
+		context.Background(),
+		ChangedPathRequest{
+			Path: filepath.Join(root, "cwd-key", "not.a.grok.session", "signals.json"),
+		},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, changed)
+
+	source, ok, err := provider.FindSource(context.Background(), FindSourceRequest{
+		RawSessionID: "sess-bad",
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = provider.Parse(context.Background(), ParseRequest{Source: source})
+	require.Error(t, err)
+}
+
+func TestGrokProviderRegistry(t *testing.T) {
+	def, ok := AgentByType(AgentGrok)
+	require.True(t, ok)
+	assert.Equal(t, "GROK_DIR", def.EnvVar)
+	assert.Equal(t, "grok_dirs", def.ConfigKey)
+	assert.Equal(t, "grok:", def.IDPrefix)
+	assert.Equal(t, []string{".grok/sessions"}, def.DefaultDirs)
+
+	factory, ok := ProviderFactoryByType(AgentGrok)
+	require.True(t, ok)
+	assert.Equal(t, AgentGrok, factory.Definition().Type)
+
+	mode, ok := ProviderMigrationModes()[AgentGrok]
+	require.True(t, ok)
+	assert.Equal(t, ProviderMigrationProviderAuthoritative, mode)
+}

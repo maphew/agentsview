@@ -33,6 +33,15 @@ type backgroundLaunchPolicy struct {
 	// particular, NoSync is a CLI/runtime option rather than a config key.
 	ConfigOnly bool
 	Operation  string
+	Context    context.Context
+	Attached   bool
+	OnLaunch   func(pid int, logPath string)
+	OnProgress func(*startupState, time.Duration)
+}
+
+type backgroundServeReadyWaitPolicy struct {
+	Attached bool
+	Observe  func(*startupState, time.Duration)
 }
 
 type backgroundLaunchResult struct {
@@ -321,20 +330,36 @@ func startServeBackground(
 	}
 	result.Started = true
 	result.childPID = child.Process.Pid
+	if policy.OnLaunch != nil {
+		policy.OnLaunch(result.childPID, logPath)
+	}
 
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- child.Wait()
 	}()
 
-	rt, err := waitForBackgroundServeReady(
-		context.Background(),
+	waitContext := policy.Context
+	if waitContext == nil {
+		waitContext = context.Background()
+	}
+	rt, err := waitForBackgroundServeReadyWithPolicy(
+		waitContext,
 		cfg.DataDir,
 		cfg.AuthToken,
 		waitCh,
 		backgroundServeReadyTimeout,
+		backgroundServeReadyWaitPolicy{
+			Attached: policy.Attached,
+			Observe:  policy.OnProgress,
+		},
 	)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return result, fmt.Errorf(
+				"%s: waiting for server readiness: %w", operation, err,
+			)
+		}
 		return result, fmt.Errorf(
 			"%s: server exited before becoming ready: %w\nLogs: %s",
 			operation, err, logPath,
@@ -578,6 +603,7 @@ probeDaemon:
 
 	args := []string{"serve"}
 	args = serveBackgroundArgsWithNoSync(args, cfg.NoSync)
+	args = serveBackgroundArgsWithSkipInitialSync(args, cfg.SkipInitialSync)
 	child, logPath, err := startServeBackgroundProcessForEnsure(*cfg, args)
 	if err != nil {
 		return nil, err
@@ -620,6 +646,10 @@ func waitForExternalServeStartup(
 	for isExternalDaemonStarting(dataDir) {
 		if err := ctx.Err(); err != nil {
 			return nil, true, err
+		}
+		if rt := FindDaemonRuntime(dataDir, authToken); rt != nil &&
+			!rt.ReadOnly && rt.RuntimeFallback {
+			return rt, true, nil
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -906,6 +936,22 @@ func serveBackgroundArgsWithNoSync(args []string, noSync bool) []string {
 	return append(out, "--no-sync")
 }
 
+func serveBackgroundArgsWithSkipInitialSync(
+	args []string, skipInitialSync bool,
+) []string {
+	if !skipInitialSync {
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--skip-initial-sync" ||
+			strings.HasPrefix(arg, "--skip-initial-sync=") {
+			return args
+		}
+	}
+	out := append([]string(nil), args...)
+	return append(out, "--skip-initial-sync")
+}
+
 // isBackgroundChildStrippedFlagArg reports whether arg is a serve flag that
 // belongs only to the launching parent. The legacy flag normalizer rewrites
 // single-dash forms before Cobra parses, so raw child args still need both
@@ -934,8 +980,27 @@ func waitForBackgroundServeReady(
 	waitCh <-chan error,
 	timeout time.Duration,
 ) (*DaemonRuntime, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	return waitForBackgroundServeReadyWithPolicy(
+		ctx, dataDir, authToken, waitCh, timeout,
+		backgroundServeReadyWaitPolicy{},
+	)
+}
+
+func waitForBackgroundServeReadyWithPolicy(
+	ctx context.Context,
+	dataDir string,
+	authToken string,
+	waitCh <-chan error,
+	timeout time.Duration,
+	policy backgroundServeReadyWaitPolicy,
+) (*DaemonRuntime, error) {
+	startedAt := time.Now()
+	var timeoutC <-chan time.Time
+	if !policy.Attached {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
 	ticker := time.NewTicker(startProbeTick())
 	defer ticker.Stop()
 
@@ -943,6 +1008,13 @@ func waitForBackgroundServeReady(
 		if rt := FindDaemonRuntime(dataDir, authToken); rt != nil &&
 			!rt.ReadOnly {
 			return rt, nil
+		}
+		if policy.Observe != nil {
+			var snapshot *startupState
+			if IsDaemonStarting(dataDir) {
+				snapshot = readStartupState(dataDir)
+			}
+			policy.Observe(snapshot, startupSnapshotElapsed(snapshot, startedAt, time.Now()))
 		}
 
 		select {
@@ -954,8 +1026,22 @@ func waitForBackgroundServeReady(
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-		case <-timer.C:
+		case <-timeoutC:
 			return nil, nil
 		}
 	}
+}
+
+func startupSnapshotElapsed(
+	st *startupState, waitStartedAt, now time.Time,
+) time.Duration {
+	startedAt := waitStartedAt
+	if st != nil && !st.StartedAt.IsZero() && !now.Before(st.StartedAt) {
+		startedAt = st.StartedAt
+	}
+	elapsed := now.Sub(startedAt)
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
 }

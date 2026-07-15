@@ -138,6 +138,13 @@ endpoints. HTTP transfers use a persistent per-host mirror and request file
 deltas when fewer than half of the manifest files need fetching; see
 [Remote Access — Incremental Sync](/remote-access/#incremental-sync).
 
+When a full or automatic data-version rebuild includes local sources, configured
+HTTP hosts join the same temporary-database bulk ingest and atomic swap. `--full`
+reparses the complete local and remote corpus without retransferring unchanged
+files from manifest-capable spokes. Older HTTP-capable spokes remain compatible
+through the full-archive fallback; upgrading them is required only to gain delta
+transfer.
+
 Each `remote_hosts.host` value must be unique and stable. It namespaces imported
 session IDs, the database skip cache, and the persistent mirror; changing it for
 the same machine can duplicate sessions, while reusing it for another machine
@@ -239,6 +246,7 @@ can still be parsed.
 | Forge                 | `~/.forge/`                                                                      | SQLite database (`.forge.db`)                                                                                                   |
 | Gemini CLI            | `~/.gemini/`                                                                     | JSONL in `tmp/` subdirectory                                                                                                    |
 | gptme                 | `~/.local/share/gptme/logs/`                                                     | JSONL logs                                                                                                                      |
+| Grok                  | `~/.grok/sessions/`                                                              | `summary.json` + optional `signals.json` + `chat_history.jsonl` transcript when present                                         |
 | Hermes Agent          | `~/.hermes/sessions/`                                                            | JSONL / JSON per session                                                                                                        |
 | iFlow                 | `~/.iflow/projects/`                                                             | JSONL per session                                                                                                               |
 | Kilo                  | `~/.local/share/kilo/`                                                           | SQLite DB or `storage/` JSON files                                                                                              |
@@ -269,6 +277,13 @@ can still be parsed.
 | ZCode                 | `~/.zcode/cli/db/` or `~/.zcode/cli/`                                            | SQLite database (`db.sqlite`) with usage rows                                                                                   |
 | Zed                   | (platform-specific, see below)                                                   | SQLite database (`threads/threads.db`)                                                                                          |
 | Zencoder              | `~/.zencoder/sessions/`                                                          | JSONL per session                                                                                                               |
+
+Grok sessions are read from `summary.json` (title, timestamps, project),
+optional `signals.json` (token counters), and `chat_history.jsonl` when
+present for the full transcript (user turns, assistant replies, thinking,
+and tool calls). If `chat_history.jsonl` is missing, AgentsView falls back
+to summary-only mode. Set `GROK_DIR` or `grok_dirs` to override the default
+directory.
 
 **VS Code Copilot default directories** vary by platform:
 
@@ -469,6 +484,7 @@ export DEEPSEEK_TUI_SESSIONS_DIR=~/custom/deepseek/sessions
 export FORGE_DIR=~/custom/forge
 export GEMINI_DIR=~/custom/gemini
 export GPTME_DIR=~/custom/gptme/logs
+export GROK_DIR=~/custom/grok/sessions
 export HERMES_SESSIONS_DIR=~/custom/hermes
 export IFLOW_DIR=~/custom/iflow
 export KILO_DIR=~/custom/kilo
@@ -522,15 +538,16 @@ The corresponding fields are `aider_dirs`, `amp_dirs`, `antigravity_dirs`,
 `cowork_dirs`, `devin_dirs`, `codex_sessions_dirs`, `commandcode_project_dirs`,
 `copilot_dirs`, `cortex_dirs`, `cursor_project_dirs`,
 `deepseek_tui_sessions_dirs`, `forge_dirs`, `gemini_dirs`, `gptme_dirs`,
-`hermes_sessions_dirs`, `iflow_dirs`, `kilo_dirs`, `kimi_dirs`, `kiro_dirs`,
-`kiro_ide_dirs`, `mimocode_dirs`, `vibe_session_dirs`, `omp_dirs`,
-`openclaw_dirs`, `opencode_dirs`, `openhands_dirs`, `pi_dirs`, `piebald_dirs`,
-`posit_assistant_dirs`, `positron_dirs`, `qclaw_dirs`, `qoder_project_dirs`,
-`qwen_project_dirs`, `qwenpaw_dirs`, `reasonix_dirs`, `shelley_dirs`,
-`visualstudio_copilot_dirs`, `vscode_copilot_dirs`, `windsurf_dirs`,
-`warp_dirs`, `workbuddy_project_dirs`, `zcode_dirs`, `zed_dirs`, and
-`zencoder_dirs`. Each accepts an array of paths. When set, these take precedence
-over the single-directory environment variable and the default path.
+`grok_dirs`, `hermes_sessions_dirs`, `iflow_dirs`, `kilo_dirs`, `kimi_dirs`,
+`kiro_dirs`, `kiro_ide_dirs`, `mimocode_dirs`, `vibe_session_dirs`,
+`omp_dirs`, `openclaw_dirs`, `opencode_dirs`, `openhands_dirs`, `pi_dirs`,
+`piebald_dirs`, `posit_assistant_dirs`, `positron_dirs`, `qclaw_dirs`,
+`qoder_project_dirs`, `qwen_project_dirs`, `qwenpaw_dirs`, `reasonix_dirs`,
+`shelley_dirs`, `visualstudio_copilot_dirs`, `vscode_copilot_dirs`,
+`windsurf_dirs`, `warp_dirs`, `workbuddy_project_dirs`, `zcode_dirs`,
+`zed_dirs`, and `zencoder_dirs`. Each accepts an array of paths. When set,
+these take precedence over the single-directory environment variable and the
+default path.
 
 All listed directories are discovered, watched, and synced independently.
 

@@ -789,6 +789,103 @@ func TestMigration_ResultContentColumn(t *testing.T) {
 	assert.Equal(t, "", tc.ResultContent, "ResultContent")
 }
 
+func TestUpgradeExportSchemaInPlaceOnlyAddsExportIdentitySchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	d := testDBAtPath(t, path, "schema-only upgrade db")
+	insertSession(t, d, "schema-only", "project")
+	requireNoError(t, d.Close(), "close schema-only upgrade db")
+
+	conn, err := sql.Open("sqlite3", path)
+	requireNoError(t, err, "open schema-only upgrade fixture")
+	_, err = conn.Exec(`
+		UPDATE sessions
+		SET first_message = 'ordinary interactive request',
+			user_message_count = 1,
+			is_automated = 1
+		WHERE id = 'schema-only';
+		DELETE FROM archive_metadata;
+		ALTER TABLE project_identity_observations DROP COLUMN checkout_state;
+		DROP TABLE remote_skipped_files;
+		DROP TABLE session_project_identity_snapshots;
+	`)
+	requireNoError(t, err, "prepare schema-only upgrade fixture")
+	requireNoError(t, conn.Close(), "close schema-only upgrade fixture")
+
+	requireNoError(t, UpgradeExportSchemaInPlace(path,
+		&SchemaUpgradeRequiredError{
+			Table:  "session_project_identity_snapshots",
+			Column: "session_id",
+		}), "upgrade export schema in place")
+
+	conn, err = sql.Open("sqlite3", path)
+	requireNoError(t, err, "reopen schema-only upgrade fixture")
+	defer conn.Close()
+	var isAutomated int
+	requireNoError(t, conn.QueryRow(
+		`SELECT is_automated FROM sessions WHERE id = 'schema-only'`,
+	).Scan(&isAutomated), "read preserved session classification")
+	assert.Equal(t, 1, isAutomated,
+		"schema-only upgrade must not reclassify existing sessions")
+	var tableCount int
+	requireNoError(t, conn.QueryRow(`
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'session_project_identity_snapshots'
+	`).Scan(&tableCount), "read upgraded schema")
+	assert.Equal(t, 1, tableCount)
+	requireNoError(t, conn.QueryRow(`
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'remote_skipped_files'
+	`).Scan(&tableCount), "read unrelated schema")
+	assert.Zero(t, tableCount,
+		"export upgrade must not initialize unrelated schema")
+	var columnCount int
+	requireNoError(t, conn.QueryRow(`
+		SELECT count(*) FROM pragma_table_info('project_identity_observations')
+		WHERE name = 'checkout_state'
+	`).Scan(&columnCount), "read upgraded observation schema")
+	assert.Equal(t, 1, columnCount)
+	var metadataCount int
+	requireNoError(t, conn.QueryRow(`
+		SELECT count(*) FROM archive_metadata
+		WHERE key IN ('database_id', 'archive_id', 'archive_salt')
+		  AND trim(value) != ''
+	`).Scan(&metadataCount), "read initialized export metadata")
+	assert.Equal(t, 3, metadataCount)
+}
+
+func TestUpgradeExportSchemaInPlaceRejectsUnrelatedSchemaGap(t *testing.T) {
+	d := testDB(t)
+	err := UpgradeExportSchemaInPlace(d.Path(), &SchemaUpgradeRequiredError{
+		Table:  "tool_calls",
+		Column: "file_path",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not eligible")
+}
+
+func TestUpgradeExportSchemaInPlaceRejectsUnsupportedExistingTableGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	d := testDBAtPath(t, path, "incomplete export table db")
+	requireNoError(t, d.Close(), "close incomplete export table db")
+
+	conn, err := sql.Open("sqlite3", path)
+	requireNoError(t, err, "open incomplete export table fixture")
+	_, err = conn.Exec(
+		`ALTER TABLE session_project_identity_snapshots DROP COLUMN git_branch`)
+	requireNoError(t, err, "remove unsupported snapshot column")
+	requireNoError(t, conn.Close(), "close incomplete export table fixture")
+
+	err = UpgradeExportSchemaInPlace(path, &SchemaUpgradeRequiredError{
+		Table:  "session_project_identity_snapshots",
+		Column: "git_branch",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not eligible")
+}
+
 func TestMigration_ToolResultEventsTable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
@@ -833,6 +930,10 @@ func TestMigration_ToolResultEventsTable(t *testing.T) {
 		"expected tool_result_events table after reopen")
 }
 
+func TestCurrentDataVersionAntigravityParentLinks(t *testing.T) {
+	assert.Equal(t, 67, CurrentDataVersion(),
+		"Antigravity parent-link parsing requires a data version bump")
+}
 func TestInsertMessages_PreservesToolResultEvents(t *testing.T) {
 	d := testDB(t)
 	insertSession(t, d, "s-events", "proj")
@@ -2471,21 +2572,22 @@ func TestGetSessionFull(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		require.NotNil(t, got, "expected non-nil session")
 		want := &Session{
-			ID:                "full-1",
-			Project:           "proj",
-			MessageCount:      5,
-			FilePath:          new("/tmp/session.jsonl"),
-			FileSize:          new(int64(2048)),
-			FileMtime:         new(int64(1700000000)),
-			FileHash:          new("abc123"),
-			FirstMessage:      new("hello"),
-			StartedAt:         new(tsZero),
-			EndedAt:           new(tsHour1),
-			Machine:           defaultMachine,
-			Agent:             defaultAgent,
-			Outcome:           "unknown",
-			OutcomeConfidence: "low",
-			CreatedAt:         got.CreatedAt,
+			ID:                 "full-1",
+			Project:            "proj",
+			MessageCount:       5,
+			FilePath:           new("/tmp/session.jsonl"),
+			FileSize:           new(int64(2048)),
+			FileMtime:          new(int64(1700000000)),
+			FileHash:           new("abc123"),
+			TranscriptRevision: new("0"),
+			FirstMessage:       new("hello"),
+			StartedAt:          new(tsZero),
+			EndedAt:            new(tsHour1),
+			Machine:            defaultMachine,
+			Agent:              defaultAgent,
+			Outcome:            "unknown",
+			OutcomeConfidence:  "low",
+			CreatedAt:          got.CreatedAt,
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("GetSessionFull mismatch (-want +got):\n%s", diff)
@@ -2501,14 +2603,15 @@ func TestGetSessionFull(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		require.NotNil(t, got, "expected non-nil session")
 		want := &Session{
-			ID:                "full-2",
-			Project:           "proj",
-			MessageCount:      1,
-			Machine:           defaultMachine,
-			Agent:             defaultAgent,
-			Outcome:           "unknown",
-			OutcomeConfidence: "low",
-			CreatedAt:         got.CreatedAt,
+			ID:                 "full-2",
+			Project:            "proj",
+			MessageCount:       1,
+			TranscriptRevision: new("0"),
+			Machine:            defaultMachine,
+			Agent:              defaultAgent,
+			Outcome:            "unknown",
+			OutcomeConfidence:  "low",
+			CreatedAt:          got.CreatedAt,
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("GetSessionFull mismatch (-want +got):\n%s", diff)
@@ -3267,6 +3370,119 @@ func TestToolCallSubagentSessionID(t *testing.T) {
 		nullSubagent.String)
 }
 
+func TestSetToolCallSubagentSession(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "s1", "proj")
+	insertMessages(t, d, Message{
+		SessionID:     "s1",
+		Ordinal:       0,
+		Role:          "assistant",
+		Content:       "[Task: implement feature]",
+		ContentLength: 24,
+		Timestamp:     tsZero,
+		HasToolUse:    true,
+		ToolCalls: []ToolCall{
+			{
+				SessionID: "s1",
+				ToolName:  "Task",
+				Category:  "Task",
+				ToolUseID: "toolu_task1",
+			},
+			{
+				SessionID:         "s1",
+				ToolName:          "Task",
+				Category:          "Task",
+				ToolUseID:         "toolu_task2",
+				SubagentSessionID: "agent-existing",
+			},
+		},
+	})
+
+	requireNoError(t, d.SetToolCallSubagentSession("s1", "toolu_task1", "agent-new"), "set subagent session")
+
+	rows, err := d.Reader().Query(`
+		SELECT tool_use_id, COALESCE(subagent_session_id, '')
+		FROM tool_calls
+		WHERE session_id = 's1'
+		ORDER BY tool_use_id`)
+	requireNoError(t, err, "query tool_calls")
+	defer rows.Close()
+
+	got := map[string]string{}
+	for rows.Next() {
+		var toolUseID, subagent string
+		requireNoError(t, rows.Scan(&toolUseID, &subagent), "scan tool_calls")
+		got[toolUseID] = subagent
+	}
+	requireNoError(t, rows.Err(), "rows")
+	assert.Equal(t, "agent-new", got["toolu_task1"], "toolu_task1 subagent")
+	assert.Equal(t, "agent-existing", got["toolu_task2"], "toolu_task2 subagent")
+}
+
+func TestWriteSessionIncrementalBlocksLinkedResultContent(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "s1", "proj")
+	insertMessages(t, d, Message{
+		SessionID:  "s1",
+		Ordinal:    0,
+		Role:       "assistant",
+		HasToolUse: true,
+		ToolCalls: []ToolCall{{
+			SessionID: "s1",
+			ToolName:  "Agent",
+			Category:  "Task",
+			ToolUseID: "toolu_blocked",
+		}},
+	})
+	before, err := d.GetSession(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, before)
+	require.NotNil(t, before.TranscriptRevision)
+	assert.Equal(t, "1", *before.TranscriptRevision)
+
+	update := IncrementalSessionUpdate{
+		MsgCount:    1,
+		NextOrdinal: 1,
+		SubagentLinks: []ToolCallSubagentLink{{
+			ToolUseID:         "toolu_blocked",
+			SubagentSessionID: "agent-child",
+			ResultContent:     "secret result",
+			ResultContentLen:  len("secret result"),
+			HasResult:         true,
+		}},
+		BlockedResultCategories: map[string]bool{"Task": true},
+	}
+	require.NoError(t, d.WriteSessionIncremental(
+		"s1", nil, update,
+	), "incremental write")
+
+	var subagent, content string
+	var contentLen int
+	require.NoError(t, d.Reader().QueryRow(`
+		SELECT COALESCE(subagent_session_id, ''), result_content_length,
+		       COALESCE(result_content, '')
+		FROM tool_calls
+		WHERE session_id = ? AND tool_use_id = ?`,
+		"s1", "toolu_blocked",
+	).Scan(&subagent, &contentLen, &content), "query linked result")
+	assert.Equal(t, "agent-child", subagent)
+	assert.Equal(t, len("secret result"), contentLen)
+	assert.Empty(t, content)
+	after, err := d.GetSession(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	require.NotNil(t, after.TranscriptRevision)
+	assert.Equal(t, "2", *after.TranscriptRevision)
+
+	require.NoError(t, d.WriteSessionIncremental("s1", nil, update),
+		"idempotent incremental write")
+	idempotent, err := d.GetSession(context.Background(), "s1")
+	require.NoError(t, err)
+	require.NotNil(t, idempotent)
+	require.NotNil(t, idempotent.TranscriptRevision)
+	assert.Equal(t, "2", *idempotent.TranscriptRevision)
+}
+
 func TestFTSBackfill(t *testing.T) {
 	dCheck := testDB(t)
 	requireFTS(t, dCheck)
@@ -3882,9 +4098,13 @@ func TestCopyOrphanedDataFrom(t *testing.T) {
 		asstMsg("s1", 1, "reply from s1"),
 		userMsg("s2", 0, "hello from s2"),
 	)
+	_, err := srcDB.getWriter().Exec(
+		`UPDATE sessions SET transcript_revision = '7' WHERE id = 's2'`,
+	)
+	requireNoError(t, err, "set orphan transcript revision")
 	// Insert tool_calls for s1 via raw SQL since
 	// insertToolCallsTx is unexported.
-	_, err := srcDB.getWriter().Exec(`
+	_, err = srcDB.getWriter().Exec(`
 		INSERT INTO tool_calls
 			(message_id, session_id, tool_name, category)
 		SELECT id, session_id, 'Read', 'file'
@@ -3919,6 +4139,8 @@ func TestCopyOrphanedDataFrom(t *testing.T) {
 	requireNoError(t, err, "GetSession s2")
 	require.NotNil(t, s, "orphaned session s2 not found in dst")
 	assert.Equal(t, "codex", s.Agent, "s2 agent")
+	require.NotNil(t, s.TranscriptRevision)
+	assert.Equal(t, "7", *s.TranscriptRevision)
 
 	// s2 messages should be copied.
 	ctx := context.Background()
@@ -4031,6 +4253,101 @@ func TestCopyOrphanedDataFrom_NoOrphans(t *testing.T) {
 		"expected 0 orphaned sessions, got %d", count)
 }
 
+func TestCopyOrphanedDataFromReconcilesTranscriptRevisions(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "old.db")
+	srcDB := testDBAtPath(t, srcPath, "src")
+	ids := []string{
+		"unchanged", "changed", "tool-changed",
+		"compact-changed", "subtype-changed",
+	}
+	for _, id := range ids {
+		insertSession(t, srcDB, id, "proj")
+	}
+	insertMessages(t, srcDB,
+		userMsg("unchanged", 0, "same"),
+		userMsg("changed", 0, "old content"),
+		asstMsg("tool-changed", 0, "tool"),
+		userMsg("compact-changed", 0, "boundary"),
+		userMsg("subtype-changed", 0, "system event"),
+	)
+	_, err := srcDB.getWriter().Exec(`
+		UPDATE messages SET is_system = 1
+		WHERE session_id = 'subtype-changed'`)
+	requireNoError(t, err, "mark source system message")
+	_, err = srcDB.getWriter().Exec(`
+		INSERT INTO tool_calls
+			(message_id, session_id, tool_name, category, input_json, call_index)
+		SELECT id, session_id, 'Read', 'file', '{"path":"old"}', 0
+		FROM messages WHERE session_id = 'tool-changed'`)
+	requireNoError(t, err, "insert source tool call")
+	_, err = srcDB.getWriter().Exec(
+		`UPDATE sessions SET transcript_revision = '7'`,
+	)
+	requireNoError(t, err, "set source transcript revisions")
+	requireNoError(t, srcDB.Close(), "close source")
+
+	dstPath := filepath.Join(dir, "new.db")
+	dstDB := testDBAtPath(t, dstPath, "dst")
+	defer dstDB.Close()
+	for _, id := range ids {
+		insertSession(t, dstDB, id, "proj")
+	}
+	insertMessages(t, dstDB,
+		userMsg("unchanged", 0, "same"),
+		userMsg("changed", 0, "new content"),
+		asstMsg("tool-changed", 0, "tool"),
+		userMsg("compact-changed", 0, "boundary"),
+		userMsg("subtype-changed", 0, "system event"),
+	)
+	_, err = dstDB.getWriter().Exec(`
+		UPDATE messages
+		SET is_compact_boundary = 1
+		WHERE session_id = 'compact-changed';
+		UPDATE messages
+		SET is_system = 1, source_subtype = 'resume'
+		WHERE session_id = 'subtype-changed'`)
+	requireNoError(t, err, "change destination display fields")
+	_, err = dstDB.getWriter().Exec(`
+		INSERT INTO tool_calls
+			(message_id, session_id, tool_name, category, input_json, call_index)
+		SELECT id, session_id, 'Read', 'file', '{"path":"new"}', 0
+		FROM messages WHERE session_id = 'tool-changed'`)
+	requireNoError(t, err, "insert destination tool call")
+	name := "metadata-only rename"
+	requireNoError(t, dstDB.RenameSession("unchanged", &name), "rename session")
+
+	count, err := dstDB.CopyOrphanedDataFrom(srcPath)
+	requireNoError(t, err, "CopyOrphanedDataFrom")
+	assert.Zero(t, count)
+
+	unchanged, err := dstDB.GetSession(context.Background(), "unchanged")
+	requireNoError(t, err, "GetSession unchanged")
+	require.NotNil(t, unchanged)
+	require.NotNil(t, unchanged.TranscriptRevision)
+	assert.Equal(t, "7", *unchanged.TranscriptRevision)
+
+	changed, err := dstDB.GetSession(context.Background(), "changed")
+	requireNoError(t, err, "GetSession changed")
+	require.NotNil(t, changed)
+	require.NotNil(t, changed.TranscriptRevision)
+	assert.Equal(t, "8", *changed.TranscriptRevision)
+
+	toolChanged, err := dstDB.GetSession(context.Background(), "tool-changed")
+	requireNoError(t, err, "GetSession tool-changed")
+	require.NotNil(t, toolChanged)
+	require.NotNil(t, toolChanged.TranscriptRevision)
+	assert.Equal(t, "8", *toolChanged.TranscriptRevision)
+
+	for _, id := range []string{"compact-changed", "subtype-changed"} {
+		session, err := dstDB.GetSession(context.Background(), id)
+		requireNoError(t, err, "GetSession "+id)
+		require.NotNil(t, session)
+		require.NotNil(t, session.TranscriptRevision)
+		assert.Equal(t, "8", *session.TranscriptRevision, id)
+	}
+}
+
 func TestCopyOrphanedDataFrom_PreservesCopiedDetails(t *testing.T) {
 	dir := t.TempDir()
 
@@ -4103,6 +4420,8 @@ func TestCopyOrphanedDataFrom_PreservesCopiedDetails(t *testing.T) {
 
 	insertSession(t, srcDB, "named", "proj", func(s *Session) {
 		s.SessionName = Ptr("Agent Generated Name")
+		s.AgentLabel = "Claude Triage"
+		s.Entrypoint = "sdk-cli"
 	})
 	insertMessages(t, srcDB, userMsg("named", 0, "hello"))
 
@@ -4194,6 +4513,14 @@ func TestCopyOrphanedDataFrom_PreservesCopiedDetails(t *testing.T) {
 		assert.True(t, m.HasContextTokens, "HasContextTokens should be true")
 		assert.True(t, m.HasOutputTokens, "HasOutputTokens should be true")
 		assert.NotEmpty(t, m.TokenUsage, "TokenUsage should be preserved")
+	})
+
+	t.Run("session identity metadata", func(t *testing.T) {
+		s, err := dstDB.GetSession(ctx, "named")
+		requireNoError(t, err, "GetSession named")
+		require.NotNil(t, s, "orphaned session named not found")
+		assert.Equal(t, "Claude Triage", s.AgentLabel, "AgentLabel")
+		assert.Equal(t, "sdk-cli", s.Entrypoint, "Entrypoint")
 	})
 
 	t.Run("session name", func(t *testing.T) {
@@ -5652,6 +5979,8 @@ func TestGetSessionForIncremental(t *testing.T) {
 		Project:              "my-project",
 		Machine:              "test",
 		Agent:                "codex",
+		AgentLabel:           "triage",
+		Entrypoint:           "sdk-cli",
 		Cwd:                  "/tmp/sessions/project",
 		FirstMessage:         new("hello world"),
 		StartedAt:            new("2024-01-15T10:00:00Z"),
@@ -5677,6 +6006,8 @@ func TestGetSessionForIncremental(t *testing.T) {
 		assert.Equal(t, "my-project", info.Project, "Project")
 		assert.Equal(t, "test", info.Machine, "Machine")
 		assert.Equal(t, "/tmp/sessions/project", info.Cwd, "Cwd")
+		assert.Equal(t, "triage", info.AgentLabel, "AgentLabel")
+		assert.Equal(t, "sdk-cli", info.Entrypoint, "Entrypoint")
 		assert.Equal(t, int64(4096), info.FileSize, "FileSize")
 		assert.Equal(t, 0, reflectedIntField(info, "NextOrdinal"), "NextOrdinal")
 		assert.Equal(t, "", reflectedStringField(info, "LastEntryUUID"), "LastEntryUUID")
@@ -6794,6 +7125,9 @@ func TestCopySessionMetadataPreservesArchiveIdentityMetadata(t *testing.T) {
 	requireNoError(t, err, "open old")
 	requireNoError(t, oldDB.SetDatabaseIDForTest(ctx, "old-db-id"),
 		"set old database id")
+	requireNoError(t, oldDB.SetArchiveIdentityForTest(
+		ctx, "old-archive-id", strings.Repeat("a", 64)),
+		"set old archive identity")
 	requireNoError(t, oldDB.UpsertProjectIdentityObservation(ctx,
 		export.ProjectIdentityObservation{
 			Project:    "alpha",
@@ -6807,11 +7141,20 @@ func TestCopySessionMetadataPreservesArchiveIdentityMetadata(t *testing.T) {
 	fresh := testDB(t)
 	requireNoError(t, fresh.SetDatabaseIDForTest(ctx, "fresh-db-id"),
 		"set fresh database id")
+	requireNoError(t, fresh.SetArchiveIdentityForTest(
+		ctx, "fresh-archive-id", strings.Repeat("b", 64)),
+		"set fresh archive identity")
 	requireNoError(t, fresh.CopySessionMetadataFrom(oldPath), "copy")
 
 	gotID, err := fresh.GetOrCreateDatabaseID(ctx)
 	requireNoError(t, err, "GetOrCreateDatabaseID")
-	assert.Equal(t, "old-db-id", gotID)
+	assert.Equal(t, "fresh-db-id", gotID)
+	archiveID, err := fresh.GetArchiveID(ctx)
+	requireNoError(t, err, "GetArchiveID")
+	assert.Equal(t, "old-archive-id", archiveID)
+	archiveSalt, err := fresh.GetArchiveSalt(ctx)
+	requireNoError(t, err, "GetArchiveSalt")
+	assert.Equal(t, strings.Repeat("a", 64), archiveSalt)
 	observations, err := fresh.ListProjectIdentityObservations(
 		ctx, []string{"alpha"})
 	requireNoError(t, err, "ListProjectIdentityObservations")
@@ -6895,6 +7238,111 @@ func TestCopySessionMetadataKeepsFreshProjectIdentityObservationOnConflict(t *te
 	require.Len(t, observations, 1)
 	assert.Equal(t, root, observations[0].WorktreeRootPath)
 	assert.Equal(t, filepath.Base(root), observations[0].WorktreeName)
+}
+
+func TestCopySessionMetadataKeepsIdentityRevisionMonotonic(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	oldPath := filepath.Join(dir, "old.db")
+	oldDB, err := Open(oldPath)
+	requireNoError(t, err, "open old")
+	_, err = oldDB.rawWriter().Exec(`
+		INSERT INTO archive_metadata (key, value)
+		VALUES (?, '1')
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		archiveMetadataProjectIdentityRevisionKey,
+	)
+	requireNoError(t, err, "set old revision")
+	requireNoError(t, oldDB.Close(), "close old")
+
+	fresh := testDB(t)
+	for _, id := range []string{"session-a", "session-b", "session-c"} {
+		requireNoError(t, fresh.UpsertSession(Session{
+			ID: id, Project: "app", Machine: "host", Agent: "codex",
+		}), "insert fresh session")
+	}
+	before, err := fresh.ProjectIdentityPublicationRevision(ctx)
+	requireNoError(t, err, "revision before copy")
+	require.Greater(t, before, int64(1))
+
+	requireNoError(t, fresh.CopySessionMetadataFrom(oldPath), "copy")
+	after, err := fresh.ProjectIdentityPublicationRevision(ctx)
+	requireNoError(t, err, "revision after copy")
+	assert.GreaterOrEqual(t, after, before)
+}
+
+func TestCopySessionMetadataPreservesFirstConclusiveSessionSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	oldPath := filepath.Join(dir, "old.db")
+	oldDB, err := Open(oldPath)
+	requireNoError(t, err, "open old")
+	requireNoError(t, oldDB.UpsertSession(Session{
+		ID: "session-a", Project: "app", Machine: "host", Agent: "codex",
+	}), "insert old session")
+	requireNoError(t, oldDB.UpsertProjectIdentityObservation(ctx,
+		export.ProjectIdentityObservation{
+			SessionID: "session-a", Project: "app", Machine: "host",
+			RootPath: "/old/app", GitRemote: "https://github.com/acme/app.git",
+			ObservedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		}), "insert old snapshot")
+	requireNoError(t, oldDB.Close(), "close old")
+
+	fresh := testDB(t)
+	requireNoError(t, fresh.UpsertSession(Session{
+		ID: "session-a", Project: "app", Machine: "host", Agent: "codex",
+	}), "insert fresh session")
+	requireNoError(t, fresh.UpsertProjectIdentityObservation(ctx,
+		export.ProjectIdentityObservation{
+			SessionID: "session-a", Project: "app", Machine: "host",
+			RootPath: "/new/app", GitRemote: "https://gitlab.com/acme/app.git",
+			ObservedAt: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		}), "insert fresh snapshot")
+
+	requireNoError(t, fresh.CopySessionMetadataFrom(oldPath), "copy")
+	snapshots, err := fresh.listSessionProjectIdentitySnapshots(
+		ctx, []string{"session-a"},
+	)
+	requireNoError(t, err, "list snapshots")
+	assert.Equal(t, "https://github.com/acme/app.git",
+		snapshots["session-a"].GitRemote)
+}
+
+func TestCopySessionMetadataPreservesHistoricalUnknownSessionSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	oldPath := filepath.Join(dir, "old.db")
+	oldDB, err := Open(oldPath)
+	requireNoError(t, err, "open old")
+	requireNoError(t, oldDB.UpsertSession(Session{
+		ID: "session-a", Project: "app", Machine: "host", Agent: "codex",
+		Cwd: "/historical/app",
+	}), "insert old session")
+	requireNoError(t, oldDB.Close(), "close old")
+
+	fresh := testDB(t)
+	requireNoError(t, fresh.UpsertSession(Session{
+		ID: "session-a", Project: "app", Machine: "host", Agent: "codex",
+		Cwd: "/rediscovered/app",
+	}), "insert fresh session")
+	requireNoError(t, fresh.UpsertProjectIdentityObservation(ctx,
+		export.ProjectIdentityObservation{
+			SessionID: "session-a", Project: "app", Machine: "host",
+			RootPath:   "/rediscovered/app",
+			GitRemote:  "https://example.com/acme/app.git",
+			ObservedAt: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		}), "insert fresh resolved snapshot")
+
+	requireNoError(t, fresh.CopySessionMetadataFrom(oldPath), "copy")
+	snapshots, err := fresh.listSessionProjectIdentitySnapshots(
+		ctx, []string{"session-a"},
+	)
+	requireNoError(t, err, "list snapshots")
+	require.Contains(t, snapshots, "session-a")
+	assert.Equal(t, export.ProjectResolutionUnknown,
+		snapshots["session-a"].RemoteResolution)
+	assert.Equal(t, "/historical/app", snapshots["session-a"].RootPath)
+	assert.Empty(t, snapshots["session-a"].GitRemote)
 }
 
 func TestCopySessionMetadataSuppressesOldRootFallbackWhenFreshRemoteExists(t *testing.T) {

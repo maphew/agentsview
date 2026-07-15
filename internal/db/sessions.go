@@ -31,6 +31,7 @@ var ErrSessionTrashed = errors.New("session trashed")
 // sessionBaseCols is the column list for standard session queries
 // (list, get). Keep in sync with scanSessionRow.
 const sessionBaseCols = `id, project, machine, agent,
+	agent_label, entrypoint,
 	first_message, COALESCE(display_name, session_name) AS display_name, started_at, ended_at,
 	message_count, user_message_count,
 	parent_session_id, relationship_type,
@@ -56,11 +57,12 @@ const sessionBaseCols = `id, project, machine, agent,
 	cwd, git_branch, source_session_id, source_version,
 	transcript_fidelity,
 	parser_malformed_lines, is_truncated,
-	deleted_at, termination_status, created_at`
+	deleted_at, termination_status, transcript_revision, created_at`
 
 // sessionPruneCols extends sessionBaseCols with file metadata
 // needed by FindPruneCandidates.
 const sessionPruneCols = `id, project, machine, agent,
+	agent_label, entrypoint,
 	first_message, COALESCE(display_name, session_name) AS display_name, started_at, ended_at,
 	message_count, user_message_count,
 	parent_session_id, relationship_type,
@@ -86,10 +88,12 @@ const sessionPruneCols = `id, project, machine, agent,
 	cwd, git_branch, source_session_id, source_version,
 	transcript_fidelity,
 	parser_malformed_lines, is_truncated,
-	deleted_at, termination_status, file_path, file_size, created_at`
+	deleted_at, termination_status, transcript_revision,
+	file_path, file_size, created_at`
 
 // sessionFullCols includes all columns for a complete session record.
 const sessionFullCols = `id, project, machine, agent,
+	agent_label, entrypoint,
 	first_message, display_name, session_name, started_at, ended_at,
 	message_count, user_message_count,
 	parent_session_id, relationship_type,
@@ -119,7 +123,7 @@ const sessionFullCols = `id, project, machine, agent,
 	deleted_at, termination_status, file_path, file_size, file_mtime,
 	next_ordinal, last_entry_uuid,
 	file_inode, file_device,
-	file_hash, local_modified_at, created_at`
+	file_hash, local_modified_at, transcript_revision, created_at`
 
 const (
 	// DefaultSessionLimit is the default number of sessions returned.
@@ -139,6 +143,7 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 	var s Session
 	err := rs.Scan(
 		&s.ID, &s.Project, &s.Machine, &s.Agent,
+		&s.AgentLabel, &s.Entrypoint,
 		&s.FirstMessage, &s.DisplayName, &s.StartedAt, &s.EndedAt,
 		&s.MessageCount, &s.UserMessageCount,
 		&s.ParentSessionID, &s.RelationshipType,
@@ -165,7 +170,8 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 		&s.SourceSessionID, &s.SourceVersion,
 		&s.TranscriptFidelity,
 		&s.ParserMalformedLines, &s.IsTruncated,
-		&s.DeletedAt, &s.TerminationStatus, &s.CreatedAt,
+		&s.DeletedAt, &s.TerminationStatus,
+		&s.TranscriptRevision, &s.CreatedAt,
 	)
 	return s, err
 }
@@ -268,6 +274,8 @@ type Session struct {
 	Project              string  `json:"project"`
 	Machine              string  `json:"machine"`
 	Agent                string  `json:"agent"`
+	AgentLabel           string  `json:"agent_label,omitempty"`
+	Entrypoint           string  `json:"entrypoint,omitempty"`
 	FirstMessage         *string `json:"first_message"`
 	DisplayName          *string `json:"display_name,omitempty"`
 	SessionName          *string `json:"-"`
@@ -342,6 +350,7 @@ type Session struct {
 	FileDevice           *int64  `json:"file_device,omitempty"`
 	FileHash             *string `json:"file_hash,omitempty"`
 	LocalModifiedAt      *string `json:"local_modified_at,omitempty"`
+	TranscriptRevision   *string `json:"transcript_revision,omitempty"`
 	CreatedAt            string  `json:"created_at"`
 }
 
@@ -584,21 +593,24 @@ type SessionPage struct {
 }
 
 type SidebarSessionIndexRow struct {
-	ID                string  `json:"id"`
-	ParentSessionID   *string `json:"parent_session_id,omitempty"`
-	RelationshipType  string  `json:"relationship_type,omitempty"`
-	Project           string  `json:"project"`
-	Machine           string  `json:"machine"`
-	Agent             string  `json:"agent"`
-	DisplayName       *string `json:"display_name,omitempty"`
-	StartedAt         *string `json:"started_at"`
-	EndedAt           *string `json:"ended_at"`
-	CreatedAt         string  `json:"created_at"`
-	TerminationStatus *string `json:"termination_status,omitempty"`
-	MessageCount      int     `json:"message_count"`
-	UserMessageCount  int     `json:"user_message_count"`
-	IsAutomated       bool    `json:"is_automated"`
-	IsTeammate        bool    `json:"is_teammate"`
+	ID                 string  `json:"id"`
+	ParentSessionID    *string `json:"parent_session_id,omitempty"`
+	RelationshipType   string  `json:"relationship_type,omitempty"`
+	Project            string  `json:"project"`
+	Machine            string  `json:"machine"`
+	Agent              string  `json:"agent"`
+	AgentLabel         string  `json:"agent_label,omitempty"`
+	Entrypoint         string  `json:"entrypoint,omitempty"`
+	DisplayName        *string `json:"display_name,omitempty"`
+	StartedAt          *string `json:"started_at"`
+	EndedAt            *string `json:"ended_at"`
+	CreatedAt          string  `json:"created_at"`
+	TerminationStatus  *string `json:"termination_status,omitempty"`
+	MessageCount       int     `json:"message_count"`
+	UserMessageCount   int     `json:"user_message_count"`
+	TranscriptRevision *string `json:"transcript_revision,omitempty"`
+	IsAutomated        bool    `json:"is_automated"`
+	IsTeammate         bool    `json:"is_teammate"`
 }
 
 type SidebarSessionIndex struct {
@@ -716,6 +728,8 @@ func (db *DB) GetSidebarSessionIndex(
 			project,
 			machine,
 			agent,
+			agent_label,
+			entrypoint,
 			COALESCE(display_name, session_name) AS display_name,
 			started_at,
 			ended_at,
@@ -723,6 +737,7 @@ func (db *DB) GetSidebarSessionIndex(
 			termination_status,
 			message_count,
 			user_message_count,
+			transcript_revision,
 			is_automated,
 			INSTR(COALESCE(first_message, ''), '<teammate-message') > 0
 		FROM sessions
@@ -752,6 +767,8 @@ func (db *DB) GetSidebarSessionIndex(
 			&row.Project,
 			&row.Machine,
 			&row.Agent,
+			&row.AgentLabel,
+			&row.Entrypoint,
 			&row.DisplayName,
 			&row.StartedAt,
 			&row.EndedAt,
@@ -759,6 +776,7 @@ func (db *DB) GetSidebarSessionIndex(
 			&row.TerminationStatus,
 			&row.MessageCount,
 			&row.UserMessageCount,
+			&row.TranscriptRevision,
 			&row.IsAutomated,
 			&row.IsTeammate,
 		); err != nil {
@@ -966,6 +984,8 @@ func (db *DB) getSidebarSessionIndexPage(
 			s.project,
 			s.machine,
 			s.agent,
+			s.agent_label,
+			s.entrypoint,
 			COALESCE(s.display_name, s.session_name) AS display_name,
 			s.started_at,
 			s.ended_at,
@@ -973,6 +993,7 @@ func (db *DB) getSidebarSessionIndexPage(
 			s.termination_status,
 			s.message_count,
 			s.user_message_count,
+			s.transcript_revision,
 			s.is_automated,
 			INSTR(COALESCE(s.first_message, ''), '<teammate-message') > 0
 		FROM sessions s
@@ -998,6 +1019,8 @@ func (db *DB) getSidebarSessionIndexPage(
 			&row.Project,
 			&row.Machine,
 			&row.Agent,
+			&row.AgentLabel,
+			&row.Entrypoint,
 			&row.DisplayName,
 			&row.StartedAt,
 			&row.EndedAt,
@@ -1005,6 +1028,7 @@ func (db *DB) getSidebarSessionIndexPage(
 			&row.TerminationStatus,
 			&row.MessageCount,
 			&row.UserMessageCount,
+			&row.TranscriptRevision,
 			&row.IsAutomated,
 			&row.IsTeammate,
 		); err != nil {
@@ -1055,6 +1079,7 @@ func (db *DB) GetSessionFull(
 	var s Session
 	err := row.Scan(
 		&s.ID, &s.Project, &s.Machine, &s.Agent,
+		&s.AgentLabel, &s.Entrypoint,
 		&s.FirstMessage, &s.DisplayName, &s.SessionName, &s.StartedAt, &s.EndedAt,
 		&s.MessageCount, &s.UserMessageCount,
 		&s.ParentSessionID, &s.RelationshipType,
@@ -1085,7 +1110,8 @@ func (db *DB) GetSessionFull(
 		&s.DeletedAt, &s.TerminationStatus, &s.FilePath, &s.FileSize,
 		&s.FileMtime, &s.NextOrdinal, &s.LastEntryUUID,
 		&s.FileInode, &s.FileDevice,
-		&s.FileHash, &s.LocalModifiedAt, &s.CreatedAt,
+		&s.FileHash, &s.LocalModifiedAt,
+		&s.TranscriptRevision, &s.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1102,6 +1128,27 @@ func (db *DB) GetSessionFull(
 		s.DisplayName = s.SessionName
 	}
 	return &s, nil
+}
+
+// GetSessionName returns the raw agent-provided session name without loading
+// the rest of the session row. A NULL name is reported as an empty string for
+// an existing row; found distinguishes that case from a missing session.
+func (db *DB) GetSessionName(
+	ctx context.Context, id string,
+) (name string, found bool, err error) {
+	var stored sql.NullString
+	err = db.getReader().QueryRowContext(
+		ctx,
+		"SELECT session_name FROM sessions WHERE id = ?",
+		id,
+	).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("getting session name %s: %w", id, err)
+	}
+	return stored.String, true, nil
 }
 
 // IsSessionExcluded returns true if the session ID was
@@ -1223,6 +1270,7 @@ func (db *DB) DeleteParserExcludedSessions(ids []string) (int, error) {
 const insertSessionSQL = `
 		INSERT INTO sessions (
 			id, project, machine, agent, first_message, session_name,
+			agent_label, entrypoint,
 			started_at, ended_at, message_count,
 			user_message_count, parent_session_id,
 			relationship_type,
@@ -1238,7 +1286,7 @@ const insertSessionSQL = `
 			file_path, file_size, file_mtime,
 			next_ordinal, last_entry_uuid,
 			file_inode, file_device, file_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // insertSessionIfAbsentSQL inserts a session only when its id does not already
 // exist, leaving an existing row untouched.
@@ -1250,6 +1298,8 @@ const upsertSessionSQL = insertSessionSQL + `
 			project = excluded.project,
 			machine = excluded.machine,
 			agent = excluded.agent,
+			agent_label = excluded.agent_label,
+			entrypoint = excluded.entrypoint,
 			first_message = excluded.first_message,
 			-- session_name is always overwritten by re-parse; display_name
 			-- is the user override and is only touched by RenameSession.
@@ -1301,6 +1351,7 @@ func sessionIsAutomated(s Session) bool {
 func upsertSessionArgs(s Session) []any {
 	return []any{
 		s.ID, s.Project, s.Machine, s.Agent, s.FirstMessage, s.SessionName,
+		s.AgentLabel, s.Entrypoint,
 		s.StartedAt, s.EndedAt, s.MessageCount,
 		s.UserMessageCount, s.ParentSessionID,
 		s.RelationshipType,
@@ -1734,6 +1785,8 @@ type IncrementalInfo struct {
 	Project              string
 	Machine              string
 	Cwd                  string
+	AgentLabel           string
+	Entrypoint           string
 	FileSize             int64
 	FileMtime            int64
 	NextOrdinal          int
@@ -1750,19 +1803,29 @@ type IncrementalInfo struct {
 }
 
 type IncrementalSessionUpdate struct {
-	EndedAt              *string
-	TerminationStatus    *string
-	MsgCount             int
-	UserMsgCount         int
-	FileSize             int64
-	FileMtime            int64
-	FileHash             *string
-	NextOrdinal          int
-	LastEntryUUID        string
-	TotalOutputTokens    int
-	PeakContextTokens    int
-	HasTotalOutputTokens bool
-	HasPeakContextTokens bool
+	EndedAt                 *string
+	TerminationStatus       *string
+	MsgCount                int
+	UserMsgCount            int
+	FileSize                int64
+	FileMtime               int64
+	FileHash                *string
+	NextOrdinal             int
+	LastEntryUUID           string
+	TotalOutputTokens       int
+	PeakContextTokens       int
+	HasTotalOutputTokens    bool
+	HasPeakContextTokens    bool
+	SubagentLinks           []ToolCallSubagentLink
+	BlockedResultCategories map[string]bool
+}
+
+type ToolCallSubagentLink struct {
+	ToolUseID         string
+	SubagentSessionID string
+	ResultContent     string
+	ResultContentLen  int
+	HasResult         bool
 }
 
 // GetSessionForIncremental returns session state needed for
@@ -1789,7 +1852,8 @@ func (db *DB) GetSessionForIncremental(
 	var fs, fm, fi, fd sql.NullInt64
 	var firstMsg, lastEntryUUID sql.NullString
 	err = db.getReader().QueryRow(
-		`SELECT id, project, machine, cwd, file_size, file_mtime,
+		`SELECT id, project, machine, cwd, agent_label, entrypoint,
+			file_size, file_mtime,
 			next_ordinal, last_entry_uuid,
 			file_inode, file_device,
 			message_count, user_message_count,
@@ -1802,6 +1866,7 @@ func (db *DB) GetSessionForIncremental(
 		path,
 	).Scan(
 		&info.ID, &info.Project, &info.Machine, &info.Cwd,
+		&info.AgentLabel, &info.Entrypoint,
 		&fs, &fm, &info.NextOrdinal, &lastEntryUUID, &fi, &fd,
 		&info.MsgCount, &info.UserMsgCount,
 		&firstMsg,
@@ -2012,6 +2077,36 @@ func (db *DB) GetProjectByPath(path string) (project string, ok bool) {
 		return "", false
 	}
 	return project, true
+}
+
+// GetSourceRepairStateByPath returns the newest active session's project and
+// file metadata plus the minimum active parser data version for one source
+// path. It combines the lightweight self-healing checks used by hot sync paths
+// into one query.
+func (db *DB) GetSourceRepairStateByPath(
+	path string,
+) (
+	project string,
+	dataVersion int,
+	fileSize int64,
+	fileMtime int64,
+	ok bool,
+) {
+	err := db.getReader().QueryRow(`
+		SELECT project, file_size, file_mtime, (
+			SELECT MIN(data_version)
+			FROM sessions
+			WHERE file_path = ? AND deleted_at IS NULL
+		)
+		FROM sessions
+		WHERE file_path = ? AND deleted_at IS NULL
+		ORDER BY file_mtime DESC
+		LIMIT 1`, path, path,
+	).Scan(&project, &fileSize, &fileMtime, &dataVersion)
+	if err != nil {
+		return "", 0, 0, 0, false
+	}
+	return project, dataVersion, fileSize, fileMtime, true
 }
 
 // GetFileHashByPath returns the stored file_hash for the session
@@ -2499,6 +2594,31 @@ func (db *DB) GetProjects(
 	return projects, rows.Err()
 }
 
+// GetActiveProjectLabels returns every project attached to a non-deleted
+// session, including fork and subagent sessions whose unique usage is eligible
+// for aggregation.
+func (db *DB) GetActiveProjectLabels(ctx context.Context) ([]string, error) {
+	rows, err := db.getReader().QueryContext(ctx,
+		`SELECT DISTINCT project
+		 FROM sessions
+		 WHERE deleted_at IS NULL
+		 ORDER BY project`)
+	if err != nil {
+		return nil, fmt.Errorf("querying active project labels: %w", err)
+	}
+	defer rows.Close()
+
+	var labels []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, fmt.Errorf("scanning active project label: %w", err)
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
+}
+
 // ProjectInfo holds a project name and its session count.
 type ProjectInfo struct {
 	Name         string `json:"name"`
@@ -2752,6 +2872,7 @@ func (db *DB) FindPruneCandidates(
 		var s Session
 		err := rows.Scan(
 			&s.ID, &s.Project, &s.Machine, &s.Agent,
+			&s.AgentLabel, &s.Entrypoint,
 			&s.FirstMessage, &s.DisplayName, &s.StartedAt, &s.EndedAt,
 			&s.MessageCount, &s.UserMessageCount,
 			&s.ParentSessionID, &s.RelationshipType,
@@ -2778,7 +2899,8 @@ func (db *DB) FindPruneCandidates(
 			&s.SourceSessionID, &s.SourceVersion,
 			&s.TranscriptFidelity,
 			&s.ParserMalformedLines, &s.IsTruncated,
-			&s.DeletedAt, &s.TerminationStatus, &s.FilePath, &s.FileSize, &s.CreatedAt,
+			&s.DeletedAt, &s.TerminationStatus, &s.TranscriptRevision,
+			&s.FilePath, &s.FileSize, &s.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning prune candidate: %w", err)
@@ -3225,6 +3347,7 @@ func (db *DB) ListSessionsModifiedBetween(
 		var s Session
 		err := rows.Scan(
 			&s.ID, &s.Project, &s.Machine, &s.Agent,
+			&s.AgentLabel, &s.Entrypoint,
 			&s.FirstMessage, &s.DisplayName, &s.SessionName, &s.StartedAt, &s.EndedAt,
 			&s.MessageCount, &s.UserMessageCount,
 			&s.ParentSessionID, &s.RelationshipType,
@@ -3255,7 +3378,8 @@ func (db *DB) ListSessionsModifiedBetween(
 			&s.DeletedAt, &s.TerminationStatus, &s.FilePath, &s.FileSize,
 			&s.FileMtime, &s.NextOrdinal, &s.LastEntryUUID,
 			&s.FileInode, &s.FileDevice,
-			&s.FileHash, &s.LocalModifiedAt, &s.CreatedAt,
+			&s.FileHash, &s.LocalModifiedAt,
+			&s.TranscriptRevision, &s.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning session: %w", err)

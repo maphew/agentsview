@@ -106,6 +106,8 @@ type SkinnySessionRow = {
   project: string;
   machine: string;
   agent: string;
+  agent_label?: string | null;
+  entrypoint?: string | null;
   display_name?: string | null;
   started_at: string | null;
   ended_at: string | null;
@@ -124,6 +126,8 @@ function makeSkinnyRow(
     project: "proj",
     machine: "local",
     agent: "claude",
+    agent_label: null,
+    entrypoint: null,
     display_name: null,
     started_at: null,
     ended_at: null,
@@ -202,7 +206,7 @@ describe("SessionsStore", () => {
     mockSidebarIndex();
     starred.filterOnly = false;
     starred.ids = new Set();
-    yokedDates.clear();
+    yokedDates.setEnabled(false);
     sessions = createSessionsStore();
   });
 
@@ -509,6 +513,41 @@ describe("SessionsStore", () => {
       expect(sessions.activeSession?.first_message).toBe(
         "hydrated active detail",
       );
+    });
+
+    it("refreshes hydrated agent identity fields from the sidebar index", async () => {
+      mockSidebarIndex([
+        makeSkinnyRow({
+          id: "active",
+          agent_label: "old-label",
+          entrypoint: "old-entrypoint",
+        }),
+      ]);
+      vi.mocked(api.getSession).mockResolvedValue(
+        makeSession({
+          id: "active",
+          agent_label: "old-label",
+          entrypoint: "old-entrypoint",
+          first_message: "hydrated active detail",
+        }),
+      );
+
+      await sessions.load();
+      await sessions.hydrateVisibleSessions(["active"]);
+
+      mockSidebarIndex([
+        makeSkinnyRow({
+          id: "active",
+          agent_label: "triage",
+          entrypoint: "sdk-cli",
+        }),
+      ]);
+      await sessions.load();
+
+      expect(sessions.sessions[0]!.is_index_only).toBe(false);
+      expect(sessions.sessions[0]!.first_message).toBe("hydrated active detail");
+      expect(sessions.sessions[0]!.agent_label).toBe("triage");
+      expect(sessions.sessions[0]!.entrypoint).toBe("sdk-cli");
     });
 
     it("clears stale display names from hydrated rows when the index has none", async () => {
@@ -1664,6 +1703,7 @@ describe("SessionsStore", () => {
       sessions.activeSessionId = "session-1";
       sessions.filters.dateFrom = "2025-05-01";
       sessions.filters.dateTo = "2025-05-31";
+      yokedDates.setEnabled(true);
       yokedDates.updateFromPanel({
         from: "2025-05-01",
         to: "2025-05-31",
@@ -1693,6 +1733,7 @@ describe("SessionsStore", () => {
     it("clears the date yoke before clearing the active session when requested by route intent", () => {
       sessions.activeSessionId = "session-1";
       sessions.filters.agent = "codex";
+      yokedDates.setEnabled(true);
       yokedDates.updateFromPanel({
         from: "2025-05-01",
         to: "2025-05-31",
@@ -1721,6 +1762,7 @@ describe("SessionsStore", () => {
 
     it("keeps the date yoke for non-date filter clears without route date intent", () => {
       sessions.filters.agent = "codex";
+      yokedDates.setEnabled(true);
       yokedDates.updateFromPanel({
         from: "2025-05-01",
         to: "2025-05-31",

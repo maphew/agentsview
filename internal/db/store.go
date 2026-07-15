@@ -41,6 +41,7 @@ type Store interface {
 	GetMessagesWindow(ctx context.Context, sessionID string, w MessageWindow) ([]Message, error)
 	GetAllMessages(ctx context.Context, sessionID string) ([]Message, error)
 	GetMessageForMetadataPin(ctx context.Context, sessionID string, messageID int64) (*Message, error)
+	GetResumeModelCounts(ctx context.Context, sessionID string) ([]ModelCount, error)
 	GetSessionActivity(ctx context.Context, sessionID string) (*SessionActivityResponse, error)
 
 	// Timing.
@@ -64,6 +65,7 @@ type Store interface {
 	MachineSessionCounts(ctx context.Context) (map[string]int, error)
 	GetStats(ctx context.Context, excludeOneShot, excludeAutomated bool) (Stats, error)
 	GetProjects(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]ProjectInfo, error)
+	GetActiveProjectLabels(ctx context.Context) ([]string, error)
 	GetAgents(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]AgentInfo, error)
 	GetMachines(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]string, error)
 	GetBranches(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]BranchInfo, error)

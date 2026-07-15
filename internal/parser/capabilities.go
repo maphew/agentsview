@@ -29,6 +29,7 @@ type SourceCapabilities struct {
 	DiscoverSources      CapabilitySupport
 	WatchSources         CapabilitySupport
 	ClassifyChangedPath  CapabilitySupport
+	StoredSourceHints    CapabilitySupport
 	FindSource           CapabilitySupport
 	CompositeFingerprint CapabilitySupport
 	IncrementalAppend    CapabilitySupport
@@ -36,6 +37,7 @@ type SourceCapabilities struct {
 	PerSessionErrors     CapabilitySupport
 	ExcludedSessions     CapabilitySupport
 	ForceReplaceOnParse  CapabilitySupport
+	VerifiedLocalStat    CapabilitySupport
 }
 
 // ContentCapabilities declares optional normalized content fields a provider

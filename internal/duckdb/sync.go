@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -18,9 +19,10 @@ import (
 )
 
 const (
-	lastPushStateKey         = "duckdb_last_push_at"
-	lastPushBoundaryStateKey = "duckdb_last_push_boundary_state"
-	localSyncTimestampLayout = "2006-01-02T15:04:05.000Z"
+	lastPushStateKey                   = "duckdb_last_push_at"
+	lastPushBoundaryStateKey           = "duckdb_last_push_boundary_state"
+	transcriptRevisionBackfillStateKey = "duckdb_transcript_revision_backfill_v1"
+	localSyncTimestampLayout           = "2006-01-02T15:04:05.000Z"
 )
 
 type syncState struct {
@@ -30,15 +32,16 @@ type syncState struct {
 
 // Sync manages push-only mirroring from the SQLite primary archive to DuckDB.
 type Sync struct {
-	duck            *sql.DB
-	local           *db.DB
-	machine         string
-	syncStateScope  string
-	projects        []string
-	excludeProjects []string
-	connectionKind  duckDBConnectionKind
-	quack           *quackClient
-	maintenance     duckDBMaintenance
+	duck                *sql.DB
+	local               *db.DB
+	machine             string
+	syncStateScope      string
+	backfillTargetScope string
+	projects            []string
+	excludeProjects     []string
+	connectionKind      duckDBConnectionKind
+	quack               *quackClient
+	maintenance         duckDBMaintenance
 
 	closeOnce sync.Once
 	closeErr  error
@@ -114,14 +117,19 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	backfillTargetScope := opts.SyncStateTarget
+	if backfillTargetScope == "" {
+		backfillTargetScope = localDuckDBBackfillTargetScope(path)
+	}
 	return &Sync{
-		duck:            duck,
-		local:           local,
-		machine:         machine,
-		syncStateScope:  opts.SyncStateTarget,
-		projects:        opts.Projects,
-		excludeProjects: opts.ExcludeProjects,
-		maintenance:     duckDBCheckpointMaintenance{},
+		duck:                duck,
+		local:               local,
+		machine:             machine,
+		syncStateScope:      opts.SyncStateTarget,
+		backfillTargetScope: backfillTargetScope,
+		projects:            opts.Projects,
+		excludeProjects:     opts.ExcludeProjects,
+		maintenance:         duckDBCheckpointMaintenance{},
 	}, nil
 }
 
@@ -155,6 +163,37 @@ func (s *Sync) syncStateKey(key string) string {
 		return key
 	}
 	return key + ":" + s.syncStateScope
+}
+
+func (s *Sync) transcriptRevisionBackfillKey() string {
+	key := transcriptRevisionBackfillStateKey
+	scope := s.backfillTargetScope
+	if scope == "" {
+		scope = s.syncStateScope
+	}
+	if scope != "" {
+		key += ":" + scope
+	}
+	if !s.isFiltered() {
+		return key
+	}
+	projects := append([]string(nil), s.projects...)
+	excluded := append([]string(nil), s.excludeProjects...)
+	sort.Strings(projects)
+	sort.Strings(excluded)
+	filterScope := strings.Join(projects, "\x00") + "\x01" +
+		strings.Join(excluded, "\x00")
+	sum := sha256.Sum256([]byte(filterScope))
+	return key + ":filter:" + hex.EncodeToString(sum[:])
+}
+
+func localDuckDBBackfillTargetScope(path string) string {
+	canonical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(canonical); err == nil {
+		canonical = absolute
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return "path-" + hex.EncodeToString(sum[:8])
 }
 
 // EnsureSchema creates or additively migrates the DuckDB mirror schema.
@@ -205,10 +244,6 @@ func (s *Sync) Push(
 	if err := s.syncCursorUsageEvents(ctx); err != nil {
 		return result, err
 	}
-	if err := s.syncProjectIdentityObservations(ctx); err != nil {
-		return result, err
-	}
-
 	lastPushKey := s.syncStateKey(lastPushStateKey)
 	lastPush, err := s.local.GetSyncState(lastPushKey)
 	if err != nil {
@@ -216,6 +251,24 @@ func (s *Sync) Push(
 	}
 	if full {
 		lastPush = ""
+	}
+	transcriptRevisionBackfillKey := s.transcriptRevisionBackfillKey()
+	transcriptRevisionBackfillDone, err := s.local.GetSyncState(
+		transcriptRevisionBackfillKey,
+	)
+	if err != nil {
+		return result, fmt.Errorf(
+			"reading %s: %w", transcriptRevisionBackfillKey, err,
+		)
+	}
+	transcriptRevisionBackfillNeeded :=
+		transcriptRevisionBackfillDone != "1"
+	if transcriptRevisionBackfillNeeded {
+		log.Printf(
+			"duckdbsync: transcript revision backfill marker missing; forcing full push",
+		)
+		lastPush = ""
+		full = true
 	}
 	if lastPush == "" && !s.isFiltered() {
 		full = true
@@ -362,6 +415,16 @@ func (s *Sync) Push(
 			result.Errors,
 		)
 	}
+	if result.Errors == 0 {
+		if err := s.syncProjectIdentityObservations(ctx, full); err != nil {
+			return result, err
+		}
+	} else {
+		log.Printf(
+			"duckdbsync: skipping project identity publication after %d session push errors",
+			result.Errors,
+		)
+	}
 	if len(pushed) > 0 || len(staleIDs) > 0 {
 		if err := s.checkpointAfterMutatingPush(ctx); err != nil {
 			return result, err
@@ -381,6 +444,16 @@ func (s *Sync) Push(
 		sessionFingerprints, advanceWatermark,
 	); err != nil {
 		return result, err
+	}
+	if transcriptRevisionBackfillNeeded && result.Errors == 0 {
+		if err := s.local.SetSyncState(
+			transcriptRevisionBackfillKey, "1",
+		); err != nil {
+			return result, fmt.Errorf(
+				"updating %s: %w",
+				transcriptRevisionBackfillKey, err,
+			)
+		}
 	}
 	result.Duration = time.Since(start)
 	return result, nil
@@ -1043,6 +1116,7 @@ func (s *Sync) sessionFingerprints(
 func duckSessionFingerprintFields(sess db.Session, machine string) []any {
 	return []any{
 		sess.ID, sess.Project, machine, sess.Agent,
+		sess.AgentLabel, sess.Entrypoint,
 		nilString(sess.FirstMessage), nilString(sess.DisplayName),
 		nilString(sess.SessionName),
 		nilTime(sess.StartedAt), nilTime(sess.EndedAt),
@@ -1063,6 +1137,7 @@ func duckSessionFingerprintFields(sess db.Session, machine string) []any {
 		sess.HasContextData, sess.DataVersion,
 		sess.Cwd, sess.GitBranch, sess.SourceSessionID,
 		sess.SourceVersion, sess.TranscriptFidelity, sess.ParserMalformedLines,
+		nilString(sess.TranscriptRevision),
 		sess.IsTruncated, nilTime(sess.DeletedAt),
 		timeValue(sess.CreatedAt), nilString(sess.TerminationStatus),
 		sess.SecretLeakCount, sess.SecretsRulesVersion,

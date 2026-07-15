@@ -35,6 +35,7 @@ include_automated = false         # default; automated sessions (e.g. roborev) a
 model = "nomic-embed-text"
 dimension = 768                   # every returned vector must have this length
 max_input_chars = 8192            # per-chunk rune cap (default 8192)
+# request_dimensions = true      # ask for Matryoshka-reduced vectors of exactly `dimension` (see below)
 # input_suffix = "<|endoftext|>"  # appended to every embedded text; default empty (see below)
 default_server = "local"          # server used for query encoding and unnamed builds
 
@@ -58,11 +59,12 @@ parse. Restart the daemon (or run a CLI command) after editing the file.
 
 ### Named embeddings servers
 
-Model identity — `model`, `dimension`, `max_input_chars`, `input_suffix` — is
-global: every server in the `servers` table must serve that same model, so
-vectors produced by any of them are interchangeable and land in the same
-generation. What varies per server is transport and capacity: `endpoint`,
-`api_key_env`, `timeout`, `max_retries`, `batch_size`, and `concurrency`.
+Model identity — `model`, `dimension`, `request_dimensions`, `max_input_chars`,
+`input_suffix` — is global: every server in the `servers` table must serve that
+same model, so vectors produced by any of them are interchangeable and land in
+the same generation. What varies per server is transport and capacity:
+`endpoint`, `api_key_env`, `timeout`, `max_retries`, `batch_size`, and
+`concurrency`.
 
 This split exists so you can encode search queries against a fast local server
 while offloading bulk index builds to a bigger remote machine:
@@ -112,6 +114,50 @@ served by llama.cpp, which is benchmarked with `<|endoftext|>` appended to each
 input. The suffix is part of the generation fingerprint, so changing it
 (including setting it for the first time) re-embeds the whole archive on the
 next build.
+
+### Reduced output dimensions (Matryoshka)
+
+Matryoshka-trained embedding models — Qwen3-Embedding, OpenAI's
+`text-embedding-3-*` — can serve shorter vectors than their native output by
+truncating and renormalizing server-side, trading a little recall for a smaller,
+faster index. By default agentsview never asks for this: `dimension` only
+validates that responses have the expected length, and nothing extra goes on the
+wire. Setting `request_dimensions = true` sends `dimension` as the
+OpenAI-compatible `dimensions` request field on every embeddings call — document
+builds and search-query encoding alike, so both always use the same requested
+length:
+
+```toml
+[vector]
+enabled = true
+
+[vector.embeddings]
+model = "qwen3-embedding:0.6b"
+dimension = 256                 # reduced from the model's native 1024
+request_dimensions = true
+
+[vector.embeddings.servers.local]
+endpoint = "http://localhost:11434/v1"
+```
+
+```bash
+# Qwen3-Embedding supports Matryoshka reduction; Ollama's OpenAI-compatible
+# /v1/embeddings route passes the dimensions field through to it.
+ollama pull qwen3-embedding:0.6b
+```
+
+This requires an endpoint and model that support dimension selection. Reduction
+is never faked client-side: an endpoint that rejects the `dimensions` field
+fails the build or query with an error naming `request_dimensions` and the fix,
+and one that silently ignores the field and returns native-length vectors fails
+the dimension check with the same guidance, rather than agentsview truncating
+vectors itself. Endpoints that don't support the field keep working as long as
+`request_dimensions` stays unset.
+
+`request_dimensions` is part of the generation fingerprint (like `input_suffix`,
+only when enabled): reduced vectors are renormalized prefixes, not
+byte-identical to native output, so enabling it — or changing `dimension` —
+makes the existing index stale and re-embeds the archive on the next build.
 
 The first scheduled build that `run_after_sync` triggers after enabling
 `[vector]` embeds the entire existing archive, not just deltas, since the mirror
@@ -164,7 +210,44 @@ The encoder POSTs to `<endpoint>/embeddings` with an OpenAI-style
 `{"data": [{"index": 0, "embedding": [...]}]}` back — this matches Ollama's
 `/v1/embeddings` route as well as OpenAI and most self-hosted OpenAI-compatible
 servers. A response whose embedding length doesn't match `dimension` is
-rejected.
+rejected. AgentsView also rejects non-finite components (`NaN` or infinity),
+JSON `null` components, and zero-norm vectors before they can be written to the
+index. Those failures are retried according to `max_retries`; if every attempt
+is invalid, the build stops and leaves the document pending.
+
+### Direct `llama-server` for high-throughput Ollama models
+
+Ollama's normal `/v1/embeddings` route above is the supported, simplest setup.
+Operators who run the `llama-server` binary bundled with Ollama directly to get
+explicit slot and batch controls should disable its prompt-state cache for a
+dedicated embedding service:
+
+```bash
+llama-server \
+  --model /path/to/embedding-model.gguf \
+  --alias my-embedding-model \
+  --host 127.0.0.1 --port 11435 \
+  --embedding --parallel 4 \
+  --batch-size 8192 --ubatch-size 8192 \
+  --cache-ram 0 --no-cache-prompt --no-cache-idle-slots \
+  --slot-prompt-similarity 0
+```
+
+These are `llama-server` command-line flags, not `ollama serve` environment
+variables. Its prompt cache stores reusable inference state rather than a final
+embedding API result. Independent document embeddings do not need conversational
+prefix reuse, and bad or saturated slot state can yield non-finite output for
+otherwise valid input. Some llama.cpp builds do not apply the global
+`--no-cache-prompt` default to embedding tasks; without
+`--slot-prompt-similarity 0`, an exact retry can then be routed back to the same
+bad slot. Disabling similarity routing lets retries use the least-recently-used
+slot while retaining multiple request slots and large physical/logical batches.
+
+Run `llama-server --help` for the installed binary before adopting this direct
+setup. If any of these flags are unavailable, upgrade the bundled llama.cpp
+binary or use Ollama's normal `/v1/embeddings` route instead. AgentsView's
+validation remains the final safety boundary either way: invalid endpoint output
+aborts the build and is never written.
 
 ## What gets embedded: units, not messages
 
@@ -197,6 +280,7 @@ agentsview embeddings build            # incremental: refresh + fill whatever's 
 agentsview embeddings build --yes      # skip confirmation prompts
 agentsview embeddings build --full-rebuild --yes  # re-embeds every document
 agentsview embeddings build --backstop # force a full mirror reconciliation scan
+agentsview embeddings build --repair-invalid # regenerate only documents with invalid stored vectors
 agentsview embeddings build --include-automated  # embed automated sessions for this build only
 agentsview embeddings build --using build-box    # encode against a named server instead of the default
 ```
@@ -215,6 +299,74 @@ and forth on every other build, forcing a full mirror reconciliation each time.
 Set `include_automated = true` in `config.toml` instead if you want automated
 sessions embedded on every build.
 
+`--repair-invalid` targets the existing generation whose fingerprint matches the
+current embedding configuration; it fails without writing if that generation
+does not exist. It does not accept a generation ID. The command scans stored
+documents with a revision-current generation stamp in bounded batches and checks
+for malformed byte length, a length that differs from the generation's declared
+dimension, missing referenced vector rows, duplicate, missing, or unexpected
+chunk indices, non-finite components, and zero norm. Documents already pending
+because their content changed are left for an ordinary build. If one chunk is
+invalid, AgentsView invalidates that document's target-generation chunks and
+stamp, then runs a repair-only fill restricted to the affected document keys.
+Each bounded invalidation transaction queues its targets before removing old
+data, so interruption during a large scan remains resumable without holding
+every affected document in memory.
+
+Repair never refreshes or expands the document mirror, creates or resets a
+generation, or changes generation state. Valid documents, other generations, and
+unrelated work that was already pending are preserved. A later ordinary
+`embeddings build` handles that unrelated work. Queued targets are cleared only
+after non-empty replacement vectors are saved, except when the current queued
+revision splits into zero chunks and is validly completed by an empty-document
+stamp. Once queued, a document remains a repair target across content revisions:
+a stale save writes nothing, and the next repair reads the latest mirrored
+content. This ownership applies only to documents already identified as corrupt,
+not to unrelated pending changes. An ordinary build that saves non-empty
+validated vectors for the queued generation also clears the target. An ordinary
+permanent rejection may write an empty skip stamp, but it leaves the repair
+target queued; a rejection inside repair writes no stamp. Timeouts,
+cancellations, and retryable service errors abort repair immediately. Full
+rebuilds preserve queued targets before refill, so an empty permanent-skip stamp
+during that rebuild cannot erase repair ownership. A permanent rejection inside
+repair remains queued and unstamped, but repair attempts later targets before
+returning a nonzero aggregate error. A failure after a valid save but before
+queue cleanup may leave a valid stamp; the queued target is still retried
+safely. Repair never uses the ordinary build's empty-vector skip stamp. Mirror
+deletion removes queued targets for documents that no longer exist; the queue
+has a document-key index so that cleanup does not scan all interrupted repairs.
+
+A nonempty mapping is valid only when its sorted chunk indices exactly match the
+configured splitter's output and every mapping references a valid vector. A
+stamped document with no chunk mappings is not classified as corruption, because
+ordinary builds intentionally use that representation for a document the
+endpoint permanently rejects. Raw vector rows with no chunk mapping are also
+outside repair scope: they cannot be surfaced as search hits. The scan is
+explicit because its work scales with the stored generation; scheduled delta and
+backstop builds do not run it automatically. CLI repair statistics report the
+queued target count and the chunk mappings invalidated by the current scan; the
+ordinary embedded count reports successful replacements. Repair succeeds only
+after the integrity scan completes and the durable target queue is empty. On a
+failed repair, the CLI prints the partial result, including whether the scan
+completed plus failed and remaining target counts, before returning a nonzero
+status. A later scan-batch failure retains counts from earlier committed batches
+and best-effort reports the durable queue size. The committed count remains the
+fallback, and cancellation does not cancel the short queue recount. If that
+recount also fails, the result marks the count unknown and the CLI reports
+`remaining unknown` rather than presenting the fallback as exact. Failed target
+counts cover non-stale encode/save failures that determine or accompany the
+invocation failure. Stale saves remain in the ordinary stale count, sibling work
+canceled after another failure is not counted, and scan failures are reported
+through the incomplete scan state.
+
+The repair status contract requires local daemon API version 3. After upgrading
+AgentsView, restart any explicitly managed daemon; the CLI rejects an older
+daemon instead of treating absent completion or certainty fields as false.
+
+`--repair-invalid` is mutually exclusive with both `--full-rebuild` and
+`--backstop`: repair preserves the existing mirror and valid work, while those
+modes deliberately rebuild or reconcile broader index state.
+
 `embeddings build` mirrors the embeddable universe (user documents and assistant
 runs, see [What gets embedded](#what-gets-embedded-units-not-messages)) into
 `vectors.db`, then fills whatever the active generation is missing.
@@ -227,6 +379,13 @@ new one. It prompts for confirmation with a live count of embeddable unit
 documents unless `--yes` is passed. Progress prints every ~2 seconds while a
 build runs, and a summary line reports documents embedded, chunks, skipped, and
 stale counts on completion.
+
+The web Settings page shows the same daemon-owned build while it runs, including
+the scan or embedding phase, model and dimension, chunk progress, throughput,
+elapsed time, estimated completion, and the generations already stored in
+`vectors.db`.
+
+![Embedding build progress](/assets/generated/screenshots/settings-embeddings.png)
 
 When a writable local daemon is running, `build`/`activate`/`retire` proxy to it
 over HTTP so the daemon remains the sole writer of `vectors.db`; without a
@@ -432,18 +591,20 @@ of `ordinal_range` to read the whole stretch.
 
 ## Error taxonomy
 
-| Situation                                                                                               | Message                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[vector]` not enabled                                                                                  | `vector search is not enabled: set [vector] enabled = true in config.toml` (from `agentsview embeddings ...`)                                              |
-| No `VectorSearcher` wired (index never built, DuckDB backend, or PG with no matching pushed generation) | `semantic search not available: enable [vector] in config.toml and run 'agentsview embeddings build'`                                                      |
-| Only a building generation exists                                                                       | same message, plus `: index is building: N% complete`                                                                                                      |
-| Active generation's fingerprint no longer matches config (model, dimension, or chunking changed)        | same message, plus `: index is stale (embedding config changed): run 'agentsview embeddings build --full-rebuild'`                                         |
-| Index was built by an incompatible agentsview version (mirror schema mismatch)                          | same message, plus `` : vector index was built by an incompatible version: run `agentsview embeddings build` ``                                            |
-| `--scope` with a lexical mode (or without `--semantic`/`--hybrid`)                                      | CLI: `--scope requires --semantic or --hybrid`; HTTP/MCP: `scope is only supported for semantic and hybrid search modes`                                   |
-| Embeddings endpoint unreachable or timed out                                                            | `[vector.embeddings] request: ...` (the underlying transport error)                                                                                        |
-| Embeddings endpoint returned non-200                                                                    | `[vector.embeddings] status <code>: <body>`                                                                                                                |
-| `--in` names a source other than `messages` with `--semantic`/`--hybrid`                                | CLI: `--semantic searches messages only; drop --in` (or `--hybrid ...`); HTTP/MCP: `search: semantic search only supports the messages source (got "...")` |
-| `--cursor` with `--semantic`/`--hybrid`                                                                 | `semantic search returns a single ranked page; cursor pagination is not supported`                                                                         |
+| Situation                                                                                               | Message                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `[vector]` not enabled                                                                                  | `vector search is not enabled: set [vector] enabled = true in config.toml` (from `agentsview embeddings ...`)                                                |
+| No `VectorSearcher` wired (index never built, DuckDB backend, or PG with no matching pushed generation) | `semantic search not available: enable [vector] in config.toml and run 'agentsview embeddings build'`                                                        |
+| Only a building generation exists                                                                       | same message, plus `: index is building: N% complete`                                                                                                        |
+| Active generation's fingerprint no longer matches config (model, dimension, or chunking changed)        | same message, plus `: index is stale (embedding config changed): run 'agentsview embeddings build --full-rebuild'`                                           |
+| Index was built by an incompatible agentsview version (mirror schema mismatch)                          | same message, plus `` : vector index was built by an incompatible version: run `agentsview embeddings build` ``                                              |
+| `--scope` with a lexical mode (or without `--semantic`/`--hybrid`)                                      | CLI: `--scope requires --semantic or --hybrid`; HTTP/MCP: `scope is only supported for semantic and hybrid search modes`                                     |
+| Embeddings endpoint unreachable or timed out                                                            | `[vector.embeddings] request: ...` (the underlying transport error)                                                                                          |
+| Embeddings endpoint returned non-200                                                                    | `[vector.embeddings] status <code>: <body>`                                                                                                                  |
+| Embeddings endpoint returned a non-finite or zero-norm vector                                           | `[vector.embeddings] invalid embedding at index <n>: ...`; correct the endpoint/cache configuration, then run `agentsview embeddings build --repair-invalid` |
+| Embeddings endpoint returned a JSON `null` component                                                    | `[vector.embeddings] decode response: embedding component <n> is null`; correct the endpoint/cache configuration, then run the targeted repair               |
+| `--in` names a source other than `messages` with `--semantic`/`--hybrid`                                | CLI: `--semantic searches messages only; drop --in` (or `--hybrid ...`); HTTP/MCP: `search: semantic search only supports the messages source (got "...")`   |
+| `--cursor` with `--semantic`/`--hybrid`                                                                 | `semantic search returns a single ranked page; cursor pagination is not supported`                                                                           |
 
 Over HTTP (`GET /api/v1/search/content`) and MCP (`search_content`), the "not
 available" family of errors maps to HTTP `501 Not Implemented` and the matching

@@ -2,6 +2,7 @@ package vector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -120,6 +121,40 @@ func TestManagerBuildUnknownUsingFailsBeforeStarting(t *testing.T) {
 	assert.False(t, started)
 }
 
+func TestManagerRejectsConflictingRepairRequestBeforeStarting(t *testing.T) {
+	tests := []struct {
+		name string
+		req  BuildRequest
+	}{
+		{
+			name: "full rebuild",
+			req:  BuildRequest{FullRebuild: true, RepairInvalid: true},
+		},
+		{
+			name: "backstop",
+			req:  BuildRequest{Backstop: true, RepairInvalid: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ix := openTestIndex(t)
+			m := NewManager(ix, twoDocSource(), soloEncoders(fakeBuildEncoder()),
+				fakeGeneration("fake-model"))
+
+			err := m.StartBuild(tt.req)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "mutually exclusive")
+			assert.False(t, m.Status().Running)
+
+			started, err := m.TryBuild(context.Background(), tt.req)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "mutually exclusive")
+			assert.False(t, started)
+			assert.False(t, m.Status().Running)
+		})
+	}
+}
+
 func TestManagerStartBuildSetsRunningAndConcurrentStartReturnsErrBuildRunning(t *testing.T) {
 	ix := openTestIndex(t)
 	src := twoDocSource()
@@ -186,7 +221,104 @@ func TestManagerStatusSetsLastErrorOnEncoderFailure(t *testing.T) {
 
 	status := m.Status()
 	assert.Contains(t, status.LastError, "encoder rejected input")
-	assert.Nil(t, status.LastResult)
+	require.NotNil(t, status.LastResult)
+	assert.Equal(t, gen.Fingerprint(), status.LastResult.Fingerprint)
+	assert.Zero(t, status.LastResult.Fill.Documents)
+}
+
+func TestManagerFailureReplacesPriorSuccessfulResult(t *testing.T) {
+	ix := openTestIndex(t)
+	ctx := context.Background()
+	gen := fakeGeneration("fake-model")
+	fail := false
+	encoder := func(ctx context.Context, texts []string) ([][]float32, error) {
+		if fail {
+			return nil, errors.New("encoder rejected input")
+		}
+		return fakeBuildEncoder()(ctx, texts)
+	}
+	m := NewManager(ix, twoDocSource(), soloEncoders(encoder), gen)
+
+	started, err := m.TryBuild(ctx, BuildRequest{})
+	require.True(t, started)
+	require.NoError(t, err)
+	require.NotNil(t, m.Status().LastResult)
+	assert.Equal(t, 2, m.Status().LastResult.Fill.Documents)
+
+	fail = true
+	started, err = m.TryBuild(ctx, BuildRequest{FullRebuild: true})
+	require.True(t, started)
+	require.ErrorContains(t, err, "encoder rejected input")
+
+	status := m.Status()
+	require.NotNil(t, status.LastResult)
+	assert.Zero(t, status.LastResult.Fill.Documents,
+		"the failed attempt must replace the stale successful result")
+	assert.Contains(t, status.LastError, "encoder rejected input")
+}
+
+func TestManagerStatusStampsBuildIdentityAndSpace(t *testing.T) {
+	ix := openTestIndex(t)
+	src := twoDocSource()
+	gen := fakeGeneration("fake-model")
+	m := NewManager(ix, src, soloEncoders(fakeBuildEncoder()), gen)
+
+	base := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return base }
+
+	status := m.Status()
+	assert.Zero(t, status.BuildID, "no build has started yet")
+	assert.Empty(t, status.StartedAt)
+	assert.Equal(t, "fake-model", status.Model,
+		"the configured space is reported even before any build")
+	assert.Equal(t, 3, status.Dimension)
+
+	started, err := m.TryBuild(context.Background(), BuildRequest{})
+	require.NoError(t, err)
+	require.True(t, started)
+
+	status = m.Status()
+	assert.Equal(t, int64(1), status.BuildID)
+	assert.Equal(t, "2026-07-11T10:00:00Z", status.StartedAt)
+
+	m.now = func() time.Time { return base.Add(time.Minute) }
+	started, err = m.TryBuild(context.Background(), BuildRequest{FullRebuild: true})
+	require.NoError(t, err)
+	require.True(t, started)
+
+	status = m.Status()
+	assert.Equal(t, int64(2), status.BuildID,
+		"each build start must get a fresh identity so pollers can tell builds apart")
+	assert.Equal(t, "2026-07-11T10:01:00Z", status.StartedAt)
+}
+
+func TestManagerStatusPublishesAndClearsBuildETA(t *testing.T) {
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	now := base
+	m := &Manager{
+		gen: fakeGeneration("fake-model"),
+		now: func() time.Time { return now },
+	}
+
+	require.NoError(t, m.begin())
+	m.reportProgress(BuildProgress{Phase: "embedding", Done: 0, Total: 1000})
+	now = base.Add(2 * time.Second)
+	m.reportProgress(BuildProgress{Phase: "embedding", Done: 100, Total: 1000})
+	now = base.Add(4 * time.Second)
+	m.reportProgress(BuildProgress{Phase: "embedding", Done: 200, Total: 1000})
+
+	status := m.Status()
+	require.True(t, status.EstimateReady)
+	assert.InDelta(t, 50, status.RatePerSecond, 0.001)
+	assert.Equal(t, int64(16_000), status.ETAMilliseconds)
+	assert.Equal(t, "fake-model", status.Model)
+	assert.Equal(t, 3, status.Dimension)
+
+	m.finish(BuildResult{}, nil)
+	status = m.Status()
+	assert.False(t, status.EstimateReady)
+	assert.Zero(t, status.RatePerSecond)
+	assert.Zero(t, status.ETAMilliseconds)
 }
 
 func TestManagerGenerationsDelegatesToIndex(t *testing.T) {
@@ -343,7 +475,7 @@ func TestManagerStartBuildRecoversPanickedEncoder(t *testing.T) {
 	status := m.Status()
 	assert.Contains(t, status.LastError, "panicked")
 	assert.Contains(t, status.LastError, "encoder exploded")
-	assert.Nil(t, status.LastResult)
+	require.NotNil(t, status.LastResult)
 
 	require.NoError(t, m.StartBuild(BuildRequest{}),
 		"manager must accept a new build after a panicked one")

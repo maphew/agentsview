@@ -319,6 +319,25 @@ func TestArtifactIdentityModePersistsOnlyAfterSuccessfulPush(t *testing.T) {
 	assert.Equal(t, mode, store.values[artifactIdentityModeStateKey])
 }
 
+func TestTranscriptRevisionBackfillForcesOneFullPush(t *testing.T) {
+	store := &syncStateStoreStub{}
+
+	full, needed, err := applyTranscriptRevisionBackfillRequirement(
+		store, false,
+	)
+	require.NoError(t, err)
+	assert.True(t, full)
+	assert.True(t, needed)
+
+	require.NoError(t, markTranscriptRevisionBackfillDone(store))
+	full, needed, err = applyTranscriptRevisionBackfillRequirement(
+		store, false,
+	)
+	require.NoError(t, err)
+	assert.False(t, full)
+	assert.False(t, needed)
+}
+
 func TestCompleteSessionAliasBackfillMarksDoneUnlessErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1475,6 +1494,20 @@ func TestSessionPushFingerprintDiffers(t *testing.T) {
 		name   string
 		modify func(s db.Session) db.Session
 	}{
+		{
+			name: "agent label change",
+			modify: func(s db.Session) db.Session {
+				s.AgentLabel = "triage"
+				return s
+			},
+		},
+		{
+			name: "entrypoint change",
+			modify: func(s db.Session) db.Session {
+				s.Entrypoint = "sdk-cli"
+				return s
+			},
+		},
 		{
 			name: "message count change",
 			modify: func(s db.Session) db.Session {

@@ -79,4 +79,125 @@ test.describe("Session list", () => {
     await clickNavTab(page, "Sessions");
     await expect(page).toHaveURL(/[?&]project=project-alpha/);
   });
+
+  test("restored rolling dates reach the first Sessions request", async ({
+    page,
+  }) => {
+    await page.locator(".kit-date-range-picker__trigger").click();
+    await page.getByRole("button", { name: "90d", exact: true }).click();
+    await expect(page).toHaveURL(/window_days=90/);
+    const selectedUrl = new URL(page.url());
+    const expectedFrom = selectedUrl.searchParams.get("date_from");
+    const expectedTo = selectedUrl.searchParams.get("date_to");
+    expect(expectedFrom).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(expectedTo).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    await clickNavTab(page, "Insights");
+    await expect(page).toHaveURL(/\/insights/);
+
+    const requestPromise = page.waitForRequest((request) =>
+      new URL(request.url()).pathname.endsWith(
+        "/api/v1/sessions/sidebar-index",
+      )
+    );
+    await clickNavTab(page, "Sessions");
+    const requestUrl = new URL((await requestPromise).url());
+
+    expect(requestUrl.searchParams.get("date_from")).toBe(expectedFrom);
+    expect(requestUrl.searchParams.get("date_to")).toBe(expectedTo);
+  });
+
+  test("linked dates reach the first request on direct detail entry", async ({
+    page,
+  }) => {
+    const sessionId = await sp.sessionItems.first().getAttribute(
+      "data-session-id",
+    );
+    expect(sessionId).toBeTruthy();
+
+    await page.locator(".kit-date-range-picker__trigger").click();
+    await page.getByRole("button", { name: "90d", exact: true }).click();
+    await expect(page).toHaveURL(/window_days=90/);
+    const selectedUrl = new URL(page.url());
+    const expectedFrom = selectedUrl.searchParams.get("date_from");
+    const expectedTo = selectedUrl.searchParams.get("date_to");
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page
+      .getByRole("checkbox", { name: "Link date ranges across pages" })
+      .check();
+
+    const requestPromise = page.waitForRequest((request) =>
+      new URL(request.url()).pathname.endsWith(
+        "/api/v1/sessions/sidebar-index",
+      )
+    );
+    await page.goto(`/sessions/${encodeURIComponent(sessionId!)}`);
+    const requestUrl = new URL((await requestPromise).url());
+
+    expect(requestUrl.searchParams.get("date_from")).toBe(expectedFrom);
+    expect(requestUrl.searchParams.get("date_to")).toBe(expectedTo);
+    await expect(page).toHaveURL(/date_from=/);
+    await expect(page).toHaveURL(/date_to=/);
+  });
+
+  test("rolling detail routes refresh bounds and preserve message targets", async ({
+    page,
+  }) => {
+    const sessionId = await sp.sessionItems.first().getAttribute(
+      "data-session-id",
+    );
+    expect(sessionId).toBeTruthy();
+    await page.clock.setFixedTime(new Date("2026-07-10T12:00:00"));
+
+    const requestPromise = page.waitForRequest((request) =>
+      new URL(request.url()).pathname.endsWith(
+        "/api/v1/sessions/sidebar-index",
+      )
+    );
+    await page.goto(
+      `/sessions/${encodeURIComponent(sessionId!)}?msg=last&window_days=30&date_from=2026-01-01&date_to=2026-01-30`,
+    );
+    const requestUrl = new URL((await requestPromise).url());
+
+    expect(requestUrl.searchParams.get("date_from")).toBe("2026-06-11");
+    expect(requestUrl.searchParams.get("date_to")).toBe("2026-07-10");
+    const routeUrl = new URL(page.url());
+    expect(routeUrl.searchParams.get("msg")).toBe("last");
+    expect(routeUrl.searchParams.get("window_days")).toBe("30");
+    expect(routeUrl.searchParams.get("date_from")).toBe("2026-06-11");
+    expect(routeUrl.searchParams.get("date_to")).toBe("2026-07-10");
+  });
+
+  test("explicit detail dates replace the shared range", async ({ page }) => {
+    const sessionId = await sp.sessionItems.first().getAttribute(
+      "data-session-id",
+    );
+    expect(sessionId).toBeTruthy();
+
+    await page.locator(".kit-date-range-picker__trigger").click();
+    await page.getByRole("button", { name: "90d", exact: true }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page
+      .getByRole("checkbox", { name: "Link date ranges across pages" })
+      .check();
+
+    await page.goto(
+      `/sessions/${encodeURIComponent(sessionId!)}?date_from=2026-05-01&date_to=2026-05-07`,
+    );
+    const requestPromise = page.waitForRequest((request) =>
+      new URL(request.url()).pathname.endsWith("/api/v1/usage/summary")
+    );
+    await clickNavTab(page, "Usage");
+    const requestUrl = new URL((await requestPromise).url());
+
+    expect(requestUrl.searchParams.get("from")).toBe("2026-05-01");
+    expect(requestUrl.searchParams.get("to")).toBe("2026-05-07");
+    await expect(
+      page.locator(".kit-date-range-picker__trigger"),
+    ).toContainText("2026-05-01");
+    await expect(
+      page.locator(".kit-date-range-picker__trigger"),
+    ).toContainText("2026-05-07");
+  });
 });

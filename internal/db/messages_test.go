@@ -584,6 +584,170 @@ func TestWriteSessionBatchFreshReplaceMessagesSkipsDeletePath(t *testing.T) {
 	requireMessagesDeleteTriggerPoisoned(t, d)
 }
 
+func TestWriteSessionBatchReplaceMessagesOnlyBumpsChangedTranscript(t *testing.T) {
+	t.Parallel()
+	d := testDB(t)
+	const sessionID = "batch-revision"
+	insertSession(t, d, sessionID, "proj")
+	original := Message{
+		SessionID:     sessionID,
+		Ordinal:       0,
+		Role:          "assistant",
+		Content:       "same answer",
+		ContentLength: len("same answer"),
+		ToolCalls: []ToolCall{{
+			ToolName:      "Read",
+			Category:      "file",
+			ToolUseID:     "toolu_1",
+			InputJSON:     `{"path":"same"}`,
+			ResultContent: "same result",
+			ResultEvents: []ToolResultEvent{{
+				Status:  "completed",
+				Content: "same result",
+			}},
+		}},
+	}
+	insertMessages(t, d, original)
+	_, err := d.getWriter().Exec(
+		`UPDATE sessions SET transcript_revision = '7' WHERE id = ?`,
+		sessionID,
+	)
+	require.NoError(t, err)
+
+	write := SessionBatchWrite{
+		Session: Session{
+			ID:           sessionID,
+			Project:      "proj",
+			Machine:      defaultMachine,
+			Agent:        defaultAgent,
+			MessageCount: 1,
+		},
+		Messages:        []Message{original},
+		ReplaceMessages: true,
+	}
+	_, err = d.WriteSessionBatch([]SessionBatchWrite{write})
+	require.NoError(t, err)
+	unchanged, err := d.GetSession(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, unchanged)
+	require.NotNil(t, unchanged.TranscriptRevision)
+	assert.Equal(t, "7", *unchanged.TranscriptRevision)
+
+	write.Messages[0].ContentLength = 999
+	write.Messages[0].ToolCalls[0].ResultContentLength = 999
+	write.Messages[0].ToolCalls[0].ResultEvents[0].ContentLength = 999
+	_, err = d.WriteSessionBatch([]SessionBatchWrite{write})
+	require.NoError(t, err)
+	recalculated, err := d.GetSession(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, recalculated)
+	require.NotNil(t, recalculated.TranscriptRevision)
+	assert.Equal(t, "7", *recalculated.TranscriptRevision)
+
+	write.Messages[0].ToolCalls[0].ResultContent = "changed result"
+	_, err = d.WriteSessionBatch([]SessionBatchWrite{write})
+	require.NoError(t, err)
+	changed, err := d.GetSession(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, changed)
+	require.NotNil(t, changed.TranscriptRevision)
+	assert.Equal(t, "8", *changed.TranscriptRevision)
+
+	write.ReplaceMessages = false
+	_, err = d.WriteSessionBatch([]SessionBatchWrite{write})
+	require.NoError(t, err)
+	replayed, err := d.GetSession(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, replayed)
+	require.NotNil(t, replayed.TranscriptRevision)
+	assert.Equal(t, "8", *replayed.TranscriptRevision)
+}
+
+func TestReplacementAPIsOnlyBumpVisibleTranscriptChanges(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		replace func(*DB, string, []Message) error
+	}{
+		{
+			name: "messages",
+			replace: func(d *DB, id string, msgs []Message) error {
+				return d.ReplaceSessionMessages(id, msgs)
+			},
+		},
+		{
+			name: "content",
+			replace: func(d *DB, id string, msgs []Message) error {
+				return d.ReplaceSessionContent(
+					id, msgs, SessionSignalUpdate{}, nil,
+				)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := testDB(t)
+			messageSessionID := "replacement-" + tc.name
+			insertSession(t, d, messageSessionID, "proj")
+			original := Message{
+				SessionID:     messageSessionID,
+				Ordinal:       0,
+				Role:          "assistant",
+				Content:       "same answer",
+				ContentLength: len("same answer"),
+			}
+			insertMessages(t, d, original)
+			_, err := d.getWriter().Exec(
+				`UPDATE sessions SET transcript_revision = '7' WHERE id = ?`,
+				messageSessionID,
+			)
+			require.NoError(t, err)
+
+			derivedOnly := original
+			derivedOnly.ContentLength = 999
+			require.NoError(t, tc.replace(
+				d, messageSessionID, []Message{derivedOnly},
+			))
+			unchanged, err := d.GetSession(
+				context.Background(), messageSessionID,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, unchanged)
+			require.NotNil(t, unchanged.TranscriptRevision)
+			assert.Equal(t, "7", *unchanged.TranscriptRevision)
+
+			visibleChange := derivedOnly
+			visibleChange.Content = "changed answer"
+			require.NoError(t, tc.replace(
+				d, messageSessionID, []Message{visibleChange},
+			))
+			changed, err := d.GetSession(
+				context.Background(), messageSessionID,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, changed)
+			require.NotNil(t, changed.TranscriptRevision)
+			assert.Equal(t, "8", *changed.TranscriptRevision)
+
+			emptySessionID := "empty-replacement-" + tc.name
+			insertSession(t, d, emptySessionID, "proj")
+			_, err = d.getWriter().Exec(
+				`UPDATE sessions SET transcript_revision = '3' WHERE id = ?`,
+				emptySessionID,
+			)
+			require.NoError(t, err)
+			require.NoError(t, tc.replace(d, emptySessionID, nil))
+			empty, err := d.GetSession(
+				context.Background(), emptySessionID,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, empty)
+			require.NotNil(t, empty.TranscriptRevision)
+			assert.Equal(t, "3", *empty.TranscriptRevision)
+		})
+	}
+}
+
 // TestMessageReadsTolerateNullTimestamp pins NULL-timestamp robustness
 // across the three message read paths. timestamp is the only nullable
 // text column in the messages table; fresh inserts always bind a Go

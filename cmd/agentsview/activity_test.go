@@ -21,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/pricing"
+	"go.kenn.io/agentsview/internal/pricingrefresh"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -237,7 +238,7 @@ func TestActivityReportJSONMatchesHTTPExportMetadata(t *testing.T) {
 	dbPath := filepath.Join(dataDir, "sessions.db")
 	database := dbtest.OpenTestDBAt(t, dbPath)
 	fallbackModel := fallbackPricedModel(t)
-	require.NoError(t, seedFallbackPricing(database))
+	require.NoError(t, pricingrefresh.SeedFallback(database))
 	seedUsageDailyExportMetadataFixture(t, database, fallbackModel)
 
 	cliOut := captureStdout(t, func() {
@@ -248,6 +249,7 @@ func TestActivityReportJSONMatchesHTTPExportMetadata(t *testing.T) {
 	})
 	var cliReport activity.Report
 	require.NoError(t, json.Unmarshal([]byte(cliOut), &cliReport))
+	assert.Equal(t, 2, cliReport.SchemaVersion)
 
 	srv := server.New(config.Config{
 		Host: "127.0.0.1", Port: 0, DataDir: dataDir, DBPath: dbPath,
@@ -280,8 +282,12 @@ func TestActivityReportJSONMatchesHTTPExportMetadata(t *testing.T) {
 	assert.Contains(t, cliReport.Pricing.Models, "gpt-5.1")
 	assert.Contains(t, cliReport.Pricing.Models, fallbackModel)
 	assert.Equal(t, cliReport.Pricing.Models, httpReport.Pricing.Models)
-	require.Contains(t, cliReport.Projects, "shared-project")
-	require.Contains(t, httpReport.Projects, "shared-project")
+	require.Len(t, cliReport.Projects, 1)
+	require.Len(t, httpReport.Projects, 1)
+	for key, project := range cliReport.Projects {
+		assert.NotContains(t, key, "shared-project")
+		assert.Equal(t, "shared-project", project.DisplayLabel)
+	}
 	assert.Equal(t, cliReport.Projects, httpReport.Projects)
 	assert.Equal(t, "UTC", cliReport.Timezone)
 	assert.Equal(t, cliReport.Timezone, httpReport.Timezone)
@@ -336,5 +342,5 @@ func TestActivityReportGolden(t *testing.T) {
 	})
 	require.NoError(t, err, "activity report json golden command")
 
-	assertGoldenBytes(t, "activity_report_v1.json", []byte(stdout))
+	assertGoldenBytes(t, "activity_report_v2.json", []byte(stdout))
 }

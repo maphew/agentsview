@@ -361,12 +361,21 @@ type IncrementalRequest struct {
 	// appended tail forks away from the stored tip and must trigger a
 	// full reparse instead of a naive append.
 	LastEntryUUID string
+	// StoredAgentLabel and StoredEntrypoint are the session identity
+	// values already persisted for this session. Claude identity is
+	// first-non-empty-wins across the file, and real CLI transcripts
+	// carry a top-level entrypoint on most lines, so the incremental
+	// parser escalates to a full parse only when an appended non-empty
+	// value could fill a still-empty stored field.
+	StoredAgentLabel string
+	StoredEntrypoint string
 }
 
 // IncrementalOutcome is the append-only parse output.
 type IncrementalOutcome struct {
 	SessionID            string
 	Messages             []ParsedMessage
+	SubagentLinks        []ClaudeSubagentLink
 	EndedAt              time.Time
 	ConsumedBytes        int64
 	MessageCount         int
@@ -437,6 +446,8 @@ func providerFactoryForDef(def AgentDef) ProviderFactory {
 		return newDevinProviderFactory(def)
 	case AgentHermes:
 		return newHermesProviderFactory(def)
+	case AgentGrok:
+		return newGrokProviderFactory(def)
 	case AgentIflow:
 		return newIflowProviderFactory(def)
 	case AgentGptme:

@@ -14,6 +14,8 @@ type manifestSession struct {
 	Project              string  `json:"project"`
 	Machine              string  `json:"machine"`
 	Agent                string  `json:"agent"`
+	AgentLabel           string  `json:"agent_label,omitempty"`
+	Entrypoint           string  `json:"entrypoint,omitempty"`
 	FirstMessage         *string `json:"first_message"`
 	DisplayName          *string `json:"display_name,omitempty"`
 	StartedAt            *string `json:"started_at"`
@@ -53,16 +55,17 @@ type manifestSession struct {
 	ParserMalformedLines int    `json:"parser_malformed_lines,omitempty"`
 	IsTruncated          bool   `json:"is_truncated,omitempty"`
 
-	DeletedAt         *string `json:"deleted_at,omitempty"`
-	TerminationStatus *string `json:"termination_status,omitempty"`
-	FilePath          *string `json:"file_path,omitempty"`
-	FileSize          *int64  `json:"file_size,omitempty"`
-	FileMtime         *int64  `json:"file_mtime,omitempty"`
-	FileInode         *int64  `json:"file_inode,omitempty"`
-	FileDevice        *int64  `json:"file_device,omitempty"`
-	FileHash          *string `json:"file_hash,omitempty"`
-	LocalModifiedAt   *string `json:"local_modified_at,omitempty"`
-	CreatedAt         string  `json:"created_at"`
+	DeletedAt          *string `json:"deleted_at,omitempty"`
+	TerminationStatus  *string `json:"termination_status,omitempty"`
+	FilePath           *string `json:"file_path,omitempty"`
+	FileSize           *int64  `json:"file_size,omitempty"`
+	FileMtime          *int64  `json:"file_mtime,omitempty"`
+	FileInode          *int64  `json:"file_inode,omitempty"`
+	FileDevice         *int64  `json:"file_device,omitempty"`
+	FileHash           *string `json:"file_hash,omitempty"`
+	LocalModifiedAt    *string `json:"local_modified_at,omitempty"`
+	TranscriptRevision *string `json:"transcript_revision,omitempty"`
+	CreatedAt          string  `json:"created_at"`
 }
 
 // manifestQualitySignals mirrors db.QualitySignals for the same reason
@@ -84,6 +87,8 @@ func manifestSessionFromDB(s db.Session) manifestSession {
 		Project:              s.Project,
 		Machine:              s.Machine,
 		Agent:                s.Agent,
+		AgentLabel:           s.AgentLabel,
+		Entrypoint:           s.Entrypoint,
 		FirstMessage:         s.FirstMessage,
 		DisplayName:          s.DisplayName,
 		StartedAt:            s.StartedAt,
@@ -123,16 +128,17 @@ func manifestSessionFromDB(s db.Session) manifestSession {
 		ParserMalformedLines: s.ParserMalformedLines,
 		IsTruncated:          s.IsTruncated,
 
-		DeletedAt:         s.DeletedAt,
-		TerminationStatus: s.TerminationStatus,
-		FilePath:          s.FilePath,
-		FileSize:          s.FileSize,
-		FileMtime:         s.FileMtime,
-		FileInode:         s.FileInode,
-		FileDevice:        s.FileDevice,
-		FileHash:          s.FileHash,
-		LocalModifiedAt:   s.LocalModifiedAt,
-		CreatedAt:         s.CreatedAt,
+		DeletedAt:          s.DeletedAt,
+		TerminationStatus:  s.TerminationStatus,
+		FilePath:           s.FilePath,
+		FileSize:           s.FileSize,
+		FileMtime:          s.FileMtime,
+		FileInode:          s.FileInode,
+		FileDevice:         s.FileDevice,
+		FileHash:           s.FileHash,
+		LocalModifiedAt:    s.LocalModifiedAt,
+		TranscriptRevision: s.TranscriptRevision,
+		CreatedAt:          s.CreatedAt,
 	}
 }
 
@@ -142,6 +148,8 @@ func (m manifestSession) dbSession() db.Session {
 		Project:              m.Project,
 		Machine:              m.Machine,
 		Agent:                m.Agent,
+		AgentLabel:           m.AgentLabel,
+		Entrypoint:           m.Entrypoint,
 		FirstMessage:         m.FirstMessage,
 		DisplayName:          m.DisplayName,
 		StartedAt:            m.StartedAt,
@@ -181,16 +189,17 @@ func (m manifestSession) dbSession() db.Session {
 		ParserMalformedLines: m.ParserMalformedLines,
 		IsTruncated:          m.IsTruncated,
 
-		DeletedAt:         m.DeletedAt,
-		TerminationStatus: m.TerminationStatus,
-		FilePath:          m.FilePath,
-		FileSize:          m.FileSize,
-		FileMtime:         m.FileMtime,
-		FileInode:         m.FileInode,
-		FileDevice:        m.FileDevice,
-		FileHash:          m.FileHash,
-		LocalModifiedAt:   m.LocalModifiedAt,
-		CreatedAt:         m.CreatedAt,
+		DeletedAt:          m.DeletedAt,
+		TerminationStatus:  m.TerminationStatus,
+		FilePath:           m.FilePath,
+		FileSize:           m.FileSize,
+		FileMtime:          m.FileMtime,
+		FileInode:          m.FileInode,
+		FileDevice:         m.FileDevice,
+		FileHash:           m.FileHash,
+		LocalModifiedAt:    m.LocalModifiedAt,
+		TranscriptRevision: m.TranscriptRevision,
+		CreatedAt:          m.CreatedAt,
 	}
 }
 

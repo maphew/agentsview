@@ -223,6 +223,35 @@ func loadConfigFromPFlags(t *testing.T, args ...string) (Config, error) {
 	return LoadPFlags(fs)
 }
 
+func TestLoad_WriteTimeout(t *testing.T) {
+	t.Run("defaults to 30s when unset", func(t *testing.T) {
+		cfg, err := loadConfigFromFlags(t)
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, cfg.WriteTimeout)
+	})
+
+	cases := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{"raised for slow aggregates", "120s", 120 * time.Second},
+		{"zero disables the deadline", "0s", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" (flag)", func(t *testing.T) {
+			cfg, err := loadConfigFromFlags(t, "-write-timeout", tc.value)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.WriteTimeout)
+		})
+		t.Run(tc.name+" (pflag)", func(t *testing.T) {
+			cfg, err := loadConfigFromPFlags(t, "--write-timeout", tc.value)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.WriteTimeout)
+		})
+	}
+}
+
 func TestLoadMinimal_LoadsAgentBinaryConfig(t *testing.T) {
 	f := newConfigFixture(t)
 	f.WriteConfigText(t, `[agent.claude]
@@ -1546,6 +1575,16 @@ func TestResolvePG_Defaults(t *testing.T) {
 
 	assert.Equal(t, "agentsview", resolved.Schema)
 	assert.NotEmpty(t, resolved.MachineName, "MachineName should default to hostname")
+}
+
+func TestLoadResolvesLocalMachineNameFromHostname(t *testing.T) {
+	setupTestEnv(t)
+	cfg, err := loadConfigFromPFlags(t)
+	require.NoError(t, err)
+	hostname, err := os.Hostname()
+	require.NoError(t, err)
+
+	assert.Equal(t, hostname, cfg.LocalMachineName)
 }
 
 func TestResolvePG_ExpandsEnvVars(t *testing.T) {

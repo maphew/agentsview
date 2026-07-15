@@ -157,6 +157,36 @@ func TestEmbeddingsBuildReturnsAcceptedAndStartsBuild(t *testing.T) {
 
 	require.Len(t, fake.startBuildCalls, 1)
 	assert.True(t, fake.startBuildCalls[0].FullRebuild)
+	assert.False(t, fake.startBuildCalls[0].RepairInvalid)
+}
+
+func TestEmbeddingsBuildInvalidRequestReturnsBadRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		req  vector.BuildRequest
+	}{
+		{
+			name: "full rebuild with repair",
+			req:  vector.BuildRequest{FullRebuild: true, RepairInvalid: true},
+		},
+		{
+			name: "backstop with repair",
+			req:  vector.BuildRequest{Backstop: true, RepairInvalid: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeEmbeddingsManager{startBuildErr: fmt.Errorf(
+				"%w: mutually exclusive build modes", vector.ErrInvalidBuildRequest)}
+			s := newEmbeddingsTestServer(t, fake)
+
+			w := serveJSON(t, s.mux, http.MethodPost, "/api/v1/embeddings/build", tt.req)
+			assertRecorderStatus(t, w, http.StatusBadRequest)
+			assert.Contains(t, w.Body.String(), "mutually exclusive")
+			require.Len(t, fake.startBuildCalls, 1)
+			assert.Equal(t, tt.req, fake.startBuildCalls[0])
+		})
+	}
 }
 
 func TestEmbeddingsBuildReturnsConflictWhenAlreadyRunning(t *testing.T) {
@@ -182,7 +212,8 @@ func TestEmbeddingsBuildUnknownServerReturnsBadRequest(t *testing.T) {
 
 func TestEmbeddingsStatusReturnsCurrentStatus(t *testing.T) {
 	fake := &fakeEmbeddingsManager{status: vector.BuildStatus{
-		Running: true, Phase: "embedding", Done: 3, Total: 10,
+		Running: true, Phase: "embedding", Done: 10, Total: 10,
+		EstimateReady: true, RatePerSecond: 50, ETAMilliseconds: 0,
 	}}
 	s := newEmbeddingsTestServer(t, fake)
 
@@ -192,6 +223,8 @@ func TestEmbeddingsStatusReturnsCurrentStatus(t *testing.T) {
 	var status vector.BuildStatus
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &status))
 	assert.Equal(t, fake.status, status)
+	assert.Contains(t, w.Body.String(), `"eta_milliseconds":0`,
+		"a ready zero-second ETA must remain distinguishable from a missing estimate")
 }
 
 func TestEmbeddingsGenerationsReturnsWrappedList(t *testing.T) {

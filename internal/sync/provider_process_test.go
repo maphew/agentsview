@@ -302,7 +302,11 @@ func TestProcessFileProviderZCodeVirtualSource(t *testing.T) {
 	assert.Equal(t, "zcode:session-001", res.results[0].Session.ID)
 	assert.Equal(t, parser.AgentZCode, res.results[0].Session.Agent)
 	assert.Equal(t, "devbox", res.results[0].Session.Machine)
-	assert.Empty(t, res.results[0].Messages)
+	require.Len(t, res.results[0].Messages, 3)
+	assert.Equal(t, parser.RoleAssistant, res.results[0].Messages[1].Role)
+	assert.True(t, res.results[0].Messages[1].HasToolUse)
+	require.Len(t, res.results[0].Messages[1].ToolCalls, 1)
+	assert.Equal(t, "call-read", res.results[0].Messages[1].ToolCalls[0].ToolUseID)
 	require.Len(t, res.results[0].UsageEvents, 1)
 	assert.Equal(t, 1, res.results[0].UsageEvents[0].InputTokens)
 	assert.Equal(t, 2, res.results[0].UsageEvents[0].OutputTokens)
@@ -585,6 +589,189 @@ func TestSyncSingleSessionProviderAuthoritativeBypassesProviderSkipCache(t *test
 	_, cached := engine.skipCache[source.FingerprintKey]
 	engine.skipMu.RUnlock()
 	assert.False(t, cached)
+}
+
+func TestProcessFileClaudeCachedSourceWithoutStoredSessionSkipsParse(t *testing.T) {
+	root := t.TempDir()
+	sourcePath, fingerprint := writeProcessProviderSource(t, root, "noninteractive.jsonl")
+	fingerprint.Hash = "unchanged-content"
+	source := processFixtureSource(sourcePath)
+	source.Provider = parser.AgentClaude
+	provider := newProcessFixtureProvider(
+		source,
+		fingerprint,
+		parser.ParseOutcome{ResultSetComplete: true},
+	)
+	provider.Def.Type = parser.AgentClaude
+	provider.Def.IDPrefix = "claude:"
+	engine := NewEngine(openTestDB(t), EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {root},
+		},
+		Machine:           "devbox",
+		ProviderFactories: []parser.ProviderFactory{processFixtureFactory{provider: provider}},
+		ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+			parser.AgentClaude: parser.ProviderMigrationProviderAuthoritative,
+		},
+	})
+	engine.cacheSkip(providerProcessCacheKey(
+		parser.DiscoveredFile{Path: sourcePath, Agent: parser.AgentClaude},
+		source, fingerprint,
+	), fingerprint.MTimeNS)
+
+	res := engine.processFile(context.Background(), parser.DiscoveredFile{
+		Path:  sourcePath,
+		Agent: parser.AgentClaude,
+	})
+
+	require.NoError(t, res.err)
+	assert.True(t, res.skip)
+	assert.Equal(t, []string{"find-source", "fingerprint"}, provider.calls)
+	assert.Empty(t, provider.parseRequests)
+}
+
+func TestProcessFileRowlessCachedSourceChangedHashReparses(t *testing.T) {
+	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentCodex} {
+		t.Run(string(agent), func(t *testing.T) {
+			root := t.TempDir()
+			sourcePath, fingerprint := writeProcessProviderSource(
+				t, root, "became-interactive.jsonl",
+			)
+			fingerprint.Hash = "new-valid-content"
+			source := processFixtureSource(sourcePath)
+			source.Provider = agent
+			provider := newProcessFixtureProvider(
+				source,
+				fingerprint,
+				parser.ParseOutcome{
+					Results: []parser.ParseResultOutcome{{
+						Result: processFixtureResult(
+							string(agent)+":valid", agent, "fixture-project",
+							sourcePath, fingerprint,
+						),
+						DataVersion: parser.DataVersionCurrent,
+					}},
+					ResultSetComplete: true,
+				},
+			)
+			provider.Def.Type = agent
+			provider.Def.IDPrefix = string(agent) + ":"
+			engine := NewEngine(openTestDB(t), EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{agent: {root}},
+				Machine:   "devbox",
+				ProviderFactories: []parser.ProviderFactory{
+					processFixtureFactory{provider: provider},
+				},
+				ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+					agent: parser.ProviderMigrationProviderAuthoritative,
+				},
+			})
+			oldFingerprint := fingerprint
+			oldFingerprint.Hash = "old-ignored-content"
+			oldKey := providerProcessCacheKey(
+				parser.DiscoveredFile{Path: sourcePath, Agent: agent},
+				source, oldFingerprint,
+			)
+			engine.cacheSkip(oldKey, fingerprint.MTimeNS)
+
+			res := engine.processFile(context.Background(), parser.DiscoveredFile{
+				Path: sourcePath, Agent: agent,
+			})
+
+			require.NoError(t, res.err)
+			assert.False(t, res.skip)
+			assert.Equal(t, []string{"find-source", "fingerprint", "parse"}, provider.calls)
+			require.Len(t, provider.parseRequests, 1)
+		})
+	}
+}
+
+func TestCacheSkipRetainsOnlyLatestSourceHashKey(t *testing.T) {
+	engine := &Engine{
+		skipCache:        make(map[string]int64),
+		skipFingerprints: make(map[string]string),
+	}
+	const (
+		plain = "/archive/session.jsonl"
+		base  = plain + "?source_hash="
+	)
+	engine.cacheSkip(plain, 1)
+	engine.cacheSkip(base+"old", 1)
+	engine.cacheSkip(base+"new", 1)
+
+	assert.Equal(t, map[string]int64{base + "new": 1}, engine.SnapshotSkipCache())
+}
+
+func TestNewEngineNormalizesLegacySourceHashSkipDuplicates(t *testing.T) {
+	database := openTestDB(t)
+	const (
+		plain     = "/archive/session.jsonl"
+		hashBase  = plain + "?source_hash="
+		unrelated = "/archive/unrelated.jsonl"
+	)
+	require.NoError(t, database.ReplaceSkippedFiles(map[string]int64{
+		plain:            1,
+		hashBase + "old": 2,
+		hashBase + "new": 3,
+		unrelated:        4,
+	}))
+
+	engine := NewEngine(database, EngineConfig{})
+	t.Cleanup(engine.Close)
+
+	assert.Equal(t, map[string]int64{unrelated: 4}, engine.SnapshotSkipCache(),
+		"ambiguous legacy hashes must reparse once instead of choosing a stale key")
+}
+
+func TestProcessFileClaudeCachedStoredSessionChangedHashReparses(t *testing.T) {
+	root := t.TempDir()
+	sourcePath, fingerprint := writeProcessProviderSource(t, root, "stored.jsonl")
+	fingerprint.Hash = "new-content"
+	source := processFixtureSource(sourcePath)
+	source.Provider = parser.AgentClaude
+	provider := newProcessFixtureProvider(
+		source,
+		fingerprint,
+		parser.ParseOutcome{ResultSetComplete: true},
+	)
+	provider.Def.Type = parser.AgentClaude
+	provider.Def.IDPrefix = "claude:"
+	engine := NewEngine(openTestDB(t), EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {root},
+		},
+		Machine:           "devbox",
+		ProviderFactories: []parser.ProviderFactory{processFixtureFactory{provider: provider}},
+		ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+			parser.AgentClaude: parser.ProviderMigrationProviderAuthoritative,
+		},
+	})
+	stored := processFixtureResult(
+		"claude:stored",
+		parser.AgentClaude,
+		"fixture-project",
+		sourcePath,
+		fingerprint,
+	)
+	stored.Session.File.Hash = "old-content"
+	written, _, failed, _ := engine.writeBatch(
+		[]pendingWrite{{sess: stored.Session, msgs: stored.Messages}},
+		syncWriteDefault,
+		false,
+	)
+	require.Equal(t, 1, written)
+	require.Zero(t, failed)
+	engine.cacheSkip(source.FingerprintKey, fingerprint.MTimeNS)
+
+	res := engine.processFile(context.Background(), parser.DiscoveredFile{
+		Path:  sourcePath,
+		Agent: parser.AgentClaude,
+	})
+
+	require.NoError(t, res.err)
+	assert.False(t, res.skip)
+	assert.Equal(t, []string{"find-source", "fingerprint", "parse"}, provider.calls)
+	require.Len(t, provider.parseRequests, 1)
 }
 
 func TestProcessFileProviderDevinSkipsStoredFreshSource(t *testing.T) {
@@ -1435,6 +1622,18 @@ func writeProcessProviderZCodeDB(t *testing.T, cliRoot string) string {
 			duration_ms INTEGER,
 			tool_call_count INTEGER
 		);
+		CREATE TABLE message (
+			id TEXT PRIMARY KEY NOT NULL,
+			session_id TEXT NOT NULL,
+			time_created TEXT,
+			data TEXT
+		);
+		CREATE TABLE part (
+			id TEXT PRIMARY KEY NOT NULL,
+			message_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			data TEXT
+		);
 	`)
 	mustExecProcessProviderSQL(t, database,
 		`INSERT INTO session (
@@ -1455,6 +1654,45 @@ func writeProcessProviderZCodeDB(t *testing.T, cliRoot string) string {
 		"session-001", "1", "builtin:bigmodel-coding-plan", "claude-sonnet-4-6", "done",
 		int64(1), int64(2), int64(0), int64(0), int64(0), int64(3),
 		"2026-07-06T13:00:02Z", "2026-07-06T13:00:03Z", int64(1000), int64(1),
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO message (
+			id, session_id, time_created, data
+		) VALUES (?, ?, ?, ?)`,
+		"msg-1", "session-001", "2026-07-06T13:00:01Z", `{"role":"user"}`,
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO part (
+			id, message_id, session_id, data
+		) VALUES (?, ?, ?, ?)`,
+		"part-1", "msg-1", "session-001", `{"type":"text","text":"Inspect the auth flow."}`,
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO message (
+			id, session_id, time_created, data
+		) VALUES (?, ?, ?, ?)`,
+		"msg-2", "session-001", "2026-07-06T13:00:02Z",
+		`{"role":"assistant","modelID":"claude-sonnet-4-6"}`,
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO part (
+			id, message_id, session_id, data
+		) VALUES (?, ?, ?, ?)`,
+		"part-2", "msg-2", "session-001",
+		`{"type":"tool_use","id":"call-read","name":"Read","input":{"file_path":"auth.go"}}`,
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO message (
+			id, session_id, time_created, data
+		) VALUES (?, ?, ?, ?)`,
+		"msg-3", "session-001", "2026-07-06T13:00:03Z", `{"role":"user"}`,
+	)
+	mustExecProcessProviderSQL(t, database,
+		`INSERT INTO part (
+			id, message_id, session_id, data
+		) VALUES (?, ?, ?, ?)`,
+		"part-3", "msg-3", "session-001",
+		`{"type":"tool_result","tool_use_id":"call-read","content":"package auth"}`,
 	)
 	return dbPath
 }

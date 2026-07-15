@@ -186,6 +186,7 @@ func (s *Store) IngestEvalTrajectory(
 }
 
 const duckSessionCols = `id, project, machine, agent,
+	agent_label, entrypoint,
 	first_message, COALESCE(display_name, session_name) AS display_name, created_at, started_at,
 	ended_at, message_count, user_message_count,
 	parent_session_id, relationship_type,
@@ -208,7 +209,7 @@ const duckSessionCols = `id, project, machine, agent,
 	cwd, git_branch, source_session_id, source_version, transcript_fidelity,
 	parser_malformed_lines, is_truncated,
 	secret_leak_count, secrets_rules_version,
-	deleted_at, termination_status`
+	deleted_at, termination_status, transcript_revision`
 
 func scanSession(rs interface{ Scan(...any) error }) (db.Session, error) {
 	var s db.Session
@@ -216,6 +217,7 @@ func scanSession(rs interface{ Scan(...any) error }) (db.Session, error) {
 	var startedAt, endedAt, deletedAt any
 	err := rs.Scan(
 		&s.ID, &s.Project, &s.Machine, &s.Agent,
+		&s.AgentLabel, &s.Entrypoint,
 		&s.FirstMessage, &s.DisplayName,
 		&createdAt, &startedAt, &endedAt,
 		&s.MessageCount, &s.UserMessageCount,
@@ -241,7 +243,7 @@ func scanSession(rs interface{ Scan(...any) error }) (db.Session, error) {
 		&s.SourceSessionID, &s.SourceVersion, &s.TranscriptFidelity,
 		&s.ParserMalformedLines, &s.IsTruncated,
 		&s.SecretLeakCount, &s.SecretsRulesVersion,
-		&deletedAt, &s.TerminationStatus,
+		&deletedAt, &s.TerminationStatus, &s.TranscriptRevision,
 	)
 	if err != nil {
 		return s, err
@@ -444,6 +446,8 @@ func (s *Store) GetSidebarSessionIndex(ctx context.Context, f db.SessionFilter) 
 			project,
 			machine,
 			agent,
+			agent_label,
+			entrypoint,
 			COALESCE(display_name, session_name) AS display_name,
 			started_at,
 			ended_at,
@@ -451,6 +455,7 @@ func (s *Store) GetSidebarSessionIndex(ctx context.Context, f db.SessionFilter) 
 			termination_status,
 			message_count,
 			user_message_count,
+			transcript_revision,
 			is_automated,
 			position('<teammate-message' in COALESCE(first_message, '')) > 0
 		FROM sessions
@@ -479,6 +484,8 @@ func (s *Store) GetSidebarSessionIndex(ctx context.Context, f db.SessionFilter) 
 			&row.Project,
 			&row.Machine,
 			&row.Agent,
+			&row.AgentLabel,
+			&row.Entrypoint,
 			&row.DisplayName,
 			&startedAt,
 			&endedAt,
@@ -486,6 +493,7 @@ func (s *Store) GetSidebarSessionIndex(ctx context.Context, f db.SessionFilter) 
 			&row.TerminationStatus,
 			&row.MessageCount,
 			&row.UserMessageCount,
+			&row.TranscriptRevision,
 			&row.IsAutomated,
 			&row.IsTeammate,
 		); err != nil {
@@ -631,6 +639,28 @@ func (s *Store) GetProjects(ctx context.Context, excludeOneShot, excludeAutomate
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetActiveProjectLabels(ctx context.Context) ([]string, error) {
+	rows, err := s.queryContext(ctx,
+		`SELECT DISTINCT project
+		 FROM sessions
+		 WHERE deleted_at IS NULL
+		 ORDER BY project`)
+	if err != nil {
+		return nil, fmt.Errorf("querying active project labels: %w", err)
+	}
+	defer rows.Close()
+
+	var labels []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, fmt.Errorf("scanning active project label: %w", err)
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
 }
 
 func (s *Store) GetAgents(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]db.AgentInfo, error) {
