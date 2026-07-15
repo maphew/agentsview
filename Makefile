@@ -295,13 +295,13 @@ bench-backends: pricing-snapshot ensure-embed-dir
 		CGO_ENABLED=1 go test -tags "fts5,benchdb" ./internal/backendbench $(BENCH_BACKENDS_FLAGS)
 
 # Hot-path benchmark gate. Runs every benchmark in the gated packages
-# (sync engine warm/cold/append, message write paths, usage
-# aggregation, secret scanning). This target is the single source of
-# truth for the gate configuration: CI's bench.yml runs it on both
-# the PR head and the merge base, then compares the outputs with
-# `go run ./cmd/benchgate -old old.txt -new new.txt`. Run it before
-# and after touching a sync or DB hot path.
-BENCH_GATE_PACKAGES ?= ./internal/sync ./internal/db ./internal/secrets
+# (sync engine warm/cold/append, artifact transfer, message write
+# paths, usage aggregation, secret scanning). This target is the
+# single source of truth for the gate configuration: CI's bench.yml
+# runs it on both the PR head and the merge base, then compares the
+# outputs with `go run ./cmd/benchgate -old old.txt -new new.txt`.
+# Run it before and after touching a sync or DB hot path.
+BENCH_GATE_PACKAGES ?= ./internal/sync ./internal/artifact ./internal/db ./internal/secrets
 # Count must stay >= 5: benchgate's time gate needs at least 5
 # candidate samples for its significance test.
 BENCH_GATE_COUNT ?= 6
