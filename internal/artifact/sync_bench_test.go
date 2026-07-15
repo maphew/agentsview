@@ -83,17 +83,18 @@ func artifactBenchIntFromEnv(b *testing.B, name string, fallback int) int {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		b.Fatalf("%s must be a positive integer, got %q", name, raw)
-	}
+	require.NoError(b, err, "%s must be a positive integer, got %q", name, raw)
+	require.Positive(b, value, "%s must be a positive integer, got %q", name, raw)
 	return value
 }
 
 func (a artifactBenchArchive) reportScale(b *testing.B) {
 	b.Helper()
+	effectiveContentBytes := float64(a.uncompressedBytes) /
+		float64(a.sessions*a.messages)
 	b.ReportMetric(float64(a.sessions), "sessions")
 	b.ReportMetric(float64(a.messages), "messages/session")
-	b.ReportMetric(float64(a.contentBytes), "content-bytes/message")
+	b.ReportMetric(effectiveContentBytes, "content-bytes/message")
 }
 
 func (a *artifactBenchArchive) seed(b *testing.B, database *db.DB) {
